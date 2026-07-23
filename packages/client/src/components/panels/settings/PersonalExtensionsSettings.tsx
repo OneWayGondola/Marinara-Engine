@@ -239,7 +239,6 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
         message: riskMessage(extension, t),
         confirmLabel: t("settings.personalExtensions.approval.confirmLabel"),
         cancelLabel: t("settings.personalExtensions.approval.cancelLabel"),
-        tone: "destructive",
       });
       if (!confirmed) return;
       try {
@@ -463,9 +462,9 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
             className={cn(
               "flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs",
               current.enabled
-                ? "border-emerald-500/30 bg-emerald-500/8 text-emerald-300"
+                ? "border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--primary)]"
                 : approvalChanged
-                  ? "border-amber-500/30 bg-amber-500/8 text-amber-300"
+                  ? "border-[var(--primary)]/25 bg-[var(--primary)]/[0.06] text-[var(--foreground)]"
                   : "border-[var(--border)] bg-[var(--secondary)]/50 text-[var(--muted-foreground)]",
             )}
           >
@@ -538,8 +537,8 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
           />
         </label>
 
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2.5 text-[0.6875rem] leading-relaxed text-amber-200">
-          <AlertTriangle size="0.875rem" className="mt-0.5 shrink-0" />
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--primary)]/30 bg-[var(--primary)]/[0.08] px-3 py-2.5 text-[0.6875rem] leading-relaxed text-[var(--foreground)]">
+          <AlertTriangle size="0.875rem" className="mt-0.5 shrink-0 text-[var(--primary)]" />
           {draft.runtime === "server"
             ? t("settings.personalExtensions.sandbox.server")
             : t("settings.personalExtensions.sandbox.browser")}

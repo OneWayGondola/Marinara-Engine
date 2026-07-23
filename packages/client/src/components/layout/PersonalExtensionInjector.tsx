@@ -10,7 +10,7 @@ type ActiveClientExtension = {
 
 type SandboxMessage = {
   channel?: string;
-  type?: "ready" | "error" | "log" | "storage" | "ui-window-open" | "ui-window-close";
+  type?: "ready" | "error" | "log" | "storage" | "ui-window-open" | "ui-window-close" | "ui-resize";
   contentHash?: string;
   requestId?: string;
   action?: "get" | "patch" | "delete";
@@ -18,30 +18,68 @@ type SandboxMessage = {
   level?: "debug" | "info" | "warn" | "error";
   args?: unknown[];
   message?: string;
+  width?: number;
+  height?: number;
 };
 
-// A hidden sandbox iframe becomes a centered, full-viewport overlay only while
-// the extension has an open window; the iframe draws its own backdrop and card.
-function setSandboxIframeVisible(iframe: HTMLIFrameElement, visible: boolean) {
-  if (visible) {
-    iframe.hidden = false;
-    iframe.removeAttribute("aria-hidden");
-    iframe.tabIndex = 0;
-    Object.assign(iframe.style, {
-      position: "fixed",
-      inset: "0",
-      width: "100%",
-      height: "100%",
-      border: "0",
-      zIndex: "2147483000",
-      colorScheme: "normal",
-    });
-  } else {
-    iframe.hidden = true;
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.tabIndex = -1;
-    iframe.removeAttribute("style");
-  }
+// The sandbox iframe is a hidden 0×0 element until the extension opens a
+// window; then it becomes a small floating panel docked bottom-right. It never
+// covers Marinara's page — the rest of the app stays visible and interactive.
+function setSandboxIframeHidden(iframe: HTMLIFrameElement) {
+  iframe.hidden = true;
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.tabIndex = -1;
+  iframe.removeAttribute("style");
+}
+
+function sizeSandboxPanel(iframe: HTMLIFrameElement, width?: number, height?: number) {
+  const maxW = Math.max(240, Math.min(window.innerWidth - 32, 420));
+  const maxH = Math.round(window.innerHeight * 0.7);
+  const w = Math.max(240, Math.min(typeof width === "number" ? width : 340, maxW));
+  const h = Math.max(80, Math.min(typeof height === "number" ? height : 240, maxH));
+  iframe.hidden = false;
+  iframe.removeAttribute("aria-hidden");
+  iframe.tabIndex = 0;
+  Object.assign(iframe.style, {
+    position: "fixed",
+    right: "1rem",
+    bottom: "1rem",
+    top: "auto",
+    left: "auto",
+    width: `${w}px`,
+    height: `${h}px`,
+    maxWidth: "calc(100vw - 2rem)",
+    maxHeight: "80vh",
+    border: "1px solid var(--border)",
+    borderRadius: "12px",
+    boxShadow: "0 16px 48px rgba(0,0,0,0.4)",
+    background: "transparent",
+    overflow: "hidden",
+    zIndex: "2147483000",
+    colorScheme: "normal",
+  });
+}
+
+// Forward Marinara's resolved accent/surface colors so the in-iframe window
+// matches the current theme. Only color strings cross the boundary.
+function postSandboxTheme(iframe: HTMLIFrameElement) {
+  const styles = getComputedStyle(document.documentElement);
+  const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+  iframe.contentWindow?.postMessage(
+    {
+      channel: "marinara-personal-extension",
+      type: "ui-theme",
+      theme: {
+        accent: read("--primary", "#a855f7"),
+        accentText: read("--primary-foreground", "#ffffff"),
+        surface: read("--card", "#18181b"),
+        text: read("--foreground", "#f4f4f5"),
+        border: read("--border", "rgba(127,127,127,0.35)"),
+        muted: read("--secondary", "rgba(127,127,127,0.15)"),
+      },
+    },
+    "*",
+  );
 }
 
 const activeExtensions = new Map<string, ActiveClientExtension>();
@@ -142,11 +180,16 @@ export function PersonalExtensionInjector() {
         return;
       }
       if (message.type === "ui-window-open") {
-        setSandboxIframeVisible(active.iframe, true);
+        sizeSandboxPanel(active.iframe, message.width, message.height);
+        postSandboxTheme(active.iframe);
+        return;
+      }
+      if (message.type === "ui-resize") {
+        if (!active.iframe.hidden) sizeSandboxPanel(active.iframe, message.width, message.height);
         return;
       }
       if (message.type === "ui-window-close") {
-        setSandboxIframeVisible(active.iframe, false);
+        setSandboxIframeHidden(active.iframe);
         return;
       }
       if (message.type === "log" && LOG_LEVELS.has(message.level as NonNullable<SandboxMessage["level"]>)) {

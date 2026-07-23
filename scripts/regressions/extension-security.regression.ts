@@ -346,6 +346,12 @@ try {
   assert.match(doc, /textContent/u, "Sandbox bootstrap must render window text via textContent");
   assert.doesNotMatch(doc, /innerHTML/u, "Sandbox bootstrap must never assign innerHTML");
   assert.match(doc, /ui-window-open/u, "Sandbox reveals the iframe only through the ui-window-open signal");
+  assert.match(doc, /ui-resize/u, "Sandbox reports its content size so the host can fit the floating panel");
+  assert.doesNotMatch(
+    doc,
+    /rgba\(0,\s*0,\s*0,\s*0\.45\)/u,
+    "The extension window is a floating panel, not a full-screen backdrop takeover",
+  );
   assert.ok(
     doc.includes("new Worker(") && doc.includes("marinara.ui.showWindow"),
     "Extension JS must run in the worker embedded by the bootstrap, not in the document",

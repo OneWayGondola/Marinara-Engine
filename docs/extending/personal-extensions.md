@@ -18,6 +18,10 @@ Sandboxing reduces authority; it does not make arbitrary code trustworthy. A mal
 
 A Browser Extension runs in a dedicated Worker inside an opaque-origin sandboxed iframe. It cannot access Marinara's page, DOM, cookies, browser storage, origin APIs, or network. Its capabilities are private extension storage, logging, managed timers, cleanup registration, and a constrained window UI. The extension never touches Marinara's DOM or writes HTML: it describes a window as a small set of elements (headings, text, preformatted blocks, buttons, and inputs), and the trusted sandbox renders them as text. Buttons report clicks — with the current input values — back to the extension, so it can show output, drive small tools, or add controls. This is enough for a closable info window, an extra button that does something, or a simple input-and-result tool.
 
+The window appears as a floating panel docked to the corner of the app, styled with the current accent color; the rest of Marinara stays visible and usable. It is not a full-screen takeover. Closing it (the panel's ✕) returns the app to normal.
+
+These UI capabilities and rules are identical for every Browser Extension regardless of source. An imported third-party (External) Extension gets the same window API and the same accent styling once it clears the same gates — the `.env` and Danger Zone opt-ins plus exact-hash approval. A third-party extension can add or change UI only through this same sandboxed window; it still cannot reach Marinara's own DOM.
+
 A Server Extension runs in a separate permission-restricted Node process inside macOS Seatbelt or Linux Bubblewrap. It cannot access Marinara files, user files, inherited server secrets, the network, child processes, workers, or native addons. If Marinara cannot establish a supported OS sandbox, Server Extensions remain disabled.
 
 ### Platform support

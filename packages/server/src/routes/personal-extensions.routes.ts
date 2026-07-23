@@ -238,34 +238,47 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
   // Host-rendered window layer. The worker only sends element descriptors;
   // everything below builds DOM with textContent (never parsed markup) inside
   // this opaque-origin iframe, so the extension can present interactive UI
-  // without touching Marinara's page or being able to inject markup.
+  // without touching Marinara's page or being able to inject markup. The iframe
+  // is sized by the host to just this floating panel — it does not cover or
+  // take over Marinara's page.
+  const theme = { accent: "#a855f7", accentText: "#ffffff", surface: "rgba(24,24,27,0.98)", text: "#f4f4f5", border: "rgba(127,127,127,0.35)", muted: "rgba(127,127,127,0.15)" };
   const root = document.createElement("div");
   root.setAttribute("data-ext-root", "");
-  Object.assign(root.style, { position: "fixed", inset: "0", display: "none", padding: "1rem", boxSizing: "border-box", overflow: "auto", fontFamily: "system-ui, sans-serif" });
+  Object.assign(root.style, { display: "none", fontFamily: "system-ui, sans-serif", boxSizing: "border-box" });
+  document.documentElement.style.background = "transparent";
+  document.body.style.margin = "0";
+  document.body.style.background = "transparent";
   document.body.appendChild(root);
   const uiWindows = new Map();
-  const syncVisibility = () => {
-    const open = uiWindows.size > 0;
-    root.style.display = open ? "flex" : "none";
-    root.style.flexDirection = "column";
-    root.style.gap = "0.75rem";
-    root.style.alignItems = "center";
-    root.style.justifyContent = "center";
-    root.style.background = open ? "rgba(0,0,0,0.45)" : "transparent";
-    post({ type: open ? "ui-window-open" : "ui-window-close", contentHash: extension.contentHash });
+  const applyThemeVars = () => {
+    root.style.setProperty("--ext-accent", theme.accent);
+    root.style.setProperty("--ext-accent-text", theme.accentText);
+    root.style.setProperty("--ext-surface", theme.surface);
+    root.style.setProperty("--ext-text", theme.text);
+    root.style.setProperty("--ext-border", theme.border);
+    root.style.setProperty("--ext-muted", theme.muted);
   };
-  // Clicking the backdrop (outside any card) dismisses, matching host modals.
-  root.addEventListener("click", (event) => {
-    if (event.target !== root) return;
-    for (const windowId of [...uiWindows.keys()]) closeWindowLocally(windowId, true);
-  });
+  applyThemeVars();
+  const reportSize = () => {
+    if (uiWindows.size === 0) return;
+    const width = Math.min(420, Math.max(240, Math.ceil(root.scrollWidth)));
+    const height = Math.max(80, Math.ceil(root.scrollHeight));
+    post({ type: "ui-resize", contentHash: extension.contentHash, width, height });
+  };
+  const syncVisibility = (justOpened) => {
+    const open = uiWindows.size > 0;
+    root.style.display = open ? "block" : "none";
+    if (!open) { post({ type: "ui-window-close", contentHash: extension.contentHash }); return; }
+    if (justOpened) post({ type: "ui-window-open", contentHash: extension.contentHash });
+    reportSize();
+  };
   const closeWindowLocally = (windowId, notifyWorker) => {
     const entry = uiWindows.get(windowId);
     if (!entry) return;
     entry.card.remove();
     uiWindows.delete(windowId);
     if (notifyWorker) worker.postMessage({ type: "ui-closed", windowId });
-    syncVisibility();
+    syncVisibility(false);
   };
   const collectValues = (windowId) => {
     const values = {};
@@ -289,7 +302,7 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
     if (descriptor.kind === "pre") {
       const el = document.createElement("pre");
       el.textContent = descriptor.text || "";
-      Object.assign(el.style, { margin: "0", padding: "0.5rem", borderRadius: "6px", background: "rgba(127,127,127,0.15)", overflow: "auto", fontFamily: "ui-monospace, monospace", fontSize: "0.8125rem", lineHeight: "1.4" });
+      Object.assign(el.style, { margin: "0", padding: "0.5rem", borderRadius: "6px", background: "var(--ext-muted)", overflow: "auto", fontFamily: "ui-monospace, monospace", fontSize: "0.8125rem", lineHeight: "1.4" });
       return el;
     }
     if (descriptor.kind === "spacer") {
@@ -306,7 +319,7 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
       if (descriptor.placeholder) field.placeholder = descriptor.placeholder;
       field.value = descriptor.value || "";
       field.setAttribute("data-ext-input", descriptor.id);
-      Object.assign(field.style, { padding: "0.4rem 0.5rem", borderRadius: "6px", border: "1px solid rgba(127,127,127,0.4)", background: "rgba(127,127,127,0.08)", color: "inherit", font: "inherit" });
+      Object.assign(field.style, { padding: "0.4rem 0.5rem", borderRadius: "6px", border: "1px solid var(--ext-border)", background: "var(--ext-muted)", color: "inherit", font: "inherit" });
       if (descriptor.multiline) field.rows = 4;
       inputs.set(descriptor.id, field);
       wrap.appendChild(field);
@@ -316,7 +329,7 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
       const el = document.createElement("button");
       el.type = "button";
       el.textContent = descriptor.label || descriptor.text || "Button";
-      Object.assign(el.style, { alignSelf: "flex-start", padding: "0.4rem 0.85rem", borderRadius: "6px", border: "1px solid rgba(127,127,127,0.4)", background: "rgba(127,127,127,0.15)", color: "inherit", font: "inherit", cursor: "pointer" });
+      Object.assign(el.style, { alignSelf: "flex-start", padding: "0.4rem 0.85rem", borderRadius: "6px", border: "1px solid var(--ext-accent)", background: "var(--ext-accent)", color: "var(--ext-accent-text)", font: "inherit", fontWeight: "600", cursor: "pointer" });
       el.addEventListener("click", () => {
         worker.postMessage({ type: "ui-event", windowId, elementId: descriptor.id, values: collectValues(windowId) });
       });
@@ -332,9 +345,9 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
   const showWindow = (windowId, title, elements) => {
     closeWindowLocally(windowId, false);
     const card = document.createElement("section");
-    Object.assign(card.style, { width: "100%", maxWidth: "26rem", borderRadius: "10px", border: "1px solid rgba(127,127,127,0.35)", background: "rgba(24,24,27,0.98)", color: "#f4f4f5", boxShadow: "0 12px 40px rgba(0,0,0,0.45)", overflow: "hidden" });
+    Object.assign(card.style, { display: "block", width: "100%", boxSizing: "border-box", border: "1px solid var(--ext-border)", background: "var(--ext-surface)", color: "var(--ext-text)", overflow: "hidden" });
     const header = document.createElement("div");
-    Object.assign(header.style, { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", padding: "0.5rem 0.5rem 0.5rem 0.85rem", borderBottom: "1px solid rgba(127,127,127,0.3)" });
+    Object.assign(header.style, { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", padding: "0.5rem 0.5rem 0.5rem 0.85rem", borderBottom: "1px solid var(--ext-border)" });
     const titleEl = document.createElement("strong");
     titleEl.textContent = title || extension.name;
     titleEl.style.fontSize = "0.875rem";
@@ -354,13 +367,14 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
     const entry = { id: windowId, card, body, titleEl, inputs: new Map() };
     uiWindows.set(windowId, entry);
     renderBody(entry, elements);
-    syncVisibility();
+    syncVisibility(true);
   };
   const updateWindow = (windowId, title, elements) => {
     const entry = uiWindows.get(windowId);
     if (!entry) return;
     if (typeof title === "string") entry.titleEl.textContent = title;
     if (Array.isArray(elements)) renderBody(entry, elements);
+    reportSize();
   };
 
   let lastHeartbeat = Date.now();
@@ -428,6 +442,14 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
     if (event.source !== window.parent || event.data?.channel !== "marinara-personal-extension") return;
     const message = event.data;
     if (message.type === "storage-result") worker.postMessage(message);
+    if (message.type === "ui-theme" && message.theme && typeof message.theme === "object") {
+      // The host forwards Marinara's resolved accent/surface colors so the
+      // in-iframe window matches the app; values are only ever used as CSS.
+      for (const key of ["accent", "accentText", "surface", "text", "border", "muted"]) {
+        if (typeof message.theme[key] === "string" && message.theme[key]) theme[key] = message.theme[key];
+      }
+      applyThemeVars();
+    }
     if (message.type === "ui-dismiss") {
       for (const windowId of [...uiWindows.keys()]) closeWindowLocally(windowId, true);
     }
