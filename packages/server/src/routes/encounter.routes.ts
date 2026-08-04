@@ -646,6 +646,7 @@ export async function encounterRoutes(app: FastifyInstance) {
         model: conn.model,
         temperature: 0.8,
         maxTokens: COMBAT_BLUEPRINT_OUTPUT_TOKENS,
+        stream: true,
       });
       debugLog(
         "[debug/game/combat:init] raw response chatId=%s model=%s chars=%d\n%s",

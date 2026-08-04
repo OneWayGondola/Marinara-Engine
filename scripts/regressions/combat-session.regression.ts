@@ -167,6 +167,10 @@ assert.throws(
 );
 
 const routesSource = readFileSync(new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url), "utf8");
+const encounterRoutesSource = readFileSync(
+  new URL("../../packages/server/src/routes/encounter.routes.ts", import.meta.url),
+  "utf8",
+);
 const sessionStorageSource = readFileSync(
   new URL("../../packages/server/src/services/storage/game-combat-session.storage.ts", import.meta.url),
   "utf8",
@@ -183,6 +187,11 @@ assert.equal(
   (routesSource.match(/await syncCombatInventory\(/g) ?? []).length,
   2,
   "Classic and Tactical duplicate responses must retry durable inventory synchronization",
+);
+assert.match(
+  encounterRoutesSource,
+  /maxTokens: COMBAT_BLUEPRINT_OUTPUT_TOKENS,\s*stream: true,/,
+  "large combat blueprints must stream so slow providers send response headers before the transport timeout",
 );
 assert.match(
   routesSource,
