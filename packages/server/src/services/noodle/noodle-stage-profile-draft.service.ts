@@ -138,6 +138,18 @@ export function buildNoodlerStageProfileDraftMessages(input: {
   ];
 }
 
+// The generated disclosureMode is always overwritten by the requested one, so parsing it
+// would only let a model that answers "Always" fail an otherwise usable draft. Extra keys
+// are stripped for the same reason: local models add fields no matter what the prompt says.
+const noodlerStageProfileDraftSchema = noodleStageProfileDraftResponseSchema.omit({ disclosureMode: true }).strip();
+
+export function parseNoodlerStageProfileDraft(content: string) {
+  const parsed = parseGameJsonish(content);
+  const draft = noodlerStageProfileDraftSchema.parse(Array.isArray(parsed) ? parsed[0] : parsed);
+  // Models often return the handle already decorated; callers render it as `@${handle}`.
+  return { ...draft, handle: draft.handle.replace(/^@+/, "") || draft.handle };
+}
+
 export async function generateNoodlerStageProfileDraft(
   db: DB,
   input: { request: NoodleStageProfileDraftRequest; connection: GenerationConnection },
@@ -214,11 +226,10 @@ export async function generateNoodlerStageProfileDraft(
     debugMode,
     responseFormat: noodleResponseFormat(input.connection.model, "noodler_profile"),
   });
-  const unwrapped = parseGameJsonish(response.content ?? "");
-  const parsed = noodleStageProfileDraftResponseSchema.parse(
-    Array.isArray(unwrapped) && unwrapped.length === 1 ? unwrapped[0] : unwrapped,
-  );
-  const draft = { ...parsed, disclosureMode: input.request.disclosureMode };
+  const draft = {
+    ...parseNoodlerStageProfileDraft(response.content ?? ""),
+    disclosureMode: input.request.disclosureMode,
+  };
   if (stageProfileContainsPublicIdentity(draft, identity)) {
     throw new Error("Generated stage draft included the linked public identity. Try again with different guidance.");
   }

@@ -38,7 +38,10 @@ import {
   collectNoodlePriorityAccountIds,
 } from "../../packages/server/src/services/noodle/noodle-participant-selection.js";
 import { noodleAccountsNeedingProfiles } from "../../packages/server/src/services/noodle/noodle-profile-selection.js";
-import { buildNoodlerStageProfileDraftMessages } from "../../packages/server/src/services/noodle/noodle-stage-profile-draft.service.js";
+import {
+  buildNoodlerStageProfileDraftMessages,
+  parseNoodlerStageProfileDraft,
+} from "../../packages/server/src/services/noodle/noodle-stage-profile-draft.service.js";
 import { compareNoodlerSourceSnapshots } from "../../packages/server/src/services/noodle/noodle-noodler-source.js";
 import {
   buildNoodleCarryoverBlock,
@@ -529,6 +532,28 @@ const rewrittenHintedDraftPrompt = buildNoodlerStageProfileDraftMessages({
   .map((message) => message.content)
   .join("\n");
 assert.match(rewrittenHintedDraftPrompt, /# Current draft[\s\S]*Tidewatch[\s\S]*tidewatch/u);
+// Local models wrap the draft in an array, decorate the handle, invent disclosureMode values,
+// and add extra keys. None of that should fail a usable draft (issue #4626).
+const sloppyDraftResponse = parseNoodlerStageProfileDraft(
+  JSON.stringify([
+    {
+      displayName: "Taro",
+      handle: "@Taro_One",
+      bio: "Night walks and luminous water.",
+      stagePersonality: "Warm and observant.",
+      disclosureMode: "Always",
+      extraKeyModelsLikeToAdd: "ignored",
+    },
+  ]),
+);
+assert.equal(sloppyDraftResponse.handle, "Taro_One");
+assert.deepEqual(Object.keys(sloppyDraftResponse).sort(), [
+  "bio",
+  "displayName",
+  "handle",
+  "stagePersonality",
+]);
+assert.throws(() => parseNoodlerStageProfileDraft(JSON.stringify({ displayName: "Taro" })));
 const sourceBaseline = {
   publicDisplayName: "Known Public Name",
   publicHandle: "known_public",
