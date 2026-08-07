@@ -550,11 +550,12 @@ function resolveClassicAction(
     if (inventoryItem) inventoryItem.quantity = Math.max(0, inventoryItem.quantity - 1);
   }
   state.round = round + 1;
-  const outcome = state.enemies.every((enemy) => enemy.hp <= 0)
-    ? "victory"
-    : state.party.every((member) => member.hp <= 0)
-      ? "defeat"
-      : undefined;
+  // `every` is vacuously true on an empty roster, so an empty party would read as
+  // wiped and an empty enemy list as an instant win. Both sides must be non-empty
+  // before a terminal outcome can be derived from their HP.
+  const enemiesWiped = state.enemies.length > 0 && state.enemies.every((enemy) => enemy.hp <= 0);
+  const partyWiped = state.party.length > 0 && state.party.every((member) => member.hp <= 0);
+  const outcome = enemiesWiped ? "victory" : partyWiped ? "defeat" : undefined;
   if (outcome) state.outcome = outcome;
   const events: CombatEvent[] = [
     ...maneuverEvents,
@@ -626,6 +627,17 @@ function applyCombatObjectivesAndPhases(
       : objective.kind === "eliminate" || objective.kind === "conditional_eliminate"
         ? enemies.map((enemy) => enemy.id)
         : [];
+  // Classic parties are tagged "player" and Tactical parties "party": everything
+  // that is not hostile counts as protectable.
+  const isPartySide = (unit: { side: string }) => unit.side !== "enemy";
+  // Only party-side units can fail a defend/escort objective. A generated target
+  // name that resolved to an enemy must never lose the fight when that enemy dies.
+  const protectedTargetUnits = (objective: (typeof objectives)[number], roster: typeof units) =>
+    targetIdsFor(objective)
+      .map((id) => roster.find((unit) => unit.id === id))
+      .filter((unit) => unit !== undefined)
+      .filter((unit) => isPartySide(unit));
+  const enemiesRemaining = enemies.some((enemy) => enemy.hp > 0);
   const objectiveEffects = resolution.events
     .flatMap((event) => event.effects)
     .filter((effect) => effect.type === "objective");
@@ -680,7 +692,7 @@ function applyCombatObjectivesAndPhases(
       const targetUnits = targets
         .map((id) => units.find((unit) => unit.id === id))
         .filter((unit) => unit !== undefined);
-      if (targetUnits.some((unit) => unit.hp <= 0)) objective.status = "failed";
+      if (protectedTargetUnits(objective, units).some((unit) => unit.hp <= 0)) objective.status = "failed";
       else if (targetUnits.length === targets.length && objective.progress >= (objective.requiredProgress ?? 1)) {
         objective.status = "complete";
       }
@@ -690,7 +702,9 @@ function applyCombatObjectivesAndPhases(
     if (
       objective.status === "active" &&
       objective.failAtRound !== undefined &&
-      completedRounds >= objective.failAtRound
+      completedRounds >= objective.failAtRound &&
+      // With every hostile down there is no fight left to run out of time on.
+      enemiesRemaining
     ) {
       objective.status = "failed";
     }
@@ -843,7 +857,9 @@ function applyCombatObjectivesAndPhases(
             (objective.kind === "eliminate" || objective.kind === "conditional_eliminate")
           ) {
             objective.targetIds = Array.from(new Set([...(objective.targetIds ?? []), reinforcementId]));
-            objective.status = "active";
+            // A fresh hostile legitimately reopens an elimination goal, but it must
+            // never un-complete an objective that was already satisfied by other means.
+            if (objective.status !== "failed") objective.status = "active";
           }
         }
       }
@@ -912,32 +928,47 @@ function applyCombatObjectivesAndPhases(
   // be checked again before the terminal outcome is derived.
   for (const objective of objectives) {
     if (objective.kind !== "defend" && objective.kind !== "escort") continue;
-    const targetUnits = targetIdsFor(objective)
-      .map((id) => units.find((unit) => unit.id === id))
-      .filter((unit) => unit !== undefined);
-    if (targetUnits.some((unit) => unit.hp <= 0)) objective.status = "failed";
+    if (protectedTargetUnits(objective, units).some((unit) => unit.hp <= 0)) objective.status = "failed";
   }
 
-  const failed = objectives.some((objective) => objective.status === "failed");
-  const completed = objectives.length > 0 && objectives.every((objective) => objective.status === "complete");
   const finalUnits = tacticalState
     ? tacticalState.units
     : [...(classicState?.party ?? []), ...(classicState?.enemies ?? [])];
   const partyAlive = finalUnits.some((unit) => unit.side !== "enemy" && unit.hp > 0);
   const enemiesAlive = finalUnits.some((unit) => unit.side === "enemy" && unit.hp > 0);
+
+  // Objectives that only advance through GM maneuver effects can never finish once
+  // the battlefield is empty, which would strand the session with nothing to fight.
+  // With every hostile down and the party standing, those goals are moot: resolve
+  // them so the victory branch below can fire.
+  if (!enemiesAlive && partyAlive && !objectives.some((objective) => objective.status === "failed")) {
+    for (const objective of objectives) {
+      if (objective.status !== "active") continue;
+      if (objective.kind === "defend" || objective.kind === "escort") {
+        if (protectedTargetUnits(objective, finalUnits).every((unit) => unit.hp > 0)) objective.status = "complete";
+      } else if (objective.kind === "capture" || objective.kind === "interrupt" || objective.kind === "escape") {
+        objective.status = "complete";
+      }
+    }
+  }
+
+  const completed = objectives.length > 0 && objectives.every((objective) => objective.status === "complete");
+  const resolved = objectives.every((objective) => objective.status !== "active");
   const fled = currentOutcome === "fled" || currentOutcome === "flee";
   const escapeObjectives = objectives.filter((objective) => objective.kind === "escape");
   const escapedSuccessfully =
     escapeObjectives.length > 0 && escapeObjectives.every((objective) => objective.status === "complete");
+  // A failed objective is a story beat, not a party wipe: only an actually downed
+  // party (or an unresolved retreat) ends the battle in defeat.
   const normalizedOutcome = fled
-    ? escapeObjectives.length > 0
-      ? escapedSuccessfully
-        ? "victory"
-        : undefined
-      : currentOutcome
-    : !partyAlive || failed
+    ? escapedSuccessfully
+      ? "victory"
+      : // A retreat that did not satisfy an escape objective is still a retreat:
+        // dropping the outcome here would push the party back into the battle.
+        currentOutcome
+    : !partyAlive
       ? "defeat"
-      : completed || (objectives.length === 0 && !enemiesAlive)
+      : completed || (!enemiesAlive && resolved)
         ? "victory"
         : undefined;
   if (tacticalState) {

@@ -187,6 +187,10 @@ const gameCombatUiSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameCombatUI.tsx", import.meta.url),
   "utf8",
 );
+const combatSessionServiceSource = readFileSync(
+  new URL("../../packages/server/src/services/game/combat-session.service.ts", import.meta.url),
+  "utf8",
+);
 assert.equal(
   (routesSource.match(/await syncCombatInventory\(/g) ?? []).length,
   2,
@@ -289,6 +293,28 @@ assert.match(
   gameCombatUiSource,
   /session\.style !== "classic" \|\| session\.status !== "active"/,
   "a completed session must never hydrate the Classic battle component as a live fight",
+);
+assert.match(
+  gameSurfaceSource,
+  /protection \? resolvedTargetIds\?\.filter\(\(id\) => partyIds\.has\(id\)\)/,
+  "generated defend and escort targets must resolve to allies, never to enemies the player is meant to kill",
+);
+// An empty roster makes `every` vacuously true, so both HP sweeps must require a
+// non-empty side before they can declare the fight over.
+assert.match(
+  combatSessionServiceSource,
+  /const enemiesWiped = state\.enemies\.length > 0 && state\.enemies\.every/,
+  "an empty enemy list must not read as a Classic victory on its own",
+);
+assert.match(
+  combatSessionServiceSource,
+  /const partyWiped = state\.party\.length > 0 && state\.party\.every/,
+  "an empty party must not read as wiped in the Classic terminal check",
+);
+assert.doesNotMatch(
+  encounterRoutesSource,
+  /"kind":"eliminate\|survive_rounds[^\n]*"failAtRound"/,
+  "the generic objective example must not hand every generated objective a round deadline",
 );
 
 assert.throws(
@@ -582,7 +608,16 @@ assert.equal(
   "failed",
   "a dead defend target must stay failed even when progress had reached its completion threshold",
 );
-assert.equal(protectedTargetResult.result?.outcome, "defeat");
+assert.equal(
+  protectedTargetResult.result,
+  undefined,
+  "a downed protection target must not end the battle while the rest of the party still stands",
+);
+assert.equal(
+  protectedTargetResult.canonicalState.outcome,
+  undefined,
+  "a failed objective is a setback, not a party wipe",
+);
 
 const phaseKilledTargetSession = classic(
   {
@@ -620,7 +655,11 @@ assert.equal(
   "failed",
   "boss-phase damage must override same-action defend completion when the protected target dies",
 );
-assert.equal(phaseKilledTarget.result?.outcome, "defeat");
+assert.equal(
+  phaseKilledTarget.result?.outcome,
+  "defeat",
+  "the Cataclysm wipes the whole party, so defeat must come from the wipe rather than the failed objective",
+);
 
 for (const mismatchedAction of [
   { style: "classic", type: "flee" },
@@ -710,8 +749,18 @@ const prematureEscape = resolveCombatSessionAction(escapeSession, "escape-too-ea
   style: "classic",
   type: "flee",
 });
-assert.equal(prematureEscape.status, "active", "escape objectives must reject fleeing before the exit is reached");
-assert.equal(prematureEscape.canonicalState.outcome, undefined);
+assert.equal(prematureEscape.status, "active", "terminal sessions stay active until the client acknowledges them");
+assert.equal(
+  prematureEscape.objectives?.[0]?.status,
+  "active",
+  "escape objectives must reject fleeing before the exit is reached",
+);
+assert.notEqual(prematureEscape.result?.outcome, "victory", "an unearned retreat must never award the escape victory");
+assert.equal(
+  prematureEscape.canonicalState.outcome,
+  "flee",
+  "a retreat must stay resolved instead of dropping the party back into the battle it fled",
+);
 
 const deadlineSession = classic({
   party: [unit("hero", "player", 1_000)],
@@ -734,7 +783,11 @@ const missedDeadline = resolveCombatSessionAction(deadlineSession, "missed-deadl
   type: "defend",
 });
 assert.equal(missedDeadline.objectives?.[0]?.status, "failed", "objective deadlines must fail unmet goals");
-assert.equal(missedDeadline.result?.outcome, "defeat");
+assert.equal(
+  missedDeadline.result,
+  undefined,
+  "a missed objective deadline must not hand the still-standing party a defeat",
+);
 
 const surviveDeadlineSession = classic({
   party: [unit("hero", "player", 1_000)],
@@ -760,6 +813,132 @@ assert.equal(
   survivedAtDeadline.objectives?.[0]?.status,
   "complete",
   "an objective completed on its deadline must win before the deadline failure is applied",
+);
+
+const misTargetedDefenceSession = classic({
+  party: [unit("hero", "player", 100)],
+  enemies: [unit("goblin", "enemy", 1)],
+});
+misTargetedDefenceSession.objectives = [
+  {
+    id: "defend-goblin",
+    kind: "defend",
+    label: "Protect the goblin",
+    targetIds: ["goblin"],
+    requiredProgress: 1,
+    progress: 0,
+    status: "active",
+  },
+];
+const misTargetedDefence = resolveCombatSessionAction(misTargetedDefenceSession, "kill-mistargeted-ward", {
+  ...attack,
+  targetId: "goblin",
+});
+assert.notEqual(
+  misTargetedDefence.objectives?.[0]?.status,
+  "failed",
+  "a defend target that resolved to an enemy must not fail the objective when the player kills it",
+);
+assert.equal(
+  misTargetedDefence.result?.outcome,
+  "victory",
+  "killing a mis-targeted protection target must still clear the battle",
+);
+
+const openCaptureSession = classic({
+  party: [unit("hero", "player", 100)],
+  enemies: [unit("goblin", "enemy", 1)],
+});
+openCaptureSession.objectives = [
+  { id: "banner", kind: "capture", label: "Raise the banner", requiredProgress: 3, progress: 0, status: "active" },
+];
+const openCapture = resolveCombatSessionAction(openCaptureSession, "wipe-with-open-capture", {
+  ...attack,
+  targetId: "goblin",
+});
+assert.equal(
+  openCapture.objectives?.[0]?.status,
+  "complete",
+  "an unfinished capture goal is moot once every hostile is down",
+);
+assert.equal(
+  openCapture.result?.outcome,
+  "victory",
+  "wiping the enemies must win the fight even when a maneuver-driven objective never progressed",
+);
+
+const expiredDeadlineSession = classic({
+  party: [unit("hero", "player", 100)],
+  enemies: [unit("goblin", "enemy", 1)],
+  round: 5,
+});
+expiredDeadlineSession.objectives = [
+  {
+    id: "interrupt-ritual",
+    kind: "interrupt",
+    label: "Interrupt the ritual",
+    requiredProgress: 1,
+    failAtRound: 2,
+    progress: 0,
+    status: "active",
+  },
+];
+const expiredDeadline = resolveCombatSessionAction(expiredDeadlineSession, "wipe-past-deadline", {
+  ...attack,
+  targetId: "goblin",
+});
+assert.notEqual(
+  expiredDeadline.objectives?.[0]?.status,
+  "failed",
+  "an objective deadline must not fire once there are no enemies left to run out of time against",
+);
+assert.equal(expiredDeadline.result?.outcome, "victory", "an expired deadline must not steal a cleared battlefield");
+
+const mixedObjectiveSession = classic(
+  {
+    party: [unit("hero", "player", 1_000)],
+    enemies: [{ ...unit("goblin", "enemy", 1_000), isBoss: true }],
+  },
+  [reinforcementPhase],
+);
+mixedObjectiveSession.objectives = [
+  {
+    id: "clear-field",
+    kind: "eliminate",
+    label: "Clear the field",
+    targetIds: ["goblin"],
+    includeReinforcements: true,
+    progress: 0,
+    status: "active",
+  },
+  {
+    id: "banner",
+    kind: "capture",
+    label: "Raise the banner",
+    includeReinforcements: true,
+    requiredProgress: 1,
+    progress: 1,
+    status: "complete",
+  },
+];
+const mixedTelegraph = resolveCombatSessionAction(mixedObjectiveSession, "mixed-warning", {
+  style: "classic",
+  type: "defend",
+});
+const mixedReinforcement = resolveCombatSessionAction(
+  advanceClassic(mixedObjectiveSession, mixedTelegraph),
+  "mixed-reinforce",
+  { style: "classic", type: "defend" },
+);
+assert.equal(
+  mixedReinforcement.canonicalState.enemies.some((enemy) => enemy.id === "reinforcement-1"),
+  true,
+  "the reinforcement fixture must actually spawn its hostile",
+);
+assert.equal(
+  mixedReinforcement.objectives?.find((objective) => objective.id === "banner")?.status,
+  "complete",
+  "hostile reinforcements must not un-complete objectives they cannot reopen",
 );
 
 const convertedTriggers = combatBossPhasesFromMechanics([

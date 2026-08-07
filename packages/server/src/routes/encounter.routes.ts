@@ -391,7 +391,8 @@ function buildInitPrompt(
   inst += `    {"name":"Inventory item name","target":"self|ally|enemy|any","type":"heal|damage|buff|debuff|status|utility","description":"what this item does in this fight","power":0.3,"element":"optional","status":{"name":"Wet","emoji":"💧","duration":2,"modifier":-2,"stat":"defense"},"consumes":true}\n`;
   inst += `  ],\n`;
   inst += `  "objectives": [\n`;
-  inst += `    {"id":"short-stable-id","kind":"eliminate|survive_rounds|escape|defend|escort|capture|interrupt|conditional_eliminate","label":"Player-facing goal","targetNames":["Exact combatant name"],"requiredProgress":1,"failAtRound":10,"condition":"optional concise rule"}\n`;
+  inst += `    {"id":"short-stable-id","kind":"eliminate|survive_rounds|escape|defend|escort|capture|interrupt|conditional_eliminate","label":"Player-facing goal","targetNames":["Exact combatant name"],"requiredProgress":1,"condition":"optional concise rule"},\n`;
+  inst += `    {"id":"hold-the-bridge","kind":"survive_rounds","label":"Only time-pressure goals add a deadline","requiredProgress":3,"failAtRound":6}\n`;
   inst += `  ],\n`;
   inst += `  "mechanics": [\n`;
   inst += `    {"name":"Boss mechanic name","description":"clear rule and stakes","ownerName":"Boss name","trigger":"round_interval|hp_threshold|on_hit|on_attack|passive","interval":5,"hpThreshold":50,"counterplay":"how the player can respond","effectType":"damage_all|damage_one|buff_self|debuff_party|status_party|status_enemy|summon_reinforcements","power":0.45,"element":"optional","status":{"name":"Stunned","emoji":"⚡","duration":1,"modifier":-3,"stat":"speed"},"reinforcements":[{"name":"Enemy Reinforcement","hp":25,"maxHp":25,"attack":8,"defense":5,"speed":6,"level":1,"side":"enemy"}]}\n`;
@@ -406,7 +407,9 @@ function buildInitPrompt(
   inst += `- allies: include ${personaName} and any party members or nearby NPCs clearly fighting on ${personaName}'s side. Give allies battle-specific attacks inspired by their cards/context.\n`;
   inst += `- enemies: weak enemies can have one simple attack; bosses and elites should have multiple attacks and one memorable mechanic.\n`;
   inst += `- items: DO NOT invent inventory. itemEffects must only describe how existing inventory items from context work in this encounter. Examples: potion heals, bottle of alcohol can wet/prime a target for fire.\n`;
-  inst += `- objectives: include one or more goals that match the scene. Use eliminate for ordinary fights. Use exact party/enemy names in targetNames for defend, escort, or targeted elimination. requiredProgress is the number of rounds/interactions/targets required.\n`;
+  inst += `- objectives: include one or more goals that match the scene. Use eliminate for ordinary fights. Use exact party/enemy names in targetNames for defend, escort, or targeted elimination. requiredProgress is the number of rounds/interactions/targets required. The two entries above are format examples, not a required pair — emit only the goals this scene actually needs.\n`;
+  inst += `- objectives.targetNames: defend and escort protect ALLIES, so their targetNames must name party members or friendly NPCs, never an enemy.\n`;
+  inst += `- objectives.failAtRound: OPTIONAL and rare. Add it ONLY when the goal is explicitly against the clock (survive_rounds, a ritual to interrupt, a timed escape). Omit it entirely for eliminate, defend, escort, capture, and conditional_eliminate goals — an objective without failAtRound simply has no deadline.\n`;
   inst += `- mechanics: use sparingly. Boss charge attacks should include interval, counterplay, effectType, and a matching dialogueCue with trigger "charge". Use summon_reinforcements only when a phase explicitly calls new combatants into the fight, and keep the list small.\n`;
   inst += `- dialogueCues: optional, short, and only for named allies, named enemies, bosses, or important NPCs. Generic unnamed enemies should not get voiced lines.\n`;
   inst += `- visuals: set isBossFight true only for bosses/story-significant enemies. backgroundPrompt/illustrationPrompt are optional and only for important fights.\n`;

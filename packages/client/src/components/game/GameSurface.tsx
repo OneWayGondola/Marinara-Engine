@@ -898,8 +898,17 @@ function generatedCombatObjectives(
     idsByName.set(key, [...(idsByName.get(key) ?? []), combatant.id]);
   }
   const enemyIds = combatants.filter((combatant) => combatant.side === "enemy").map((combatant) => combatant.id);
+  const partyIds = new Set(
+    combatants.filter((combatant) => combatant.side !== "enemy").map((combatant) => combatant.id),
+  );
   return objectives.slice(0, 20).map((objective, index) => {
-    const targetIds = objective.targetNames?.flatMap((name) => idsByName.get(normalizeTextForMatch(name)) ?? []);
+    const protection = objective.kind === "defend" || objective.kind === "escort";
+    const resolvedTargetIds = objective.targetNames?.flatMap(
+      (name) => idsByName.get(normalizeTextForMatch(name)) ?? [],
+    );
+    // A generated defend/escort target that matched an enemy would fail the fight
+    // the moment the player killed it, so protection goals keep allies only.
+    const targetIds = protection ? resolvedTargetIds?.filter((id) => partyIds.has(id)) : resolvedTargetIds;
     const elimination = objective.kind === "eliminate" || objective.kind === "conditional_eliminate";
     const fallbackToAllEnemies = elimination && (!targetIds || targetIds.length === 0);
     return {
