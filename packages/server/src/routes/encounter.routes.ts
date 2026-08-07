@@ -656,6 +656,16 @@ export async function encounterRoutes(app: FastifyInstance) {
         result.content ?? "",
       );
 
+      if (result.finishReason === "error") {
+        logger.warn(
+          { chatId, provider: conn.provider, model: conn.model, chars: result.content?.length ?? 0 },
+          "[game/combat:init] LLM stream failed mid-response; blueprint is incomplete",
+        );
+        return reply
+          .status(502)
+          .send({ error: "Encounter init failed: the AI provider connection dropped mid-response" });
+      }
+
       if (!result.content) {
         return reply.status(502).send({ error: "No response from AI" });
       }
