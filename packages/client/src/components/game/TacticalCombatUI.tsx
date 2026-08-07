@@ -564,7 +564,9 @@ export function TacticalCombatUI({
 
   useEffect(() => {
     const session = activeSessionQuery.data?.session;
-    if (!session || session.style !== "tactical") return;
+    // The active-session endpoint falls back to the latest completed session for
+    // refresh recovery — a finished battle must never hydrate as a live one.
+    if (!session || session.style !== "tactical" || session.status !== "active") return;
     const hydrationKey = `${session.sessionId}:${session.revision}`;
     if (hydratedSessionRevisionRef.current === hydrationKey) return;
     hydratedSessionRevisionRef.current = hydrationKey;
@@ -660,11 +662,13 @@ export function TacticalCombatUI({
   // ── Start a fresh battle (unless restoring) ──
   useEffect(() => {
     if (initialState) return; // restored — do not re-create
+    // Only a live session suppresses the launch: the active-session endpoint falls
+    // back to the latest completed session, and that corpse must not block a new fight.
     if (
       sessionId ||
       activeSessionQuery.isPending ||
       activeSessionQuery.isFetching ||
-      activeSessionQuery.data?.session ||
+      activeSessionQuery.data?.session?.status === "active" ||
       launchRequestedForChatRef.current === chatId
     ) {
       return;

@@ -183,6 +183,10 @@ const tacticalCombatUiSource = readFileSync(
   new URL("../../packages/client/src/components/game/TacticalCombatUI.tsx", import.meta.url),
   "utf8",
 );
+const gameCombatUiSource = readFileSync(
+  new URL("../../packages/client/src/components/game/GameCombatUI.tsx", import.meta.url),
+  "utf8",
+);
 assert.equal(
   (routesSource.match(/await syncCombatInventory\(/g) ?? []).length,
   2,
@@ -267,6 +271,24 @@ assert.doesNotMatch(
   tacticalCombatUiSource,
   /\[chatId, updateMeta\]/,
   "Tactical snapshot persistence must not depend on the unstable mutation result object",
+);
+// The active-session endpoint falls back to the latest completed session so a
+// refresh can recover the aftermath. Battle components must never treat that
+// corpse as a live fight, or the next encounter replays the previous result.
+assert.match(
+  tacticalCombatUiSource,
+  /session\.style !== "tactical" \|\| session\.status !== "active"/,
+  "a completed session must never hydrate the Tactical battle component as a live fight",
+);
+assert.match(
+  tacticalCombatUiSource,
+  /activeSessionQuery\.data\?\.session\?\.status === "active"/,
+  "only an active session may suppress launching a fresh Tactical battle",
+);
+assert.match(
+  gameCombatUiSource,
+  /session\.style !== "classic" \|\| session\.status !== "active"/,
+  "a completed session must never hydrate the Classic battle component as a live fight",
 );
 
 assert.throws(

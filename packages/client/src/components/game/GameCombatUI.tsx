@@ -712,7 +712,9 @@ export function GameCombatUI({
 
   useEffect(() => {
     const session = activeSessionQuery.data?.session;
-    if (!session || session.style !== "classic") return;
+    // The active-session endpoint falls back to the latest completed session for
+    // refresh recovery — a finished battle must never hydrate as a live one.
+    if (!session || session.style !== "classic" || session.status !== "active") return;
     setCombatSessionId(session.sessionId);
     setCombatRevision(session.revision);
     setObjectives(session.objectives);
