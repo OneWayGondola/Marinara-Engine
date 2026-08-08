@@ -84,6 +84,7 @@ export function createPromptsStorage(db: DB) {
         id,
         name: input.name,
         description: input.description ?? "",
+        imagePath: input.imagePath ?? null,
         conversationPrompt: input.conversationPrompt ?? "",
         gamePrompt: input.gamePrompt ?? "",
         sectionOrder: JSON.stringify([]),
@@ -104,6 +105,7 @@ export function createPromptsStorage(db: DB) {
       const updateFields: Record<string, unknown> = { updatedAt: now() };
       if (data.name !== undefined) updateFields.name = data.name;
       if (data.description !== undefined) updateFields.description = data.description;
+      if (data.imagePath !== undefined) updateFields.imagePath = data.imagePath;
       if (data.conversationPrompt !== undefined) updateFields.conversationPrompt = data.conversationPrompt;
       if (data.gamePrompt !== undefined) updateFields.gamePrompt = data.gamePrompt;
       if (data.sectionOrder !== undefined) updateFields.sectionOrder = JSON.stringify(data.sectionOrder);
@@ -148,6 +150,7 @@ export function createPromptsStorage(db: DB) {
       const newPreset = await this.create({
         name: `${preset.name} (Copy)`,
         description: preset.description,
+        imagePath: preset.imagePath,
         conversationPrompt: preset.conversationPrompt,
         gamePrompt: preset.gamePrompt,
         variableGroups: JSON.parse(preset.variableGroups as string),

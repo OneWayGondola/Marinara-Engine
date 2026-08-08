@@ -19,10 +19,7 @@ import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../generation/
 import { clampGenerationMaxOutputTokens } from "../generation/output-token-limits.js";
 import { parseGameJsonish } from "../game/jsonish.js";
 import { withConnectionFallbackProvider } from "../llm/connection-fallback-provider.js";
-import {
-  isConnectionAdmissionFailure,
-  type ConnectionAdmissionMode,
-} from "../generation/connection-admission.js";
+import { isConnectionAdmissionFailure, type ConnectionAdmissionMode } from "../generation/connection-admission.js";
 import type { ChatMessage } from "../llm/base-provider.js";
 import { createLLMProvider } from "../llm/provider-registry.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
@@ -138,10 +135,16 @@ export async function noodlerPublicIdentityFor(
   publicAccount: NoodleAccount | null,
 ): Promise<PublicIdentity | null> {
   if (!publicAccount) return null;
-  return buildNoodlerPublicIdentity(
-    publicAccount,
-    publicAccount.kind === "character" ? await createCharactersStorage(db).getById(publicAccount.entityId) : null,
-  );
+  const characters = createCharactersStorage(db);
+  const source =
+    publicAccount.kind === "character"
+      ? await characters.getById(publicAccount.entityId)
+      : publicAccount.kind === "persona"
+        ? await characters
+            .getPersona(publicAccount.entityId)
+            .then((persona) => (persona ? { data: { name: persona.name } } : null))
+        : null;
+  return buildNoodlerPublicIdentity(publicAccount, source);
 }
 
 export async function resolveNoodlerPublicIdentity(
@@ -149,7 +152,10 @@ export async function resolveNoodlerPublicIdentity(
   account: Pick<NoodleAccount, "noodleAccountId">,
 ): Promise<PublicIdentity | null> {
   const noodle = createNoodleStorage(db);
-  return noodlerPublicIdentityFor(db, account.noodleAccountId ? await noodle.getAccountById(account.noodleAccountId) : null);
+  return noodlerPublicIdentityFor(
+    db,
+    account.noodleAccountId ? await noodle.getAccountById(account.noodleAccountId) : null,
+  );
 }
 
 export function stageProfileContainsPublicIdentity(
@@ -253,7 +259,11 @@ export function buildNoodlerPostMessages(input: {
 }
 
 function parseNoodlerPost(content: string) {
-  return noodleGeneratedNoodlerPostSchema.parse(parseGameJsonish(content));
+  const parsed = parseGameJsonish(content);
+  // Many LLMs (especially local models via Ollama/KoboldCPP) wrap the expected object
+  // in an array ([{"title":...}]) regardless of the prompt instructing "one JSON object".
+  // Unwrap the common single-item array response while preserving validation for other shapes.
+  return noodleGeneratedNoodlerPostSchema.parse(Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed);
 }
 
 export async function generateNoodlerPost(
@@ -321,11 +331,7 @@ export async function generateNoodlerPost(
     }),
     temperature: 0.9,
     topP: 0.95,
-    ...resolveStoredChatOptions(
-      input.connection.defaultParameters,
-      input.connection.provider,
-      input.connection.model,
-    ),
+    ...resolveStoredChatOptions(input.connection.defaultParameters, input.connection.provider, input.connection.model),
     stream: false,
     debugMode,
     responseFormat: noodleResponseFormat(input.connection.model, "noodler_post"),
@@ -404,7 +410,12 @@ export async function generateNoodlerPost(
   }
 
   const persist = async (
-    extra: { id?: string; imagePrompt?: string | null; imageUrl?: string | null; metadata?: Record<string, unknown> } = {},
+    extra: {
+      id?: string;
+      imagePrompt?: string | null;
+      imageUrl?: string | null;
+      metadata?: Record<string, unknown>;
+    } = {},
   ): Promise<NoodlerManagedPost> => {
     const post = await noodle.createNoodlerPost({
       ...baseInput,

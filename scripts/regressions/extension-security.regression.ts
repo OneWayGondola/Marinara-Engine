@@ -133,8 +133,8 @@ assert.doesNotMatch(clientContributionPanelSource, /dangerouslySetInnerHTML|inne
 assert.match(clientContributionPanelSource, /aria-label=\{element\.label \? undefined :/u);
 assert.match(clientContributionPanelSource, /\[activePanelKey, defaultsKey\]/u);
 assert.doesNotMatch(clientContributionPanelSource, /\[activePanelKey, defaultsKey, elements\]/u);
-assert.match(clientHooksSource, /refetchInterval:\s*2_000/u);
-assert.match(clientHooksSource, /refetchIntervalInBackground:\s*true/u);
+assert.doesNotMatch(clientHooksSource, /refetchInterval/u);
+assert.match(clientHooksSource, /staleTime:\s*30_000/u);
 assert.match(routeSource, /worker-src blob:/u);
 assert.match(routeSource, /connect-src 'none'/u);
 assert.match(routeSource, /new Worker\(workerUrl\)/u);

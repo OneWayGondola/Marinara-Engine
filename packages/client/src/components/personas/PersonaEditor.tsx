@@ -216,51 +216,20 @@ interface PersonaFormData {
   dialogueColor: string;
   boxColor: string;
   trackerCardColors: TrackerCardColorConfig;
-  personaStats: string;
+  /** Status bars + RPG stats, kept decoded in form state; serialized at save/snapshot boundaries. */
+  personaStats: PersonaStatsConfig | null;
   tags: string[];
-  savedStatusOptions: string;
+  /** Saved Conversation mode activity/status options, kept decoded in form state. */
+  savedStatusOptions: string[];
   /** Conversation-mode-only fields. */
   convoDisplayName: string;
   aboutMe: string;
   convoBehavior: ConvoBehaviorConfig | null;
-  /** Avatar crop region (parsed from the persona row's JSON-encoded `avatarCrop`).
+  /** Avatar crop region (hydrated from the decoded Persona; kept decoded in form
+   *  state and serialized back to JSON at save/snapshot boundaries).
    *  May be the current source-relative shape, the legacy zoom+offset shape (held
    *  through until the user re-edits via the cropper), or null when unset. */
   avatarCrop: AvatarCrop | null;
-}
-
-interface PersonaRow {
-  id: string;
-  name: string;
-  comment?: string;
-  phoneticName?: string;
-  creator?: string;
-  personaVersion?: string;
-  creatorNotes?: string;
-  entitySummary?: string;
-  entitySummaryGeneratedAt?: string | null;
-  entitySummarySource?: "ai" | "manual" | null;
-  entitySummaryContentHash?: string | null;
-  entitySummaryProjectionVersion?: number | null;
-  description: string;
-  personality: string;
-  scenario: string;
-  backstory: string;
-  appearance: string;
-  avatarPath: string | null;
-  /** JSON-encoded AvatarCrop, or empty string when unset. */
-  avatarCrop?: string;
-  isActive: string | boolean;
-  nameColor?: string;
-  dialogueColor?: string;
-  boxColor?: string;
-  trackerCardColors?: string;
-  personaStats?: string;
-  tags?: string;
-  savedStatusOptions?: string;
-  convoDisplayName?: string;
-  aboutMe?: string;
-  convoBehavior?: string;
 }
 
 function appendNewTags(existingTags: string[], rawInput: string) {
@@ -431,17 +400,17 @@ function PersonaGalleryTab({ personaId, personaName }: { personaId: string; pers
           />
 
           {isLoading ? (
-            <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="shimmer aspect-square rounded-xl" />
               ))}
             </div>
           ) : images && images.length > 0 ? (
-            <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4">
               {images.map((image) => (
                 <div
                   key={image.id}
-                  className="group relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] transition-all hover:border-[var(--primary)]/30 hover:shadow-md"
+                  className="mari-gallery-card group relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] transition-all hover:border-[var(--primary)]/30 hover:shadow-md"
                 >
                   <CustomEmojiTagButton image={image} onApply={(patch) => tag.mutate({ imageId: image.id, patch })} />
                   <button
@@ -452,14 +421,16 @@ function PersonaGalleryTab({ personaId, personaName }: { personaId: string; pers
                     <img
                       src={image.url}
                       alt={image.prompt || personaName || "Persona image"}
+                      loading="lazy"
+                      decoding="async"
                       className="h-full w-full object-cover"
                     />
                   </button>
-                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 via-black/25 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
-                    <span className="max-w-[8rem] truncate text-[0.6875rem] font-medium text-white/85">
+                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 via-black/25 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100 group-[&:focus-within]:opacity-100 max-md:opacity-100">
+                    <span className="max-w-[8rem] truncate text-[0.6875rem] font-medium text-white/85 max-md:hidden">
                       {new Date(image.createdAt).toLocaleDateString()}
                     </span>
-                    <div className="flex gap-1">
+                    <div className="ml-auto flex gap-1">
                       <button
                         type="button"
                         onClick={() => void handleSetAvatar(image)}
@@ -542,6 +513,15 @@ function PersonaGalleryTab({ personaId, personaName }: { personaId: string; pers
               >
                 <Download size="0.875rem" />
               </a>
+              <button
+                type="button"
+                onClick={() => void handleDelete(lightbox)}
+                className="rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-black/80"
+                title={localizeUi("lorebook.editor.batch.delete")}
+                aria-label={localizeUi("lorebook.editor.batch.delete")}
+              >
+                <Trash2 size="0.875rem" />
+              </button>
               <button
                 type="button"
                 onClick={() => setLightbox(null)}
@@ -971,22 +951,8 @@ function PersonaClipCard({
   );
 }
 
-function parsePersonaRpgStats(personaStats: string): RPGStatsConfig | undefined {
-  if (!personaStats.trim()) return undefined;
-
-  try {
-    const parsed = JSON.parse(personaStats) as { rpgStats?: RPGStatsConfig } | null;
-    if (!parsed || typeof parsed !== "object" || !parsed.rpgStats || typeof parsed.rpgStats !== "object") {
-      return undefined;
-    }
-    return parsed.rpgStats;
-  } catch {
-    return undefined;
-  }
-}
-
 function createCharacterDataFromPersona(formData: PersonaFormData): CharacterData {
-  const rpgStats = parsePersonaRpgStats(formData.personaStats);
+  const rpgStats = formData.personaStats?.rpgStats;
 
   return {
     name: formData.name.trim(),
@@ -1063,10 +1029,13 @@ export function PersonaEditor() {
     Array.isArray(connectionsList) &&
     (connectionsList as Array<{ provider?: string }>).some((connection) => connection.provider === "image_generation");
 
-  // Find the persona from the list
-  const rawPersona = (allPersonas as PersonaRow[] | undefined)?.find((p) => p.id === personaId);
+  // Find the persona from the decoded list returned by usePersonas.
+  const rawPersona = allPersonas?.find((p) => p.id === personaId);
 
-  // Parse persona into form data when it first loads (or when switching personas).
+  // Hydrate the form from the shared decoded persona when it first loads (or when
+  // switching personas). usePersonas returns projected Persona values, so all
+  // JSON-backed fields are already decoded here; they are re-serialized only at
+  // the save/snapshot boundaries below.
   // Important: don't overwrite local unsaved edits if server data refetches (e.g. after avatar upload).
   useEffect(() => {
     if (!rawPersona) return;
@@ -1077,9 +1046,9 @@ export function PersonaEditor() {
     loadedPersonaIdRef.current = rawPersona.id;
 
     // Defensive: accept either the current source-relative shape or the legacy
-    // zoom+offset shape (JSON-encoded on the persona row). Anything malformed
-    // is silently dropped so the editor falls back to defaults instead of
-    // producing NaN transforms or an off-screen overlay.
+    // zoom+offset shape (already decoded by the persona projector). Anything
+    // malformed is silently dropped so the editor falls back to defaults instead
+    // of producing NaN transforms or an off-screen overlay.
     const parsedAvatarCrop = normalizeAvatarCrop(rawPersona.avatarCrop);
 
     const trackerCardColors = parseTrackerCardColorConfig(rawPersona.trackerCardColors);
@@ -1105,26 +1074,12 @@ export function PersonaEditor() {
       dialogueColor: rawPersona.dialogueColor ?? "",
       boxColor: rawPersona.boxColor ?? "",
       trackerCardColors,
-      personaStats: rawPersona.personaStats ?? "",
-      tags: (() => {
-        try {
-          return rawPersona.tags ? JSON.parse(rawPersona.tags) : [];
-        } catch {
-          return [];
-        }
-      })(),
-      savedStatusOptions: rawPersona.savedStatusOptions ?? "[]",
+      personaStats: rawPersona.personaStats ?? null,
+      tags: rawPersona.tags ?? [],
+      savedStatusOptions: rawPersona.savedStatusOptions ?? [],
       convoDisplayName: rawPersona.convoDisplayName ?? "",
       aboutMe: rawPersona.aboutMe ?? "",
-      convoBehavior: (() => {
-        if (!rawPersona.convoBehavior?.trim()) return null;
-        try {
-          const parsed = JSON.parse(rawPersona.convoBehavior) as ConvoBehaviorConfig;
-          return parsed && typeof parsed.instruction === "string" ? parsed : null;
-        } catch {
-          return null;
-        }
-      })(),
+      convoBehavior: rawPersona.convoBehavior ?? null,
       avatarCrop: parsedAvatarCrop,
     });
     setAvatarPreview(rawPersona.avatarPath);
@@ -1149,6 +1104,8 @@ export function PersonaEditor() {
     try {
       const {
         tags,
+        personaStats,
+        savedStatusOptions,
         avatarCrop,
         convoBehavior,
         trackerCardColors,
@@ -1165,7 +1122,11 @@ export function PersonaEditor() {
         id: personaId,
         ...rest,
         ...(entitySummary !== loadedEntitySummaryRef.current ? { entitySummary } : {}),
+        // The Part 2 PATCH/storage contract stays serialized: every JSON-backed
+        // value is encoded exactly once at this write boundary.
         tags: JSON.stringify(tags),
+        personaStats: personaStats ? JSON.stringify(personaStats) : "",
+        savedStatusOptions: JSON.stringify(savedStatusOptions),
         ...(trackerCardColorsChanged ? { trackerCardColors: serializedTrackerCardColors } : {}),
         // Persist as JSON string; empty string means "no crop" so the row keeps
         // the legacy default in render sites.
@@ -2576,10 +2537,6 @@ function PersonaColorsTab({
 
 // ── Persona Stats Tab ──
 
-interface PersonaStatsData extends PersonaStatsConfig {
-  rpgStats?: RPGStatsConfig;
-}
-
 const DEFAULT_RPG_STATS: RPGStatsConfig = {
   enabled: false,
   attributes: [
@@ -2594,7 +2551,7 @@ const DEFAULT_RPG_STATS: RPGStatsConfig = {
   pools: createDefaultRpgStatPools(),
 };
 
-const DEFAULT_PERSONA_STATS: PersonaStatsData = {
+const DEFAULT_PERSONA_STATS: PersonaStatsConfig = {
   enabled: false,
   bars: [
     { name: "Satiety", value: 100, max: 100, color: "#f59e0b" },
@@ -2623,18 +2580,12 @@ function PersonaStatsTab({
   updateField: <K extends keyof PersonaFormData>(key: K, value: PersonaFormData[K]) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const parsed: PersonaStatsData = formData.personaStats
-    ? (() => {
-        try {
-          return JSON.parse(formData.personaStats) as PersonaStatsData;
-        } catch {
-          return DEFAULT_PERSONA_STATS;
-        }
-      })()
-    : DEFAULT_PERSONA_STATS;
+  // Form state keeps personaStats decoded (hydrated from the projected Persona);
+  // serialization happens only at the save/snapshot boundaries.
+  const parsed = formData.personaStats ?? DEFAULT_PERSONA_STATS;
 
-  const save = (next: PersonaStatsData) => {
-    updateField("personaStats", JSON.stringify(next));
+  const save = (next: PersonaStatsConfig) => {
+    updateField("personaStats", next);
   };
 
   const updateStatIcons = (statIcons: NonNullable<TrackerCardColorConfig["statIcons"]>) => {
@@ -3258,9 +3209,9 @@ function buildCurrentPersonaSnapshot(formData: PersonaFormData): PersonaCardSnap
     dialogueColor: formData.dialogueColor,
     boxColor: formData.boxColor,
     trackerCardColors: serializeTrackerCardColorConfig(formData.trackerCardColors),
-    personaStats: formData.personaStats,
+    personaStats: formData.personaStats ? JSON.stringify(formData.personaStats) : "",
     tags: JSON.stringify(formData.tags),
-    savedStatusOptions: formData.savedStatusOptions,
+    savedStatusOptions: JSON.stringify(formData.savedStatusOptions),
     convoDisplayName: formData.convoDisplayName,
     aboutMe: formData.aboutMe,
     convoBehavior:

@@ -12,7 +12,12 @@ import { refreshCapabilityAgentRegistry } from "../services/capability-packages/
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 
-const packageParams = z.object({ id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });
+const packageParams = z.object({
+  id: z
+    .string()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+    .max(80),
+});
 const packageVersion = z
   .string()
   .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/)
@@ -39,7 +44,12 @@ export function buildCapabilityAgentCleanupPatch(
   const filteredActiveAgentIds = activeAgentIds.filter((agentId) => !agentIds.has(agentId));
   if (filteredActiveAgentIds.length !== activeAgentIds.length) patch.activeAgentIds = filteredActiveAgentIds;
 
-  for (const key of ["agentOverrides", "agentPromptTemplateIds", "knowledgeAgentSources"] as const) {
+  for (const key of [
+    "agentOverrides",
+    "agentPromptTemplateIds",
+    "knowledgeAgentSources",
+    "customAgentImageSettings",
+  ] as const) {
     const filtered = removeAgentMapEntries(metadata[key], agentIds);
     if (filtered) patch[key] = filtered;
   }
@@ -103,7 +113,8 @@ export async function capabilityPackagesRoutes(app: FastifyInstance) {
       let metadata: Record<string, unknown> = {};
       try {
         const parsed = typeof chat.metadata === "string" ? (JSON.parse(chat.metadata) as unknown) : chat.metadata;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) metadata = parsed as Record<string, unknown>;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+          metadata = parsed as Record<string, unknown>;
       } catch {
         continue;
       }

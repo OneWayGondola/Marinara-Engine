@@ -102,7 +102,7 @@
 
 ## Latest Release
 
-Current stable release: **[v2.4.1](https://github.com/Pasta-Devs/Marinara-Engine/releases/tag/v2.4.1)**.
+Current stable release: **[v2.4.2](https://github.com/Pasta-Devs/Marinara-Engine/releases/tag/v2.4.2)**.
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes. Tagged releases use the `vX.Y.Z` format and are published on the [Releases](https://github.com/Pasta-Devs/Marinara-Engine/releases) page with a Windows installer, Android bootstrap APK, and named versioned source ZIP. Android APKs are Termux bootstrap + WebView shells: they can download Termux from F-Droid, launch Android's installer, start the Termux setup flow after required permission prompts, then open the local Marinara server on the same device.
 

@@ -44,6 +44,12 @@ export type GameStoryboardPromptPreviewItem = {
   height: number;
 };
 
+export type GameStoryboardPromptPreviewResult = {
+  items: GameStoryboardPromptPreviewItem[];
+  plannedStoryboard: unknown;
+  plannerWarning: string | null;
+};
+
 const RENDERING_STORYBOARD_STATUSES = new Set(["planning", "rendering_images", "rendering_videos"]);
 
 export function isGameTurnStoryboardRendering(storyboard: GameTurnStoryboard | null | undefined): boolean {
@@ -112,7 +118,7 @@ export function useGenerateGameTurnStoryboard() {
 export function usePreviewGameTurnStoryboardPrompts() {
   return useMutation({
     mutationFn: (input: GenerateGameTurnStoryboardInput) =>
-      api.post<{ items: GameStoryboardPromptPreviewItem[]; plannedStoryboard: unknown }>("/game/storyboard/generate", {
+      api.post<GameStoryboardPromptPreviewResult>("/game/storyboard/generate", {
         ...input,
         previewOnly: true,
       }),

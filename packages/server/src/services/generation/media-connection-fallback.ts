@@ -27,8 +27,7 @@ function resolveConnectionVideoComfyDefaults(connection: { defaultParameters?: u
     }
   }
   if (!root || typeof root !== "object" || Array.isArray(root)) return null;
-  return normalizeVideoGenerationProfile((root as Record<string, unknown>)[VIDEO_DEFAULTS_STORAGE_KEY]).profile
-    .comfyui;
+  return normalizeVideoGenerationProfile((root as Record<string, unknown>)[VIDEO_DEFAULTS_STORAGE_KEY]).profile.comfyui;
 }
 
 export async function resolveImageConnectionFallback(
@@ -40,7 +39,9 @@ export async function resolveImageConnectionFallback(
   const baseUrl = resolveBaseUrl(connection);
   if (!baseUrl) return undefined;
   const model = String(connection.model ?? "").trim();
-  const explicitSource = String(connection.imageGenerationSource ?? connection.imageService ?? "").trim();
+  const imageGenerationSource = String(connection.imageGenerationSource ?? "").trim();
+  const imageService = String(connection.imageService ?? "").trim();
+  const explicitSource = imageGenerationSource || imageService;
   const source = explicitSource || inferImageSource(model, baseUrl);
   return {
     connectionId: connection.id,
@@ -54,6 +55,8 @@ export async function resolveImageConnectionFallback(
     imageEndpointId: connection.imageEndpointId || undefined,
     comfyWorkflow: connection.comfyuiWorkflow || undefined,
     imageDefaults: resolveConnectionImageDefaults(connection),
+    ...(imageGenerationSource ? { imageGenerationSource } : {}),
+    ...(imageService ? { imageService } : {}),
   };
 }
 

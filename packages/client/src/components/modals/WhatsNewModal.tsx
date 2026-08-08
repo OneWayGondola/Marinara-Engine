@@ -47,6 +47,11 @@ function localizedCopy(key: string): ReleaseCopy {
 // Add each release here before its version ships. Versions without a tailored
 // entry still get a one-time update notice and a link to their full release.
 const RELEASE_ANNOUNCEMENTS: Record<string, ReleaseAnnouncement> = {
+  "2.4.1": {
+    headline: localizedCopy("ui.modals.whatsnewmodal.release241.headline"),
+    intro: localizedCopy("ui.modals.whatsnewmodal.release241.intro"),
+    highlights: [],
+  },
   "2.4.0": {
     headline: localizedCopy("ui.modals.whatsnewmodal.release240.headline"),
     highlights: [],

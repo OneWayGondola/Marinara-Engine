@@ -40,6 +40,7 @@ import { sidecarProcessService } from "./services/sidecar/sidecar-process.servic
 import { startServerAutonomousScheduler } from "./services/conversation/server-autonomous-scheduler.service.js";
 import { startNoodleRefreshScheduler } from "./services/noodle/noodle-refresh-scheduler.service.js";
 import { startNoodleAutoPostScheduler } from "./services/noodle/noodle-autopost-scheduler.service.js";
+import { startNoodlerFanActivityScheduler } from "./services/noodle/noodle-fan-activity-scheduler.service.js";
 import { preparePersonalExtensionTrust } from "./services/setup/personal-extension-trust.js";
 import { personalServerExtensionRuntime } from "./services/extensions/personal-server-extension-runtime.js";
 import { runWithGenerationFallbackNotifier } from "./services/generation/fallback-notification.js";
@@ -234,6 +235,9 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // ── NoodleR per-creator automatic-posting scheduler ──
   startNoodleAutoPostScheduler(app);
 
+  // ── NoodleR synthetic audience activity scheduler ──
+  startNoodlerFanActivityScheduler(app);
+
   // ── Sidecar bootstrap (background, skipped in lite mode) ──
   if (!isLite) {
     void sidecarProcessService
@@ -246,7 +250,8 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   // ── Serve client build in production ──
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const clientDist = resolve(__dirname, "..", "..", "client", "dist");
-  if (existsSync(clientDist)) {
+  const clientIndex = resolve(clientDist, "index.html");
+  if (existsSync(clientIndex)) {
     await app.register(fastifyStatic, createClientStaticOptions(clientDist));
 
     // SPA fallback — serve index.html for non-API routes
@@ -261,7 +266,10 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
       return reply.sendFile("index.html", clientDist);
     });
   } else {
-    app.log.warn("Client build not found at %s; serving API only. Run `pnpm build` to build the frontend.", clientDist);
+    app.log.warn(
+      "Client build entry not found at %s; serving API only. Run `pnpm build` to build the frontend.",
+      clientIndex,
+    );
   }
 
   // ── Health Check ──

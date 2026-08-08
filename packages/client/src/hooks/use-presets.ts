@@ -77,6 +77,20 @@ export function useUpdatePreset() {
   });
 }
 
+export function useUploadPresetImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, image }: { id: string; image: string }) =>
+      api.post<PromptPreset>(`/prompts/${id}/image`, { image }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: presetKeys.list() });
+      qc.invalidateQueries({ queryKey: presetKeys.detail(variables.id) });
+      qc.invalidateQueries({ queryKey: presetKeys.full(variables.id) });
+      qc.invalidateQueries({ queryKey: presetKeys.default() });
+    },
+  });
+}
+
 export function useDeletePreset() {
   const qc = useQueryClient();
   return useMutation({

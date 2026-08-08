@@ -72,7 +72,7 @@ export function createLocalSidecarGenerationConnection(): LocalSidecarGeneration
     defaultParameters: null,
     promptPresetId: null,
     maxTokensOverride: null,
-    maxParallelJobs: 1,
+    maxParallelJobs: config.maxParallelJobs,
     treatAsLocalEndpoint: "true",
     claudeFastMode: "false",
     folderId: null,

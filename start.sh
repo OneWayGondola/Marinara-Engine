@@ -215,11 +215,37 @@ elif [ -d ".git" ]; then
         STASH_REF=""
         SKIP_UPDATE_FOR_LOCAL_CHANGES=0
         DATA_SNAPSHOT_READY=0
-        if node scripts/protect-launcher-data.mjs snapshot; then
-            DATA_SNAPSHOT_READY=1
+        # Never auto-move onto a build whose storage format predates the data
+        # on disk - it would silently show empty chat history (#4708). Checked
+        # BEFORE the snapshot: a blocked target stays blocked on every launch,
+        # and re-copying the whole data directory each time serves nothing.
+        if [ -n "$TARGET_HEAD" ]; then
+            # Exit 2 = real format block; any other failure means the check
+            # itself could not run. Both skip the update (fail-safe), but the
+            # user must be able to tell the two apart. The || capture keeps a
+            # non-zero status from killing the launcher under set -e.
+            CHECK_TARGET_STATUS=0
+            node scripts/protect-launcher-data.mjs check-target "$TARGET_HEAD" || CHECK_TARGET_STATUS=$?
+            if [ "$CHECK_TARGET_STATUS" -eq 2 ]; then
+                SKIP_UPDATE_FOR_LOCAL_CHANGES=1
+                echo "  [WARN] Skipping auto-update: the target version is older than your data format."
+            elif [ "$CHECK_TARGET_STATUS" -ne 0 ]; then
+                SKIP_UPDATE_FOR_LOCAL_CHANGES=1
+                echo "  [WARN] Skipping auto-update: could not verify the target's storage format."
+            fi
         else
+            # No resolvable target commit: nothing to verify, and the update
+            # steps below could not use it either — skip before the snapshot.
             SKIP_UPDATE_FOR_LOCAL_CHANGES=1
-            echo "  [WARN] Could not create an update snapshot. Skipping auto-update to protect your data."
+            echo "  [WARN] Skipping auto-update: could not resolve the update target."
+        fi
+        if [ "$SKIP_UPDATE_FOR_LOCAL_CHANGES" != "1" ]; then
+            if node scripts/protect-launcher-data.mjs snapshot; then
+                DATA_SNAPSHOT_READY=1
+            else
+                SKIP_UPDATE_FOR_LOCAL_CHANGES=1
+                echo "  [WARN] Could not create an update snapshot. Skipping auto-update to protect your data."
+            fi
         fi
         if [ "$SKIP_UPDATE_FOR_LOCAL_CHANGES" != "1" ] && [ "$CLEAN_FAILED" = "1" ]; then
             # A leftover we could not delete would be captured by "stash push -u"

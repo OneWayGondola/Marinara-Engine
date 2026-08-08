@@ -4,14 +4,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
-import type { Chat, ChatMode, Message } from "../../packages/shared/src/types/chat.js";
+import type { Chat, ChatMode, ChatSummaryEntry, Message } from "../../packages/shared/src/types/chat.js";
 import { chatModeSchema } from "../../packages/shared/src/schemas/chat.schema.js";
+import {
+  combineChatSummaryEntryHistory,
+  compileChatSummaryEntries,
+  createChatSummaryEntry,
+} from "../../packages/shared/src/utils/chat-summary-entries.js";
 import playwrightConfig from "../../playwright.config.js";
 import { resolveDevSharedBuildScript } from "../dev-shared-build.mjs";
 import { validatePullRequestTriage } from "../validate-pr-triage.mjs";
-import { characterCardVersions, characterGroups, characters, chatPresets, chats, messages } from "../../packages/server/src/db/schema/index.js";
+import {
+  characterCardVersions,
+  characterGroups,
+  characters,
+  chatPresets,
+  chats,
+  messages,
+} from "../../packages/server/src/db/schema/index.js";
 import { eq } from "../../packages/server/src/db/file-query.js";
 import { parseBuildMeta, resolveBuildBranch } from "../../packages/server/src/config/build-info.js";
+import { createSerializedMutationQueue } from "../../packages/client/src/lib/serialized-mutation-queue.js";
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 import {
@@ -31,6 +44,10 @@ import { characterDataSchema, updateCharacterSchema } from "../../packages/share
 import { buildLorebookDuplicateInput } from "../../packages/client/src/lib/lorebook-duplicate.js";
 import { appendLorebookActivationKeys } from "../../packages/client/src/lib/lorebook-keys.js";
 import { arePresetChoiceSelectionsComplete } from "../../packages/client/src/lib/preset-choice-selection.js";
+import {
+  MARINARA_UNIVERSAL_PRESET_ARTWORK,
+  resolvePresetArtwork,
+} from "../../packages/client/src/lib/preset-artwork.js";
 import {
   getSlashCompletions,
   matchSlashCommand,
@@ -56,7 +73,15 @@ import {
   resolveTrackerPanelDesktopWidth,
 } from "../../packages/client/src/lib/tracker-panel-layout.js";
 import { getApiErrorMessage } from "../../packages/client/src/lib/api-client.js";
+import {
+  getPersonalExtensionTraffic,
+  recordPersonalExtensionRequest,
+} from "../../packages/client/src/lib/personal-extension-traffic.js";
 import { scrollProfessorMariTranscriptToBottom } from "../../packages/client/src/lib/professor-mari-transcript-scroll.js";
+import {
+  formatCompactTokenCount,
+  resolveProfessorMariContextBudget,
+} from "../../packages/client/src/lib/professor-mari-context-budget.js";
 import { parseCustomParametersDraft } from "../../packages/client/src/lib/generation-custom-parameters.js";
 import { parseGenerationParameterDraft } from "../../packages/client/src/lib/generation-parameter-draft.js";
 import {
@@ -131,7 +156,10 @@ import {
   searchStandardEmojiShortcodes,
 } from "../../packages/client/src/lib/emoji-shortcodes.js";
 import { persistGeneratedImageToEntityGalleries } from "../../packages/server/src/services/image/generated-image-entity-gallery.js";
-import { resolveIllustratorImageSize } from "../../packages/server/src/services/image/image-generation-settings.js";
+import {
+  parseImageGenerationUserSettings,
+  resolveIllustratorImageSize,
+} from "../../packages/server/src/services/image/image-generation-settings.js";
 import { generateIllustratorImageVariants } from "../../packages/server/src/services/image/illustrator-image-variants.js";
 import { fetchBotBrowserJson } from "../../packages/server/src/services/bot-browser/fetch-json.js";
 import { isAllowedResponseContentType, validateOutboundUrl } from "../../packages/server/src/utils/security.js";
@@ -159,6 +187,7 @@ import {
 } from "../../packages/server/src/routes/generate/agent-write-approval.js";
 import { runImageGenerationRequest } from "../../packages/server/src/services/image/image-generation-queue.js";
 import {
+  buildSwarmUiGenerationBody,
   buildOpenRouterImagesRequest,
   detectNovelAiSubjectCount,
   openRouterImagesUrl,
@@ -166,12 +195,15 @@ import {
   resolveNovelAiDefaults,
   resolveNovelAiRequestSize,
   resolveNovelAiSize,
+  parseSwarmUiImageReference,
   usesOpenRouterImagesApi,
 } from "../../packages/server/src/services/image/image-generation.js";
 import {
   buildComfyUiLoraWorkflowReplacements,
   COMFYUI_PLACEHOLDER_REFERENCE_BASE64,
+  DEFAULT_COMFYUI_DEFAULTS,
   DEFAULT_NOVELAI_DEFAULTS,
+  imageSourceToDefaultsService,
   normalizeComfyUiLoraSettings,
 } from "../../packages/shared/src/constants/image-generation-defaults.js";
 import type { ImageGenerationDefaultsProfile } from "../../packages/shared/src/types/image-generation-defaults.js";
@@ -256,6 +288,7 @@ import {
   MariDbService,
   normalizeCharacterActionData,
 } from "../../packages/server/src/services/mari-db/mari-db.service.js";
+import { PROFESSOR_MARI_APP_DATA_ACTIONS } from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
 import {
   checkAutonomousMessaging,
   clearChatActivity,
@@ -320,10 +353,7 @@ assert.equal(resolveSpriteTransition("full-body", "none"), "crossfade");
 assert.equal(resolveSpriteTransition("full-body", "shake"), "shake");
 assert.equal(resolveSpriteTransition("expressions", "none"), "none");
 assert.deepEqual(
-  resolveSpriteExpressionState([
-    { extra: { spriteExpressions: { "character-a": "happy" } } },
-    { extra: {} },
-  ]),
+  resolveSpriteExpressionState([{ extra: { spriteExpressions: { "character-a": "happy" } } }, { extra: {} }]),
   { "character-a": "happy" },
 );
 assert.deepEqual(
@@ -452,7 +482,10 @@ assert.deepEqual(validBuildMeta, { commit: "abcdef123456", branch: "staging" });
 assert.equal(parseBuildMeta('{"commit":"abcdef123456","branch":42}'), null);
 assert.equal(parseBuildMeta(undefined), null);
 assert.equal(resolveBuildBranch(undefined, validBuildMeta?.branch, "main"), "staging");
-assert.equal(resolveBuildBranch(undefined, parseBuildMeta(undefined)?.branch, "refs/heads/feature/test"), "feature/test");
+assert.equal(
+  resolveBuildBranch(undefined, parseBuildMeta(undefined)?.branch, "refs/heads/feature/test"),
+  "feature/test",
+);
 const lorebookEnglishLocale = JSON.parse(
   readFileSync(join(REPOSITORY_ROOT, "packages/client/src/localization/locales/en.json"), "utf8"),
 ) as Record<string, unknown>;
@@ -478,7 +511,10 @@ assert.match(
   /캐릭터 정의 전, 캐릭터 정의 후/u,
 );
 const updatesRouteSource = readFileSync(join(REPOSITORY_ROOT, "packages/server/src/routes/updates.routes.ts"), "utf8");
-assert.match(updatesRouteSource, /gitInstall \? await getCurrentBranch\(root\)\.catch\(\(\) => null\) : getBuildBranch\(\)/u);
+assert.match(
+  updatesRouteSource,
+  /gitInstall \? await getCurrentBranch\(root\)\.catch\(\(\) => null\) : getBuildBranch\(\)/u,
+);
 assert.match(updatesRouteSource, /const currentChannel = await getUpdateChannelForCheckout\(root, currentBranch\)/u);
 for (const dockerfile of ["Dockerfile", "Dockerfile.lite"]) {
   const dockerSource = readFileSync(join(REPOSITORY_ROOT, dockerfile), "utf8");
@@ -579,6 +615,11 @@ assert.deepEqual(resolveIllustratorImageSize({ width: 540, height: 960 }, "lands
 assert.deepEqual(resolveIllustratorImageSize({ width: 960, height: 540 }, "portrait"), {
   width: 540,
   height: 960,
+});
+assert.deepEqual(parseImageGenerationUserSettings(null).noodle, { width: 1024, height: 1536 });
+assert.deepEqual(parseImageGenerationUserSettings('{"imageNoodleWidth":1536,"imageNoodleHeight":1024}').noodle, {
+  width: 1536,
+  height: 1024,
 });
 
 const minimalProfessorMariPersona = buildPersonaCreateRow(
@@ -1223,19 +1264,43 @@ try {
 
   const mariDb = new MariDbService(db);
   const professorMariLorebookId = "professor-mari-lorebook-create-regression";
+  const professorMariFullEntryContent = `The entry starts here. ${"Full lorebook body segment. ".repeat(20)}The entry ends here.`;
   const professorMariLorebookResult = await mariDb.executeAction({
     action: "lorebook.create",
     lorebookId: professorMariLorebookId,
     data: {
       name: "Professor Mari lorebook regression",
-      entries: [{ name: "Verified entry", content: "Saved with the lorebook.", keys: ["verified"] }],
+      entries: [{ name: "Verified entry", content: professorMariFullEntryContent, keys: ["verified"] }],
     },
     apply: true,
   });
   assert.equal(professorMariLorebookResult.ok, true, "Professor Mari must create lorebooks after visibility was added");
   const professorMariLorebook = await lorebookStorage.getById(professorMariLorebookId);
   assert.equal(professorMariLorebook?.hiddenFromLibrary, false);
-  assert.equal((await lorebookStorage.listEntries(professorMariLorebookId)).length, 1);
+  const professorMariEntries = await lorebookStorage.listEntries(professorMariLorebookId);
+  assert.equal(professorMariEntries.length, 1);
+  const professorMariEntryId = professorMariEntries[0]?.id;
+  assert.ok(professorMariEntryId);
+  assert.ok(PROFESSOR_MARI_APP_DATA_ACTIONS.includes("lorebook.getEntry"));
+  const professorMariEntryIndex = await mariDb.executeAction({
+    action: "lorebook.entries",
+    lorebookId: professorMariLorebookId,
+  });
+  assert.equal(
+    (professorMariEntryIndex.output as Array<{ content: string }>)[0]?.content.endsWith("…"),
+    true,
+    "the lorebook entry index should remain compact",
+  );
+  const professorMariFullEntry = await mariDb.executeAction({
+    action: "lorebook.getEntry",
+    entryId: professorMariEntryId,
+  });
+  assert.equal(professorMariFullEntry.ok, true);
+  assert.equal(
+    (professorMariFullEntry.output as { content?: string }).content,
+    professorMariFullEntryContent,
+    "Professor Mari's full-entry reader must preserve the complete lorebook body",
+  );
   await lorebookStorage.remove(professorMariLorebookId);
   assert.equal(await lorebookStorage.getById(professorMariLorebookId), null);
   assert.equal((await lorebookStorage.listEntries(professorMariLorebookId)).length, 0);
@@ -1634,7 +1699,10 @@ try {
       }),
     ),
   );
-  assert.ok(concurrentFolderMoves.every((result) => result.ok), "Concurrent folder moves must both succeed");
+  assert.ok(
+    concurrentFolderMoves.every((result) => result.ok),
+    "Concurrent folder moves must both succeed",
+  );
   const concurrentTargetFolder = (await db.select().from(characterGroups)).find(
     (folder) => folder.id === "character-folder-concurrent-target",
   );
@@ -1663,7 +1731,11 @@ assert.equal(
   googleModelsPageUrl,
   "https://gemini-proxy.example.test/v1beta/models?pageSize=1000&pageToken=next%20page%2Ftoken",
 );
-assert.equal(new URL(googleModelsPageUrl).searchParams.has("key"), false, "Gemini API keys must stay out of model URLs");
+assert.equal(
+  new URL(googleModelsPageUrl).searchParams.has("key"),
+  false,
+  "Gemini API keys must stay out of model URLs",
+);
 
 const professorMariAboutMeCommands = parseCharacterCommands(
   '[update_character: name="Luna", about_me="fate dealer. tea hoarder. 🔮"]\n' +
@@ -1922,10 +1994,7 @@ assert.deepEqual(
   [{ id: "chroma", name: "Chroma" }],
 );
 assert.equal(buildZaiImageUrl("https://api.z.ai/api/paas/v4"), "https://api.z.ai/api/paas/v4/images/generations");
-assert.throws(
-  () => buildZaiImageUrl("https://api.z.ai/api/coding/paas/v4"),
-  /general API URL/u,
-);
+assert.throws(() => buildZaiImageUrl("https://api.z.ai/api/coding/paas/v4"), /general API URL/u);
 assert.equal(resolveZaiImageSize("glm-image", 1600, 900), "1728x960");
 assert.equal(resolveZaiImageSize("cogview-4-250304", 900, 1600), "768x1344");
 assert.deepEqual(buildZaiImageRequest({ model: "glm-image", prompt: "canal", width: 1600, height: 900 }), {
@@ -1936,6 +2005,44 @@ assert.deepEqual(buildZaiImageRequest({ model: "glm-image", prompt: "canal", wid
 assert.equal(parseZaiImageUrl({ data: [{ url: "https://cdn.example/zai.png" }] }), "https://cdn.example/zai.png");
 assert.equal(inferImageSource("", "https://api.z.ai/api/paas/v4"), "zai");
 assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "zai"));
+assert.equal(inferImageSource("flux-model", "https://api.arliai.com/v1"), "arli");
+assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "arli"));
+assert.equal(imageSourceToDefaultsService("arli"), "automatic1111");
+assert.equal(inferImageSource("", "http://127.0.0.1:7801"), "swarmui");
+assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "swarmui"));
+assert.equal(imageSourceToDefaultsService("swarmui"), "comfyui");
+const swarmUiBody = buildSwarmUiGenerationBody(
+  {
+    prompt: "a blue fox",
+    negativePrompt: "blurry",
+    width: 832,
+    height: 1216,
+    model: "  sdxl/model.safetensors  ",
+    comfyWorkflow: JSON.stringify({
+      "1": {
+        class_type: "CLIPTextEncode",
+        inputs: { text: "%prompt%", seed: "%seed%", model: "%model%" },
+      },
+    }),
+    imageDefaults: {
+      version: 1,
+      service: "comfyui",
+      seed: 42,
+      comfyui: { ...DEFAULT_COMFYUI_DEFAULTS, loras: [] },
+    },
+  },
+  "session-123",
+);
+assert.equal(swarmUiBody.session_id, "session-123");
+assert.equal(swarmUiBody.model, "sdxl/model.safetensors");
+assert.deepEqual(JSON.parse(String(swarmUiBody.comfyworkflowraw)), {
+  "1": {
+    class_type: "CLIPTextEncode",
+    inputs: { text: "a blue fox", seed: 42, model: "sdxl/model.safetensors" },
+  },
+});
+assert.equal(parseSwarmUiImageReference({ images: ["View/local/raw/output.png"] }), "View/local/raw/output.png");
+assert.throws(() => parseSwarmUiImageReference({ error: "queue unavailable" }), /queue unavailable/u);
 assert.deepEqual(
   ZAI_IMAGE_MODELS.map((model) => model.id),
   ["glm-image", "cogview-4-250304"],
@@ -2262,6 +2369,46 @@ const termuxLauncher = readFileSync(new URL("../../start-termux.sh", import.meta
 assert.doesNotMatch(termuxLauncher, /run_pnpm install --force/u);
 assert.match(termuxLauncher, /run_pnpm store prune/u);
 assert.match(termuxLauncher, /TERMUX_REBUILD_REQUIRED/u);
+assert.match(termuxLauncher, /--max-old-space-size=2048/u);
+assert.match(
+  termuxLauncher,
+  /has_explicit_node_heap_limit\(\)[\s\S]*NODE_OPTIONS_VALUE[\s\S]*const heapOption = \/\^--max[\s\S]*if ! has_explicit_node_heap_limit; then[\s\S]*NODE_OPTIONS="\$\{NODE_OPTIONS:\+\$\{NODE_OPTIONS\} \}--max-old-space-size=2048"/u,
+  "Termux must parse complete heap-option tokens before applying its safe default",
+);
+for (const buildEntry of [
+  "packages/shared/dist/constants/defaults.js",
+  "packages/server/dist/index.js",
+  "packages/client/dist/index.html",
+]) {
+  assert.ok(
+    termuxLauncher.includes(`if [ ! -f "${buildEntry}" ]; then`),
+    `Termux must rebuild when ${buildEntry} is missing`,
+  );
+}
+
+const trafficExtensionId = "open-issues-extension-traffic";
+const trafficNow = 180_000;
+for (const requestedAt of [59_000, 119_000, 179_000]) {
+  for (let request = 0; request < 61; request += 1) {
+    recordPersonalExtensionRequest(trafficExtensionId, 2, requestedAt + request);
+  }
+}
+assert.deepEqual(getPersonalExtensionTraffic(trafficExtensionId, trafficNow), {
+  requests: 183,
+  bytes: 366,
+  requestsLastMinute: 61,
+  sustainedHighRate: true,
+});
+const personalExtensionInjectorSource = readFileSync(
+  new URL("../../packages/client/src/components/layout/PersonalExtensionInjector.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(personalExtensionInjectorSource, /fetch: \(input, init\) => fetchForPersonalExtension/u);
+const personalExtensionSettingsSource = readFileSync(
+  new URL("../../packages/client/src/components/panels/settings/PersonalExtensionsSettings.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(personalExtensionSettingsSource, /settings\.personalExtensions\.traffic\.summary/u);
 
 const sharedPackageJson = JSON.parse(
   readFileSync(new URL("../../packages/shared/package.json", import.meta.url), "utf8"),
@@ -2358,6 +2505,32 @@ const professorMariHomeSource = readFileSync(
   new URL("../../packages/client/src/components/chat/HomeProfessorMariChat.tsx", import.meta.url),
   "utf8",
 );
+const professorMariContextBudget = resolveProfessorMariContextBudget(
+  [
+    {
+      role: "assistant",
+      extra: { generationInfo: { tokensPrompt: 12_000, tokensCompletion: 345 } },
+    },
+  ] as Message[],
+  128_000,
+);
+assert.deepEqual(professorMariContextBudget, {
+  usedTokens: 12_345,
+  maxTokens: 128_000,
+  percentage: (12_345 / 128_000) * 100,
+});
+assert.equal(formatCompactTokenCount(professorMariContextBudget!.usedTokens), "12.3k");
+assert.equal(
+  resolveProfessorMariContextBudget(
+    [
+      { role: "assistant", extra: { generationInfo: { usage: { promptTokens: 8_000, completionTokens: 192 } } } },
+    ] as Message[],
+    32_000,
+  )?.usedTokens,
+  8_192,
+  "legacy Professor Mari usage metadata should keep the context indicator available",
+);
+assert.equal(resolveProfessorMariContextBudget([], 128_000), null);
 assert.match(professorMariHomeSource, /chatHistorySelectionMode/u);
 assert.match(professorMariHomeSource, /toggleProfessorChatSelection/u);
 assert.match(professorMariHomeSource, /handleBulkDeleteProfessorChats/u);
@@ -2380,6 +2553,26 @@ assert.match(
 );
 assert.match(
   professorMariHomeSource,
+  /options\.shouldApply\?\.\(\) === false[\s\S]{0,160}setMessages/u,
+  "Professor Mari message loads must recheck an operation guard before applying a response",
+);
+assert.match(
+  professorMariHomeSource,
+  /loadMessages\(completedChatId, \{[\s\S]{0,160}workspaceRunIdRef\.current === runId[\s\S]{0,100}activeChatIdRef\.current === completedChatId/u,
+  "Professor Mari background refreshes must not overwrite state after a newer operation starts",
+);
+assert.match(
+  professorMariHomeSource,
+  /const refreshWorkspaceStatus = useCallback\(async \(shouldApply\?: \(\) => boolean\)[\s\S]{0,500}if \(shouldApply\?\.\(\) === false\) return status;[\s\S]{0,80}setWorkspaceStatus\(status\)/u,
+  "Professor Mari workspace status loads must recheck an operation guard before applying a response",
+);
+assert.match(
+  professorMariHomeSource,
+  /refreshWorkspaceStatus\([\s\S]{0,140}workspaceRunIdRef\.current === runId[\s\S]{0,100}activeChatIdRef\.current === completedChatId/u,
+  "Professor Mari post-run status refreshes must not overwrite state after a newer operation starts",
+);
+assert.match(
+  professorMariHomeSource,
   /message\.role === "user"[\s\S]{0,180}<TranscriptRow[\s\S]{0,100}border-y border-\[var\(--border\)\]\/60/u,
   "Professor Mari user messages must retain their theme-aware horizontal separators",
 );
@@ -2392,13 +2585,105 @@ const roleplaySurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatRoleplaySurface.tsx", import.meta.url),
   "utf8",
 );
+const chatToolbarControlsSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatToolbarControls.tsx", import.meta.url),
+  "utf8",
+);
+const chatFloatingUiEventsSource = readFileSync(
+  new URL("../../packages/client/src/lib/chat-floating-ui-events.ts", import.meta.url),
+  "utf8",
+);
+const appShellSource = readFileSync(
+  new URL("../../packages/client/src/components/layout/AppShell.tsx", import.meta.url),
+  "utf8",
+);
+const guidedPresetEditorSource = readFileSync(
+  new URL("../../packages/client/src/components/presets/PresetEditor.tsx", import.meta.url),
+  "utf8",
+);
+const presetPanelSource = readFileSync(
+  new URL("../../packages/client/src/components/panels/PresetsPanel.tsx", import.meta.url),
+  "utf8",
+);
 const chatMessageSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatMessage.tsx", import.meta.url),
+  "utf8",
+);
+const assignedSweepChatAreaSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatArea.tsx", import.meta.url),
+  "utf8",
+);
+const appRecoverySource = readFileSync(new URL("../../packages/client/src/App.tsx", import.meta.url), "utf8");
+const chatRowPeekSource = readFileSync(
+  new URL("../../packages/client/src/components/layout/ChatRowPeek.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(assignedSweepChatAreaSource, /export const ChatArea = memo\(function ChatArea/u);
+assert.doesNotMatch(assignedSweepChatAreaSource, /updateMessage(?:Extra)?\.mutate/u);
+assert.match(chatMessageSource, /mari-chrome-accent-progress mari-accent-animated mb-1\.5 h-0\.5/u);
+assert.match(chatMessageSource, /pointer-events-auto relative z-30 flex h-11 w-11/u);
+assert.match(chatRowPeekSource, /mari-chrome-accent-text-muted mari-accent-animated text-\[0\.6875rem\]/u);
+assert.match(assignedSweepChatAreaSource, /mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs/u);
+assert.match(
+  appRecoverySource,
+  /<pre className="mari-chrome-accent-text-muted mari-accent-animated[^"]*">\s*\{errorMessage\}/u,
+);
+const macroTextareaSource = readFileSync(
+  new URL("../../packages/client/src/components/ui/MacroTextarea.tsx", import.meta.url),
+  "utf8",
+);
+const roleplayHudSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/RoleplayHUD.tsx", import.meta.url),
   "utf8",
 );
 const narratorUiStoreSource = readFileSync(
   new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url),
   "utf8",
+);
+assert.match(
+  appShellSource,
+  /onOpenChatSummarySettings:[\s\S]{0,180}onOpenActivePromptPresetEditor:/u,
+  "Feature detail capability props must expose both guided onboarding navigation callbacks",
+);
+assert.match(
+  chatFloatingUiEventsSource,
+  /CHAT_SUMMARY_OPEN_REQUEST_EVENT[\s\S]{0,240}detail:\s*\{\s*chatId\s*\}/u,
+  "Summary requests must carry the target chat ID",
+);
+assert.match(
+  roleplaySurfaceSource,
+  /requestedChatId !== chatId/u,
+  "SummaryButton must filter requests by chat and only open visible instances",
+);
+assert.match(
+  roleplaySurfaceSource,
+  /rect\.width <= 0 \|\| rect\.height <= 0[\s\S]{0,180}setOpen\(true\)/u,
+  "SummaryButton must only open a measurable visible instance",
+);
+assert.match(
+  chatToolbarControlsSource,
+  /pendingSummaryChatIdRef\.current = chatId[\s\S]{0,80}setOpen\(true\)/u,
+  "Compact and mobile Summary requests must queue the target chat and open the overflow menu",
+);
+assert.match(
+  chatToolbarControlsSource,
+  /if \(!open \|\| !chatId\) return;[\s\S]{0,140}requestAnimationFrame\(\(\) => requestChatSummaryOpen\(chatId\)\)/u,
+  "Compact and mobile Summary requests must forward only after the overflow menu mounts",
+);
+assert.match(
+  narratorUiStoreSource,
+  /openPresetDetail: \(id, options\)[\s\S]{0,180}presetDetailInitialTab: options\?\.initialTab \?\? null/u,
+  "Preset navigation must retain an optional initial tab request",
+);
+assert.match(
+  guidedPresetEditorSource,
+  /presetDetailInitialTab[\s\S]{0,260}setActiveTab\(presetDetailInitialTab \?\? "overview"\)/u,
+  "PresetEditor must consume the requested initial tab and retain Overview by default",
+);
+assert.match(
+  presetPanelSource,
+  /openPresetDetail\(preset\.id\)/u,
+  "Ordinary preset-panel navigation must continue using the default Overview tab",
 );
 assert.match(
   roleplaySurfaceSource,
@@ -2412,8 +2697,23 @@ assert.equal(
 );
 assert.match(
   chatMessageSource,
-  /const cycleMergedNarratorAvatars = !isRoleplay \|\| roleplayNarratorAvatarCycling;/u,
-  "Narrator avatar cycling must remain unchanged outside Roleplay and follow the Roleplay preference",
+  /const cycleMergedNarratorAvatars = \(!isRoleplay \|\| roleplayNarratorAvatarCycling\) && !reduceAmbientEffects;/u,
+  "Narrator avatar cycling must follow the Roleplay preference and stop with reduced ambient effects",
+);
+assert.match(
+  macroTextareaSource,
+  /const valueRef = useRef\(value\);[\s\S]{0,500}\}, \[open\]\);/u,
+  "Expanded macro editors must only initialize and focus when opened, not after every parent value update",
+);
+assert.match(
+  chatMessageSource,
+  /aria-label=\{localizeUi\("ui\.chat\.edittextarea\.saveEdit"\)\}[\s\S]{0,180}h-11 w-11/u,
+  "The Roleplay edit Save control must keep a full touch-sized hit target",
+);
+assert.equal(
+  roleplayHudSource.match(/!reduceAmbientEffects && "animate-\[inventory-cycle_0\.4s_ease-out\]"/gu)?.length,
+  2,
+  "Roleplay tracker and inventory widgets must suppress mount animations with reduced ambient effects",
 );
 assert.match(
   chatMessageSource,
@@ -2748,6 +3048,7 @@ const backupRoutesSource = readFileSync(
   new URL("../../packages/server/src/routes/backup.routes.ts", import.meta.url),
   "utf8",
 );
+const serverAppSource = readFileSync(new URL("../../packages/server/src/app.ts", import.meta.url), "utf8");
 const gameTypesSource = readFileSync(new URL("../../packages/shared/src/types/game.ts", import.meta.url), "utf8");
 const backupGuideSource = readFileSync(new URL("../../docs/data/backup-and-restore.md", import.meta.url), "utf8");
 const gameAssetBrowserSource = readFileSync(
@@ -2797,7 +3098,7 @@ const localNotificationsSource = readFileSync(
 const notificationSettingsSource = readFileSync(
   new URL("../../packages/client/src/components/panels/settings/SettingControls.tsx", import.meta.url),
   "utf8",
-);
+).replace(/\r\n/gu, "\n");
 const chatGallerySource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatGallery.tsx", import.meta.url),
   "utf8",
@@ -2842,6 +3143,28 @@ assert.match(
 assert.match(galleryHooksSource, /api\.delete\(`\/gallery\/scene-videos\/\$\{chatId\}\/\$\{videoId\}`\)/u);
 assert.match(chatGallerySource, /handleDeleteVideo\(video\)/u);
 assert.match(chatGallerySource, /ui\.chat\.chatgallery\.deleteSceneVideo/u);
+for (const editorSource of [characterEditorSource, personaEditorSource]) {
+  assert.match(editorSource, /grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4/u);
+  assert.match(editorSource, /onClick=\{\(\) => void handleDelete\(lightbox\)\}/u);
+  assert.match(editorSource, /loading="lazy"\s+decoding="async"/u);
+  assert.match(editorSource, /group-\[&:focus-within\]:opacity-100/u);
+}
+assert.match(characterEditorSource, /await remove\.mutateAsync\(image\.id\)/u);
+assert.match(characterEditorSource, /ui\.characters\.charactergallerytab\.failedToDeleteCharacterImage/u);
+assert.doesNotMatch(chatGallerySource, /bg-red-500/u);
+assert.match(chatGallerySource, /ui\.chat\.chatgallery\.deleteGalleryImage[\s\S]{0,180}mari-chrome-accent-surface/u);
+assert.match(
+  chatGallerySource,
+  /handleDeleteVideo\(video\)[\s\S]{0,240}ui\.chat\.chatgallery\.deleteSceneVideo[\s\S]{0,240}mari-chrome-accent-surface/u,
+);
+assert.match(
+  chatGallerySource,
+  /onClick=\{\(\) => handleDelete\(confirmDeleteId\)\}[\s\S]{0,180}mari-chrome-accent-surface/u,
+);
+assert.match(
+  globalStyles,
+  /\.mari-gallery-card \{\s*content-visibility: auto;\s*contain-intrinsic-size: auto 12rem;\s*\}/u,
+);
 assert.match(characterEditorSource, /ui\.characters\.colorstab\.value1AvatarPreview/u);
 assert.match(characterEditorSource, /getAvatarCropStyle/u);
 assert.match(characterEditorSource, /downloadSpriteFile/u);
@@ -2882,7 +3205,17 @@ for (const [name, source] of [
   assert.match(source, /text-foreground\/45/u, `${name} search icon must match GIF search`);
   assert.match(source, /placeholder:text-foreground\/35/u, `${name} search placeholder must match GIF search`);
 }
-assert.match(visualViewportChatBottomSource, /detail\?\.keyboardOpen[\s\S]{0,500}scrollToBottom\("auto"\)/u);
+assert.match(visualViewportChatBottomSource, /const anchor = pendingAnchor \?\? captureAnchor\(\);/u);
+assert.match(
+  visualViewportChatBottomSource,
+  /if \(anchor\.pinnedToBottom\) \{\s*scrollToBottom\("auto"\);/u,
+  "Keyboard opening should keep a composer that was already pinned at the latest message pinned",
+);
+assert.match(
+  visualViewportChatBottomSource,
+  /scrollElement\.scrollTo\(\{ top: Math\.min\(anchor\.scrollTop, maxScrollTop\), behavior: "auto" \}\);/u,
+  "Keyboard opening should restore an intentionally scrolled transcript to its captured position",
+);
 assert.match(characterEditorSource, /if \(uploading \|\| !expression\) return;/u);
 assert.match(personaEditorSource, /if \(uploading \|\| !expression\) return;/u);
 assert.match(characterEditorSource, /className="flex flex-col gap-2 sm:flex-row"/u);
@@ -2934,7 +3267,7 @@ assert.match(
   gameRoutesSource,
   /if \(!selectedTemplate\?\.promptTemplate\.trim\(\)\) \{[\s\S]*The Storyboard Agent has no/u,
 );
-assert.match(presetsPanelSource, /\{!selectionMode && isSelected && \(/u);
+assert.match(presetsPanelSource, /\{isSelected && \(/u);
 assert.match(
   presetsPanelSource,
   /PanelSection title=\{localizeUi\("ui\.panels\.presetspanel\.prompts"\)\}/u,
@@ -2956,6 +3289,10 @@ assert.equal(
 assert.match(backupRoutesSource, /tolerateSourceChanges: true/u);
 assert.match(backupRoutesSource, /record\.usesDataDescriptor \? 0x0808 : 0x0800/u);
 assert.match(backupRoutesSource, /PROFILE_IMPORT_MEMORY_WARNING_BYTES/u);
+assert.match(backupRoutesSource, /PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES = ZIP32_MAX_VALUE/u);
+assert.match(backupRoutesSource, /PROFILE_ARCHIVE_TOTAL_UNCOMPRESSED_LIMIT_BYTES = ZIP32_MAX_VALUE/u);
+assert.match(serverAppSource, /const clientIndex = resolve\(clientDist, "index\.html"\)/u);
+assert.match(serverAppSource, /if \(existsSync\(clientIndex\)\)/u);
 assert.match(
   backupRoutesSource,
   /if \(automaticBackupRunning\) return;\s*automaticBackupRunning = true;\s*try \{\s*const settings = await loadAutomaticBackupSettings\(\);/u,
@@ -2990,11 +3327,20 @@ assert.match(
   /className="grid min-w-0 grid-cols-2 gap-2"/u,
   "LinkAPI actions must share the available banner width instead of overflowing it",
 );
-assert.match(presetsPanelSource, /MARINARA_UNIVERSAL_PRESET_ARTWORK/u);
-assert.match(
-  presetsPanelSource,
-  /preset\.name === MARINARA_UNIVERSAL_PRESET_NAME && preset\.author === MARINARA_UNIVERSAL_PRESET_AUTHOR/u,
+assert.equal(
+  resolvePresetArtwork({ name: "Marinara's Universal Preset", author: "Marinara" }),
+  MARINARA_UNIVERSAL_PRESET_ARTWORK,
 );
+assert.equal(
+  resolvePresetArtwork({
+    name: "Marinara's Universal Preset",
+    author: "Marinara",
+    imagePath: "/api/prompts/images/file/custom.png",
+  }),
+  "/api/prompts/images/file/custom.png",
+);
+assert.match(presetsPanelSource, /data-preset-image-action/u);
+assert.match(presetsPanelSource, /data-preset-open-action/u);
 assert.equal(
   existsSync(join(REPOSITORY_ROOT, "packages/client/public/illustrations/marinara-universal-preset.webp")),
   true,
@@ -3019,7 +3365,12 @@ assert.match(
 );
 assert.match(
   conversationSelfieRuntimeSource,
-  /resolveIllustratorCharacterReferences\(\{[\s\S]{0,800}persona: null,[\s\S]{0,800}maxReferences: 6/u,
+  /resolveConversationSelfieRequestedNames\(\{[\s\S]{0,400}generationGuide: args\.generationGuide/u,
+  "Conversation group selfies must carry the guided request into reference selection",
+);
+assert.match(
+  conversationSelfieRuntimeSource,
+  /resolveIllustratorCharacterReferences\(\{[\s\S]{0,800}persona: null,[\s\S]{0,200}requestedNames,[\s\S]{0,300}maxReferences: 6/u,
   "Conversation group selfies must keep all depicted character references without attaching the photographer persona",
 );
 assert.match(
@@ -4328,8 +4679,116 @@ const summaryPopoverSource = readFileSync(
 );
 assert.match(
   summaryPopoverSource,
+  /function SummaryEntryEditor[\s\S]*?<MacroTextarea[\s\S]*?textareaRef=\{textareaRef\}/u,
+  "Summary entry editing should expose the shared expanded editor and macro guide",
+);
+assert.match(
+  summaryPopoverSource,
   /summaryEntryIds:\s*selectedEntries\.map\(\(entry\) => entry\.id\)/u,
   "The summary UI must submit every selected entry to the combine endpoint",
+);
+assert.match(
+  chatRoutesSource,
+  /combineChatSummaryEntryHistory\(entries, requestedIds, combinedEntry, now\)/u,
+  "The Chat Summary combine route must retain source history through the tested helper",
+);
+const summaryCombineNow = "2026-08-06T09:00:00.000Z";
+const summaryCombineEntries: ChatSummaryEntry[] = [
+  createChatSummaryEntry({
+    id: "source-a",
+    content: "Source A",
+    title: "Source A",
+    enabled: true,
+    rangeStartIndex: 1,
+    rangeEndIndex: 2,
+    createdAt: "2026-08-01T09:00:00.000Z",
+    updatedAt: "2026-08-01T09:00:00.000Z",
+  }),
+  createChatSummaryEntry({
+    id: "source-b",
+    content: "Source B",
+    title: "Source B",
+    enabled: true,
+    rangeStartIndex: 3,
+    rangeEndIndex: 4,
+    createdAt: "2026-08-02T09:00:00.000Z",
+    updatedAt: "2026-08-02T09:00:00.000Z",
+  }),
+  createChatSummaryEntry({
+    id: "untouched",
+    content: "Untouched",
+    title: "Untouched",
+    enabled: true,
+    rangeStartIndex: 5,
+    rangeEndIndex: 6,
+    createdAt: "2026-08-03T09:00:00.000Z",
+    updatedAt: "2026-08-03T09:00:00.000Z",
+  }),
+];
+const combinedSummaryEntry = createChatSummaryEntry({
+  id: "combined",
+  content: "Combined A and B",
+  title: "Combined",
+  enabled: true,
+  rangeStartIndex: 1,
+  rangeEndIndex: 4,
+  createdAt: summaryCombineEntries[0]!.createdAt,
+  updatedAt: summaryCombineNow,
+});
+const retainedSummaryEntries = combineChatSummaryEntryHistory(
+  summaryCombineEntries,
+  new Set(["source-a", "source-b"]),
+  combinedSummaryEntry,
+  summaryCombineNow,
+);
+assert.deepEqual(
+  retainedSummaryEntries.map((entry) => entry.id),
+  ["combined", "source-a", "source-b", "untouched"],
+  "The combined entry must be inserted at the first selected chronological position",
+);
+for (const sourceId of ["source-a", "source-b"]) {
+  const retainedSource = retainedSummaryEntries.find((entry) => entry.id === sourceId);
+  assert.equal(retainedSource?.enabled, false, `${sourceId} must remain as inactive history`);
+  assert.equal(retainedSource?.updatedAt, summaryCombineNow, `${sourceId} must record when it was combined`);
+}
+assert.equal(retainedSummaryEntries.find((entry) => entry.id === "untouched")?.enabled, true);
+assert.equal(
+  compileChatSummaryEntries(retainedSummaryEntries),
+  "Combined A and B\n\nUntouched",
+  "Compiled Chat Summary output must exclude deactivated source entries",
+);
+const secondCombinedSummaryEntry = createChatSummaryEntry({
+  id: "combined-again",
+  content: "Combined summary of summaries",
+  title: "Combined again",
+  enabled: true,
+  rangeStartIndex: 1,
+  rangeEndIndex: 6,
+  createdAt: summaryCombineEntries[0]!.createdAt,
+  updatedAt: "2026-08-06T10:00:00.000Z",
+});
+const retainedSecondGenerationEntries = combineChatSummaryEntryHistory(
+  retainedSummaryEntries,
+  new Set(["combined", "untouched"]),
+  secondCombinedSummaryEntry,
+  secondCombinedSummaryEntry.updatedAt,
+);
+assert.deepEqual(
+  retainedSecondGenerationEntries.map((entry) => entry.id),
+  ["combined-again", "combined", "source-a", "source-b", "untouched"],
+  "A summary of summaries must retain both generations of source history",
+);
+for (const sourceId of ["combined", "source-a", "source-b", "untouched"]) {
+  assert.equal(
+    retainedSecondGenerationEntries.find((entry) => entry.id === sourceId)?.enabled,
+    false,
+    `${sourceId} must remain as inactive history after combining summaries again`,
+  );
+}
+assert.match(
+  summaryPopoverSource,
+  /onSuccess: \(data\) => \{\s*setSelectedEntryIds\(new Set\(\)\);\s*setShowInactiveSummaries\(true\)/u,
+  "The Chat Summary popover must reveal retained inactive sources after combining",
 );
 assert.match(
   summaryPopoverSource,
@@ -4338,8 +4797,8 @@ assert.match(
 );
 assert.match(
   summaryPopoverSource,
-  /currentChatSummaryPrompt[\s\S]{0,900}\{activeSummaryPrompt\}[\s\S]{0,1500}<textarea/u,
-  "The active Chat Summary prompt must remain visible above its template editor",
+  /!templateEditorOpen[\s\S]{0,500}\{activeSummaryPrompt\}[\s\S]{0,500}templateEditorOpen/u,
+  "The active Chat Summary prompt must remain visible until its template editor opens",
 );
 assert.doesNotMatch(
   summaryPopoverSource,
@@ -4462,7 +4921,7 @@ assert.match(
 );
 assert.match(
   chatRoutesSource,
-  /requestedSummaryEntryIds[\s\S]{0,6500}nextEntries\.splice\(Math\.max\(0, firstIndex\), 0, combinedEntry\)/u,
+  /requestedSummaryEntryIds[\s\S]{0,6500}combineChatSummaryEntryHistory\(entries, requestedIds, combinedEntry, now\)/u,
   "Combined summaries must replace their selected entries at the first selected chronological position",
 );
 assert.match(
@@ -4491,6 +4950,8 @@ assert.match(
 );
 
 const windowsLauncherSource = readFileSync(join(REPOSITORY_ROOT, "start.bat"), "utf8");
+assert.match(windowsLauncherSource, /node --version >nul 2>&1/u);
+assert.doesNotMatch(windowsLauncherSource, /where node >nul 2>&1/u);
 for (const workspace of ["shared", "server", "client"]) {
   assert.match(windowsLauncherSource, new RegExp(`--filter @marinara-engine/${workspace} run clean`, "u"));
 }
@@ -4952,6 +5413,12 @@ try {
     /src\.id === "zai"[\s\S]{0,180}!ZAI_IMAGE_MODELS\.some[\s\S]{0,180}setLocalModel\("glm-image"\)/u,
     "Switching to Z.AI must replace a model that Z.AI does not support",
   );
+  assert.match(
+    connectionEditorSource,
+    /const swarmUiWorkflowError =\s*selectedImageService === "swarmui"[\s\S]{0,180}%reference_image_name/u,
+    "SwarmUI workflow validation must reject backend-local reference-image filenames before save",
+  );
+  assert.match(connectionEditorSource, /if \(swarmUiWorkflowError\) \{[\s\S]{0,180}throw new Error/u);
 
   const backgroundAutonomousSource = readFileSync(
     join(REPOSITORY_ROOT, "packages/client/src/hooks/use-background-autonomous.ts"),
@@ -5150,6 +5617,12 @@ try {
   )?.[0];
   assert.ok(testImageHandler, "The connection test-image handler must remain available");
   assert.match(testImageHandler, /width: 1024,\s*height: 1024,/u);
+  assert.match(testImageHandler, /debugMode: readDebugMode\(req\.body\)/u);
+  assert.match(
+    connectionsRouteSource,
+    /signal: AbortSignal\.timeout\(SWARMUI_CONTROL_REQUEST_TIMEOUT_MS\)/u,
+    "SwarmUI control requests must have a bounded timeout",
+  );
 
   assert.doesNotMatch(
     agentEditorSource,
@@ -5195,10 +5668,7 @@ try {
   const sidebarPanelSources = new Map(
     ["Characters", "Personas", "Lorebooks", "Agents", "Presets", "Connections"].map((panelName) => [
       panelName,
-      readFileSync(
-        join(REPOSITORY_ROOT, `packages/client/src/components/panels/${panelName}Panel.tsx`),
-        "utf8",
-      ),
+      readFileSync(join(REPOSITORY_ROOT, `packages/client/src/components/panels/${panelName}Panel.tsx`), "utf8"),
     ]),
   );
 
@@ -5220,12 +5690,11 @@ try {
     );
     const hiddenActionOverlayCount = source.match(/pointer-events-none[^"\n]*opacity-0/gu)?.length ?? 0;
     const focusVisibleOverlayCount =
-      source.match(
-        /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:opacity-100/gu,
-      )?.length ?? 0;
+      source.match(/pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:opacity-100/gu)
+        ?.length ?? 0;
     const focusInteractiveOverlayCount =
       source.match(
-        /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:\[&_button\]:pointer-events-auto/gu,
+        /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:(?:\[&_button\]:)?pointer-events-auto/gu,
       )?.length ?? 0;
     assert.equal(
       focusVisibleOverlayCount,
@@ -5251,7 +5720,7 @@ try {
   }
   assert.match(
     charactersPanelSource,
-    /max-md:pr-20 \[@media\(pointer:coarse\)\]:pr-24/u,
+    /pr-0 max-md:pr-32 \[@media\(pointer:coarse\)\]:pr-32/u,
     "Character rows must match their coarse-pointer padding to the desktop-width action toolbar",
   );
   assert.match(
@@ -5506,6 +5975,153 @@ try {
     reExported.includes(deflateSync(Buffer.from(base64Card, "ascii"))),
     false,
     "Export must strip stale zTXt chara chunks instead of shipping outdated data",
+  );
+}
+
+{
+  // #4704: the background-autonomous poller's server-side candidate filter
+  // must mirror the legacy client filter exactly (conversation mode with
+  // autonomousMessages enabled, excluding the Professor Mari home assistant;
+  // bad or missing metadata disqualifies).
+  const { isBackgroundAutonomousCandidate } =
+    await import("../../packages/server/src/services/conversation/autonomous-candidates.js");
+  const meta = (extra: Record<string, unknown>) => JSON.stringify({ autonomousMessages: true, ...extra });
+  assert.equal(isBackgroundAutonomousCandidate({ mode: "conversation", metadata: meta({}) }), true);
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: { autonomousMessages: true } }),
+    true,
+    "object metadata accepted",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "roleplay", metadata: meta({}) }),
+    false,
+    "non-conversation excluded",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: meta({ internalAssistant: "professor-mari" }) }),
+    false,
+    "Professor Mari home chat excluded",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: JSON.stringify({ autonomousMessages: false }) }),
+    false,
+    "autonomous disabled excluded",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: "{not json" }),
+    false,
+    "unparseable metadata excluded",
+  );
+  assert.equal(isBackgroundAutonomousCandidate({ mode: "conversation" }), false, "missing metadata excluded");
+
+  // The candidates route excludes EMPTIED Roleplay DM threads (the legacy poll
+  // ran the DM cleanup as a GET /chats side effect); the marker expression must
+  // stay in sync with cleanupEmptyRoleplayDmChats.
+  const { hasRoleplayDmThreadMarkers } =
+    await import("../../packages/server/src/services/conversation/autonomous-candidates.js");
+  assert.equal(hasRoleplayDmThreadMarkers({ roleplayDmThread: true }), true);
+  assert.equal(hasRoleplayDmThreadMarkers({ dmOriginChatId: "chat-1" }), true);
+  assert.equal(hasRoleplayDmThreadMarkers({ roleplayDmThread: false }), false);
+  assert.equal(hasRoleplayDmThreadMarkers({ dmOriginChatId: 42 }), false, "non-string origin id is not a marker");
+  assert.equal(hasRoleplayDmThreadMarkers({}), false);
+}
+
+{
+  // #4721: the chat transcript's infinite query keys ONLY by chat id — its
+  // pageSize lives in the option closures, so ANY second observer with a
+  // different pageSize hijacks the transcript's queryFn/getNextPageParam
+  // (last observer wins in React Query). The Chat Settings drawer's
+  // secret-plot reader did exactly that with a hardcoded 100: while the
+  // drawer was open, transcript refetches ignored the user's
+  // messages-per-page and "Load More" vanished on a mis-evaluated
+  // hasNextPage. Read-only newest-N windows must go through the peek hook,
+  // which keys by limit.
+  const drawerSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/client/src/components/chat/ChatSettingsDrawer.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    drawerSource,
+    /useChatMessages\(/u,
+    "Chat Settings must not observe the shared chatKeys.messages infinite query (#4721)",
+  );
+  assert.match(
+    drawerSource,
+    /useChatMessagePeek\(\s*chat\.id,\s*100,/u,
+    "The secret-plot reader must fetch its newest-100 window through the limit-keyed peek hook",
+  );
+  const imageSettingUpdateSource =
+    /const updateCustomAgentImageSetting = useCallback\([\s\S]*?\n  const updateCustomAgentImageConnection/u.exec(
+      drawerSource,
+    )?.[0] ?? "";
+  assert.match(
+    imageSettingUpdateSource,
+    /setCustomAgentImageSettingsDraft\(\(current\) => \(\{[\s\S]*current\?\.chatId === chat\.id \? current\.patch : \{\}[\s\S]*\[agentId\]: hasAgentSettings \? agentSettings : null/u,
+    "Rapid custom-agent connection and style changes must merge into one visible local draft",
+  );
+  assert.match(
+    imageSettingUpdateSource,
+    /if \(removingAgentImageSettingsRef\.current\.has\(agentId\)\) return;/u,
+    "Selector changes for an agent being removed must not enqueue another full-map write",
+  );
+  const toggleAgentSource =
+    /const toggleAgent = async[\s\S]*?\n  const removeAgentFromMenu/u.exec(drawerSource)?.[0] ?? "";
+  assert.match(
+    toggleAgentSource,
+    /await flushPendingCustomAgentImageSettings\(\)[\s\S]*await customAgentImageSettingsWriteQueueRef\.current\.waitForIdle\(\)[\s\S]*const latestImageSettings = readLatestCustomAgentImageSettings\(\)[\s\S]*delete next\[agentId\]/u,
+    "Removing an agent must drain queued image writes before deleting that agent's override",
+  );
+  assert.match(
+    toggleAgentSource,
+    /removingAgentImageSettingsRef\.current\.add\(agentId\)[\s\S]*customAgentImageSettingsWriteQueueRef\.current\.enqueue\(saveAgentSelection\)[\s\S]*finally \{[\s\S]*removingAgentImageSettingsRef\.current\.delete\(agentId\)/u,
+    "Agent removal must be terminal in the image-settings queue and unblock the selector afterward",
+  );
+
+  const serializedWrites = createSerializedMutationQueue();
+  const writeOrder: string[] = [];
+  let releaseFirstWrite!: () => void;
+  const firstWriteGate = new Promise<void>((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  const firstWrite = serializedWrites.enqueue(async () => {
+    writeOrder.push("first:start");
+    await firstWriteGate;
+    writeOrder.push("first:end");
+  });
+  const removalWrite = serializedWrites.enqueue(async () => {
+    writeOrder.push("removal");
+  });
+  const removingAgentIds = new Set(["image-agent"]);
+  const blockedSelectorWrite = removingAgentIds.has("image-agent")
+    ? null
+    : serializedWrites.enqueue(async () => {
+        writeOrder.push("stale-selector-write");
+      });
+  assert.equal(blockedSelectorWrite, null, "A selector event during removal must not enqueue a stale map");
+  await Promise.resolve();
+  assert.deepEqual(writeOrder, ["first:start"], "A delayed older metadata write must hold newer writes in order");
+  releaseFirstWrite();
+  await Promise.all([firstWrite, removalWrite, serializedWrites.waitForIdle()]);
+  assert.deepEqual(writeOrder, ["first:start", "first:end", "removal"]);
+  const trackerModelSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/client/src/features/tracker-panel/hooks/use-tracker-panel-model.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    trackerModelSource,
+    /useChatMessages\(/u,
+    "The tracker panel must not observe the shared chatKeys.messages infinite query (#4724)",
+  );
+  assert.match(
+    trackerModelSource,
+    /useChatMessagePeek\(\s*activeChatId,\s*20,/u,
+    "The tracker panel must fetch its newest-20 sprite window through the limit-keyed peek hook",
+  );
+  const useChatsSource = readFileSync(join(REPOSITORY_ROOT, "packages/client/src/hooks/use-chats.ts"), "utf8");
+  assert.match(
+    useChatsSource,
+    /queryKey: \[\.\.\.chatKeys\.messagePeek\(chatId \?\? ""\), limit\]/u,
+    "The peek hook's query key must include its limit so different windows never share options",
   );
 }
 

@@ -7,6 +7,14 @@ import { fileURLToPath } from "node:url";
 import { LAUNCHER_ENV_KEYS, readLauncherEnvValue } from "../read-launcher-env.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+let bashExecutable = "bash";
+if (process.platform === "win32") {
+  const gitExecPathCheck = spawnSync("git", ["--exec-path"], { encoding: "utf8" });
+  assert.equal(gitExecPathCheck.status, 0, `Unable to locate Git for Windows: ${gitExecPathCheck.stderr}`);
+  const gitBashPath = resolve(gitExecPathCheck.stdout.trim(), "../../..", "bin", "bash.exe");
+  assert.equal(existsSync(gitBashPath), true, `Unable to locate Git Bash at ${gitBashPath}`);
+  bashExecutable = gitBashPath;
+}
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "marinara-launcher-env-"));
 const envPath = join(temporaryDirectory, ".env");
 const executionMarker = join(temporaryDirectory, "shell-executed");
@@ -65,7 +73,7 @@ try {
         launcherSource.indexOf('if [ "$NODE_VERSION" -lt 24 ]'),
       `${launcherName} must wait until Node 24 is available before parsing .env`,
     );
-    const syntaxCheck = spawnSync("bash", ["-n", launcherPath], { encoding: "utf8" });
+    const syntaxCheck = spawnSync(bashExecutable, ["-n", launcherPath], { encoding: "utf8" });
     assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
   }
 } finally {

@@ -75,22 +75,23 @@ const BACKUP_DIRS = [
   "custom-stickers",
   "notification-sounds",
   "lorebooks/images",
+  "prompts/images",
   "agents/images",
   "connections/images",
   "long-term-memory",
 ];
 const ENCRYPTION_KEY_FILENAME = ".encryption-key";
 const PROFILE_ASSET_DIRS = BACKUP_DIRS.filter((dirName) => dirName !== "storage");
+const ZIP32_MAX_VALUE = 0xffffffff;
 const PROFILE_IMPORT_BODY_LIMIT_BYTES = 256 * 1024 * 1024;
-const PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES = 1024 * 1024 * 1024;
+const PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES = ZIP32_MAX_VALUE;
 const PROFILE_ARCHIVE_ENTRY_LIMIT_BYTES = 256 * 1024 * 1024;
 const PROFILE_ARCHIVE_CENTRAL_DIRECTORY_LIMIT_BYTES = 64 * 1024 * 1024;
-const PROFILE_ARCHIVE_TOTAL_UNCOMPRESSED_LIMIT_BYTES = 1024 * 1024 * 1024;
+const PROFILE_ARCHIVE_TOTAL_UNCOMPRESSED_LIMIT_BYTES = ZIP32_MAX_VALUE;
 const PROFILE_IMPORT_MEMORY_WARNING_BYTES = 512 * 1024 * 1024;
 const PROFILE_EXPORT_JSON_TOO_LARGE_CODE = "PROFILE_EXPORT_JSON_TOO_LARGE";
 const AUTOMATIC_BACKUP_SETTINGS_KEY = "automatic_backup";
 const AUTOMATIC_BACKUP_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-const ZIP32_MAX_VALUE = 0xffffffff;
 const ZIP_EOCD_SIGNATURE = 0x06054b50;
 const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
 const ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
@@ -500,6 +501,7 @@ for (const candidate of Object.values(schema)) {
 }
 
 export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<string, unknown>>) {
+  if (tableName === "noodler_fan_activity_state") return [];
   if (tableName === "chats") {
     return rows.map((row) => {
       if (typeof row.metadata !== "string") return row;
@@ -1141,14 +1143,16 @@ async function collectProfileAssetZipSources(files: ProfileFileAsset[], basePath
 async function writeProfileTableJsonLines(outputPath: string, tableName: string, rows: Array<Record<string, unknown>>) {
   const stream = createWriteStream(outputPath);
   let size = 0;
+  let count = 0;
   try {
     for (const row of sanitizeProfileTableRows(tableName, rows)) {
       const line = Buffer.from(`${JSON.stringify(row)}\n`, "utf8");
       await writeZipBuffer(stream, line);
       size += line.length;
+      count += 1;
     }
     await finishZipStream(stream);
-    return size;
+    return { size, count };
   } catch (error) {
     stream.destroy();
     throw error;
@@ -1172,8 +1176,8 @@ async function buildProfileArchiveSources(
     const rows = (await app.db.select().from(table as any)) as Array<Record<string, unknown>>;
     const relativePath = `profile-tables/${tableName}.jsonl`;
     const outputPath = join(tablesDir, `${tableName}.jsonl`);
-    const size = await writeProfileTableJsonLines(outputPath, tableName, rows);
-    tables[tableName] = { path: relativePath, count: rows.length, size };
+    const { size, count } = await writeProfileTableJsonLines(outputPath, tableName, rows);
+    tables[tableName] = { path: relativePath, count, size };
     tableSources.push({
       entryName: profileArchiveEntryPath(basePath, relativePath),
       filePath: outputPath,
@@ -1207,9 +1211,7 @@ async function writeNativeProfileZip(app: FastifyInstance, outputPath: string) {
   const workingDir = await mkdtemp(join(tmpdir(), "marinara-profile-tables-"));
   try {
     // Same row/asset consistency requirement as the JSON snapshot above.
-    const sources = await withNoodleAutoPostPaused(() =>
-      buildProfileArchiveSources(app, "", workingDir, true),
-    );
+    const sources = await withNoodleAutoPostPaused(() => buildProfileArchiveSources(app, "", workingDir, true));
     await writeStoredZipArchive(outputPath, sources);
   } finally {
     await rm(workingDir, { recursive: true, force: true }).catch(() => {});
@@ -2208,9 +2210,7 @@ async function writeFullBackupArchive(
   workingDir: string,
 ) {
   const dataDir = getDataDir();
-  const sources = await withNoodleAutoPostPaused(() =>
-    buildProfileArchiveSources(app, backupName, workingDir, false),
-  );
+  const sources = await withNoodleAutoPostPaused(() => buildProfileArchiveSources(app, backupName, workingDir, false));
   sources.push({
     entryName: `${backupName}/RESTORE.txt`,
     data: Buffer.from(buildBackupRestoreNotes(), "utf8"),
@@ -2684,27 +2684,16 @@ export async function backupRoutes(app: FastifyInstance) {
           for (const p of data.personas) {
             try {
               emitLegacyProgress("personas", "Importing personas");
-              // Restore persona avatar from base64 if provided
-              let personaAvatarPath: string | undefined;
-              if (p.avatarBase64) {
-                const dataDir = getDataDir();
-                const avatarDir = join(dataDir, "avatars");
-                await mkdir(avatarDir, { recursive: true });
-                const ext = ".png";
-                const avatarName = `persona-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-                personaAvatarPath = `avatars/${avatarName}`;
-                const { writeFile } = await import("fs/promises");
-                await writeFile(join(dataDir, personaAvatarPath), Buffer.from(p.avatarBase64, "base64"));
-              }
-              await chars.createPersona(
+              const created = await chars.createPersona(
                 p.name,
                 p.description ?? "",
-                personaAvatarPath,
+                undefined,
                 {
                   comment: p.comment,
                   creator: p.creator,
                   personaVersion: p.personaVersion,
                   creatorNotes: p.creatorNotes,
+                  phoneticName: typeof p.phoneticName === "string" ? p.phoneticName : "",
                   personality: p.personality,
                   backstory: p.backstory,
                   appearance: p.appearance,
@@ -2730,6 +2719,30 @@ export async function backupRoutes(app: FastifyInstance) {
                 normalizeTimestampOverrides({ createdAt: p.createdAt, updatedAt: p.updatedAt }),
               );
               stats.personas++;
+
+              if (created && p.avatarBase64) {
+                let avatarFile: string | null = null;
+                try {
+                  const dataDir = getDataDir();
+                  const avatarDir = join(dataDir, "avatars");
+                  await mkdir(avatarDir, { recursive: true });
+                  const avatarName = `persona-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+                  const avatarPath = `avatars/${avatarName}`;
+                  avatarFile = assertInsideDir(avatarDir, join(avatarDir, avatarName));
+                  await writeFile(avatarFile, Buffer.from(p.avatarBase64, "base64"));
+                  const updated = await chars.updatePersona(created.id, { avatarPath }, { skipVersionSnapshot: true });
+                  if (!updated) throw new Error("Imported Persona disappeared before its avatar could be attached");
+                } catch (err) {
+                  if (avatarFile) {
+                    try {
+                      await rm(avatarFile, { force: true });
+                    } catch (cleanupErr) {
+                      logger.warn(cleanupErr, "[backup] Failed to remove unattached legacy Persona avatar");
+                    }
+                  }
+                  logger.warn(err, "[backup] Skipped optional avatar restoration for imported Persona %s", created.id);
+                }
+              }
             } catch {
               /* skip */
             }

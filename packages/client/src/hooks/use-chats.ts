@@ -11,14 +11,14 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api } from "../lib/api-client";
+import { api, ApiError } from "../lib/api-client";
 import { useChatStore } from "../stores/chat.store";
 import { useAgentStore } from "../stores/agent.store";
 import { useGameStateStore } from "../stores/game-state.store";
 import { useEncounterStore } from "../stores/encounter.store";
 import { useUIStore } from "../stores/ui.store";
 import { clearBrowserRuntimeCaches } from "../lib/browser-runtime";
-import { ApiError } from "../lib/api-client";
+import { shouldRefetchMessagesOnReconnect } from "../lib/message-page-cache";
 import { lorebookKeys } from "./use-lorebooks";
 import { achievementKeys, trackAchievementEvent } from "./use-achievements";
 import type {
@@ -50,6 +50,7 @@ export const chatKeys = {
 };
 
 const RECENT_MESSAGE_CONTENT_EDIT_TTL_MS = 5 * 60 * 1000;
+const MESSAGE_CONTENT_UPDATE_RETRY_DELAY_MS = 300;
 const chatMetadataMutationVersions = new Map<string, number>();
 const chatMetadataFieldVersions = new Map<string, Map<string, number>>();
 
@@ -65,12 +66,29 @@ const recentMessageContentEdits = new Map<string, RecentMessageContentEdit>();
 let recentMessageContentEditRevision = 0;
 const messageContentUpdateQueues = new Map<string, Promise<void>>();
 
+function shouldRetryMessageContentUpdate(error: unknown) {
+  if (error instanceof ApiError) {
+    return error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500;
+  }
+  return error instanceof TypeError;
+}
+
+async function patchMessageContent(chatId: string | null, messageId: string, content: string) {
+  try {
+    return await api.patch<Message>(`/chats/${chatId}/messages/${messageId}`, { content });
+  } catch (error) {
+    if (!shouldRetryMessageContentUpdate(error)) throw error;
+    // Keep the retry inside the queued operation so a newer edit cannot be
+    // persisted first and then overwritten by this older content.
+    await new Promise((resolve) => setTimeout(resolve, MESSAGE_CONTENT_UPDATE_RETRY_DELAY_MS));
+    return api.patch<Message>(`/chats/${chatId}/messages/${messageId}`, { content });
+  }
+}
+
 function enqueueMessageContentUpdate(chatId: string | null, messageId: string, content: string) {
   const queueKey = `${chatId ?? ""}:${messageId}`;
   const previous = messageContentUpdateQueues.get(queueKey) ?? Promise.resolve();
-  const request = previous
-    .catch(() => undefined)
-    .then(() => api.patch<Message>(`/chats/${chatId}/messages/${messageId}`, { content }));
+  const request = previous.catch(() => undefined).then(() => patchMessageContent(chatId, messageId, content));
   const settled = request.then(
     () => undefined,
     () => undefined,
@@ -144,13 +162,24 @@ export function forgetRecentMessageContentEdit(chatId: string, messageId: string
   return true;
 }
 
+export function normalizeHydratedMessage(message: Message): Message {
+  const activeSwipeIndex = (message as Message & { activeSwipeIndex?: unknown }).activeSwipeIndex;
+  if (typeof activeSwipeIndex === "number" && Number.isInteger(activeSwipeIndex) && activeSwipeIndex >= 0) {
+    return message;
+  }
+  return { ...message, activeSwipeIndex: 0 };
+}
+
 export function preserveRecentMessageContentEdit(chatId: string, message: Message): Message {
   pruneRecentMessageContentEdits();
-  const edit = recentMessageContentEdits.get(message.id);
-  if (!edit || edit.chatId !== chatId) return message;
-  if (edit.activeSwipeIndex !== null && edit.activeSwipeIndex !== (message.activeSwipeIndex ?? 0)) return message;
-  if (message.content === edit.content) return message;
-  return { ...message, content: edit.content };
+  const normalizedMessage = normalizeHydratedMessage(message);
+  const edit = recentMessageContentEdits.get(normalizedMessage.id);
+  if (!edit || edit.chatId !== chatId) return normalizedMessage;
+  if (edit.activeSwipeIndex !== null && edit.activeSwipeIndex !== normalizedMessage.activeSwipeIndex) {
+    return normalizedMessage;
+  }
+  if (normalizedMessage.content === edit.content) return normalizedMessage;
+  return { ...normalizedMessage, content: edit.content };
 }
 
 export function applyRecentMessageContentEditsToData(
@@ -260,20 +289,34 @@ export function useChatMessages(chatId: string | null, pageSize: number = 0, ena
         : oldestLoaded.createdAt;
     },
     enabled: !!chatId && enabled,
+    // #4703: a reconnect refetch re-drains every loaded page back-to-back, so
+    // a scrolled-back chat on a flaky mobile connection re-downloads its whole
+    // loaded history per network flap. Allow it only while the cache is
+    // shallow; deep caches still resync via the stale-gated refetchOnMount,
+    // the post-generation refresh, and explicit invalidations.
+    refetchOnReconnect: (query) => shouldRefetchMessagesOnReconnect(query.state.data?.pages.length ?? 0),
   });
 }
 
 /**
- * Last few messages of a chat, for read-only previews (sidebar hover peek).
+ * Newest messages of a chat as one flat window, for read-only consumers
+ * (sidebar hover peek, the Director secret-plot panel).
  *
  * Deliberately does NOT share `chatKeys.messages` — that key ignores page size, so writing
  * a short slice into it would leave ChatArea's paginated view starting from a truncated
- * cache the next time that chat is opened.
+ * cache the next time that chat is opened. The reverse direction is just as important
+ * (#4721): merely OBSERVING the shared key with a different pageSize overwrites the
+ * transcript query's option closures (queryFn limit, getNextPageParam), because React
+ * Query keeps one options set per key and the last observer wins. Read-only windows
+ * belong here, keyed by their limit.
  */
 export function useChatMessagePeek(chatId: string | null, limit = 4, enabled = false) {
   return useQuery({
     queryKey: [...chatKeys.messagePeek(chatId ?? ""), limit],
-    queryFn: ({ signal }) => api.get<Message[]>(`/chats/${chatId}/messages?limit=${limit}`, { signal }),
+    queryFn: ({ signal }) =>
+      api
+        .get<Message[]>(`/chats/${chatId}/messages?limit=${limit}`, { signal })
+        .then((messages) => messages.map(normalizeHydratedMessage)),
     enabled: !!chatId && enabled,
     staleTime: 15_000,
   });
@@ -703,7 +746,7 @@ export function useUpdateChatMetadata() {
             vars.id,
             base.metadata,
             data.metadata,
-            context?.version ?? (chatMetadataMutationVersions.get(vars.id) ?? 0),
+            context?.version ?? chatMetadataMutationVersions.get(vars.id) ?? 0,
           ),
           updatedAt: data.updatedAt,
         });
@@ -830,166 +873,169 @@ export interface RollingSummaryBackfillInput {
 export function useRollingSummaryBackfill() {
   const qc = useQueryClient();
 
-  const startBackfill = useCallback(async (input: RollingSummaryBackfillInput) => {
-    const { chatId, summaryEntries, batchSize, maxMessagesPerBatch, promptTemplateId } = input;
+  const startBackfill = useCallback(
+    async (input: RollingSummaryBackfillInput) => {
+      const { chatId, summaryEntries, batchSize, maxMessagesPerBatch, promptTemplateId } = input;
 
-    const store = useRollingBackfillStore.getState();
-    if (store.status === "running") return;
-    
-    // Flip to "running" synchronously before any await
-    store.startBackfill(chatId);
+      const store = useRollingBackfillStore.getState();
+      if (store.status === "running") return;
 
-    let allMessages: Array<{ id: string; role: string; extra?: unknown }>;
-    try {
-      allMessages = await api.get(`/chats/${chatId}/messages`);
-    } catch {
-      useRollingBackfillStore.getState().stopBackfill();
-      toast.error("Could not start backfill: failed to load messages.");
-      return;
-    }
-    if (!Array.isArray(allMessages) || allMessages.length === 0) {
-      useRollingBackfillStore.getState().stopBackfill();
-      return;
-    }
+      // Flip to "running" synchronously before any await
+      store.startBackfill(chatId);
 
-    const messageIds = allMessages.map((m) => m.id);
-    const totalMessageCount = messageIds.length;
-
-    const summarizedIds = new Set<string>();
-    for (const entry of summaryEntries) {
-      if (Array.isArray(entry.messageIds)) {
-        for (const id of entry.messageIds) summarizedIds.add(id);
-      }
-    }
-
-    const isMessageHidden = (msg: { extra?: unknown }) => {
-      let extra = msg.extra;
-      if (typeof extra === "string") {
-        try {
-          extra = JSON.parse(extra);
-        } catch {
-          return false;
-        }
-      }
-      return !!extra && typeof extra === "object" && (extra as any).hiddenFromAI === true;
-    };
-
-    const safeBatchSize = Math.max(1, Math.min(totalMessageCount, batchSize));
-    const batches: Array<{ rangeStart: number; rangeEnd: number }> = [];
-    let cursor = 0;
-    while (cursor < totalMessageCount) {
-      while (cursor < totalMessageCount) {
-        const msg = allMessages[cursor]!;
-        if (summarizedIds.has(msg.id) || isMessageHidden(msg)) {
-          cursor++;
-        } else {
-          break;
-        }
-      }
-      if (cursor >= totalMessageCount) break;
-
-      let userCount = 0;
-      let msgCount = 0;
-      let endCursor = cursor;
-      while (endCursor < totalMessageCount && userCount < safeBatchSize && msgCount < maxMessagesPerBatch) {
-        const msg = allMessages[endCursor]!;
-        if (!isMessageHidden(msg)) {
-          if (msg.role === "user") {
-            userCount++;
-          }
-          msgCount++;
-        }
-        endCursor++;
-      }
-
-      batches.push({ rangeStart: cursor + 1, rangeEnd: endCursor });
-      cursor = endCursor;
-    }
-
-    if (batches.length === 0) {
-      useRollingBackfillStore.getState().stopBackfill();
-      toast.info("Everything is already summarized.");
-      return;
-    }
-
-    const abortController = new AbortController();
-    useRollingBackfillStore.setState({ abortController });
-
-    const currentStore = useRollingBackfillStore.getState();
-    currentStore.setTotalBatches(batches.length);
-
-    const debugMode = useUIStore.getState().debugMode;
-
-    console.warn(
-      `[Backfill] Starting — ${batches.length} batch(es) covering ${totalMessageCount} messages` +
-        (debugMode ? "" : " (enable Advanced > Debug Mode for per-batch logs)"),
-    );
-
-    let failedBatches = 0;
-
-    for (let i = 0; i < batches.length; i++) {
-      if (abortController.signal.aborted) break;
-
-      const batch = batches[i]!;
-      currentStore.updateProgress(i + 1, batch.rangeStart, batch.rangeEnd);
-
-      if (debugMode) {
-        console.warn(
-          `[Backfill] Batch ${i + 1}/${batches.length}: messages ${batch.rangeStart}-${batch.rangeEnd}`,
-        );
-      }
-
+      let allMessages: Array<{ id: string; role: string; extra?: unknown }>;
       try {
-        const result = await api.post<{
-          summary: string | null;
-          entry: ChatSummaryEntry | null;
-          entries: ChatSummaryEntry[];
-          messageIds: string[];
-          hideMessageIds: string[];
-        }>(
-          `/chats/${chatId}/generate-summary`,
-          { rangeStartIndex: batch.rangeStart, rangeEndIndex: batch.rangeEnd, promptTemplateId },
-          { signal: abortController.signal },
-        );
+        allMessages = await api.get(`/chats/${chatId}/messages`);
+      } catch {
+        useRollingBackfillStore.getState().stopBackfill();
+        toast.error("Could not start backfill: failed to load messages.");
+        return;
+      }
+      if (!Array.isArray(allMessages) || allMessages.length === 0) {
+        useRollingBackfillStore.getState().stopBackfill();
+        return;
+      }
 
-        const existing = qc.getQueryData<Chat>(chatKeys.detail(chatId));
-        if (existing) {
-          syncCachedChat(qc, {
-            ...existing,
-            metadata: {
-              ...(normalizeChatMetadataValue(existing.metadata) as Record<string, unknown>),
-              summary: result.summary,
-              summaryEntries: result.entries,
-            } as Chat["metadata"],
-          });
-        }
-        qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+      const messageIds = allMessages.map((m) => m.id);
+      const totalMessageCount = messageIds.length;
 
-        if (debugMode) {
-          console.warn(`[Backfill] Batch ${i + 1} complete`);
+      const summarizedIds = new Set<string>();
+      for (const entry of summaryEntries) {
+        if (Array.isArray(entry.messageIds)) {
+          for (const id of entry.messageIds) summarizedIds.add(id);
         }
-      } catch (err) {
+      }
+
+      const isMessageHidden = (msg: { extra?: unknown }) => {
+        let extra = msg.extra;
+        if (typeof extra === "string") {
+          try {
+            extra = JSON.parse(extra);
+          } catch {
+            return false;
+          }
+        }
+        return !!extra && typeof extra === "object" && (extra as any).hiddenFromAI === true;
+      };
+
+      const safeBatchSize = Math.max(1, Math.min(totalMessageCount, batchSize));
+      const batches: Array<{ rangeStart: number; rangeEnd: number }> = [];
+      let cursor = 0;
+      while (cursor < totalMessageCount) {
+        while (cursor < totalMessageCount) {
+          const msg = allMessages[cursor]!;
+          if (summarizedIds.has(msg.id) || isMessageHidden(msg)) {
+            cursor++;
+          } else {
+            break;
+          }
+        }
+        if (cursor >= totalMessageCount) break;
+
+        let userCount = 0;
+        let msgCount = 0;
+        let endCursor = cursor;
+        while (endCursor < totalMessageCount && userCount < safeBatchSize && msgCount < maxMessagesPerBatch) {
+          const msg = allMessages[endCursor]!;
+          if (!isMessageHidden(msg)) {
+            if (msg.role === "user") {
+              userCount++;
+            }
+            msgCount++;
+          }
+          endCursor++;
+        }
+
+        batches.push({ rangeStart: cursor + 1, rangeEnd: endCursor });
+        cursor = endCursor;
+      }
+
+      if (batches.length === 0) {
+        useRollingBackfillStore.getState().stopBackfill();
+        toast.info("Everything is already summarized.");
+        return;
+      }
+
+      const abortController = new AbortController();
+      useRollingBackfillStore.setState({ abortController });
+
+      const currentStore = useRollingBackfillStore.getState();
+      currentStore.setTotalBatches(batches.length);
+
+      const debugMode = useUIStore.getState().debugMode;
+
+      console.warn(
+        `[Backfill] Starting — ${batches.length} batch(es) covering ${totalMessageCount} messages` +
+          (debugMode ? "" : " (enable Advanced > Debug Mode for per-batch logs)"),
+      );
+
+      let failedBatches = 0;
+
+      for (let i = 0; i < batches.length; i++) {
         if (abortController.signal.aborted) break;
-        failedBatches++;
+
+        const batch = batches[i]!;
+        currentStore.updateProgress(i + 1, batch.rangeStart, batch.rangeEnd);
+
         if (debugMode) {
-          console.warn(`[Backfill] Batch ${i + 1} failed:`, err);
+          console.warn(`[Backfill] Batch ${i + 1}/${batches.length}: messages ${batch.rangeStart}-${batch.rangeEnd}`);
+        }
+
+        try {
+          const result = await api.post<{
+            summary: string | null;
+            entry: ChatSummaryEntry | null;
+            entries: ChatSummaryEntry[];
+            messageIds: string[];
+            hideMessageIds: string[];
+          }>(
+            `/chats/${chatId}/generate-summary`,
+            { rangeStartIndex: batch.rangeStart, rangeEndIndex: batch.rangeEnd, promptTemplateId },
+            { signal: abortController.signal },
+          );
+
+          const existing = qc.getQueryData<Chat>(chatKeys.detail(chatId));
+          if (existing) {
+            syncCachedChat(qc, {
+              ...existing,
+              metadata: {
+                ...(normalizeChatMetadataValue(existing.metadata) as Record<string, unknown>),
+                summary: result.summary,
+                summaryEntries: result.entries,
+              } as Chat["metadata"],
+            });
+          }
+          qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+
+          if (debugMode) {
+            console.warn(`[Backfill] Batch ${i + 1} complete`);
+          }
+        } catch (err) {
+          if (abortController.signal.aborted) break;
+          failedBatches++;
+          if (debugMode) {
+            console.warn(`[Backfill] Batch ${i + 1} failed:`, err);
+          }
         }
       }
-    }
 
-    if (abortController.signal.aborted) {
-      useRollingBackfillStore.setState({ status: "idle", abortController: null });
-      console.warn(`[Backfill] Stopped`);
-    } else {
-      currentStore.stopBackfill();
-      if (failedBatches > 0) {
-        console.warn(`[Backfill] Done — ${batches.length - failedBatches}/${batches.length} batch(es) succeeded, ${failedBatches} failed`);
-        toast.error(`Backfill finished with ${failedBatches} failed batch(es).`);
+      if (abortController.signal.aborted) {
+        useRollingBackfillStore.setState({ status: "idle", abortController: null });
+        console.warn(`[Backfill] Stopped`);
       } else {
-        console.warn(`[Backfill] Done — ${batches.length} batch(es) completed`);
+        currentStore.stopBackfill();
+        if (failedBatches > 0) {
+          console.warn(
+            `[Backfill] Done — ${batches.length - failedBatches}/${batches.length} batch(es) succeeded, ${failedBatches} failed`,
+          );
+          toast.error(`Backfill finished with ${failedBatches} failed batch(es).`);
+        } else {
+          console.warn(`[Backfill] Done — ${batches.length} batch(es) completed`);
+        }
       }
-    }
-  }, [qc]);
+    },
+    [qc],
+  );
 
   const stopBackfill = useCallback(() => {
     useRollingBackfillStore.getState().stopBackfill();
@@ -1001,11 +1047,18 @@ export function useRollingSummaryBackfill() {
 export function useCreateMessage(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { role: string; content: string; characterId?: string | null; extra?: Record<string, unknown> }) =>
-      api.post<Message>(`/chats/${chatId}/messages`, data),
+    mutationFn: (data: {
+      role: string;
+      content: string;
+      characterId?: string | null;
+      extra?: Record<string, unknown>;
+    }) => api.post<Message>(`/chats/${chatId}/messages`, data),
     onSuccess: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        // Peek windows (sidebar hover, secret-plot panel) cache the same rows
+        // under their own limit-keyed queries — keep them live too (#4721).
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
@@ -1021,6 +1074,7 @@ export function useDeleteMessage(chatId: string | null) {
     onSuccess: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
@@ -1036,6 +1090,7 @@ export function useDeleteMessages(chatId: string | null) {
     onSuccess: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
@@ -1056,10 +1111,7 @@ export function useUpdateMessage(chatId: string | null) {
       // don't overwrite the optimistic value with stale server data. Do not
       // await cancellation before painting the edit: leaving edit mode must
       // never reveal the old message while the cancellation promise settles.
-      const cancellation = qc.cancelQueries(
-        { queryKey: chatKeys.messages(chatId) },
-        { revert: false },
-      );
+      const cancellation = qc.cancelQueries({ queryKey: chatKeys.messages(chatId) }, { revert: false });
       const previous = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
       const previousMessage = findCachedMessage(previous, messageId);
       const revision = rememberRecentMessageContentEdit(chatId, messageId, content, previousMessage?.activeSwipeIndex);
@@ -1109,6 +1161,7 @@ export function useUpdateMessage(chatId: string | null) {
         const { streamingChatId, isStreaming } = useChatStore.getState();
         if (isStreaming && streamingChatId === chatId) return;
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
       }
     },
@@ -1418,8 +1471,9 @@ export function useSetActiveSwipe(chatId: string | null) {
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
         return;
       }
+      const normalizedUpdated = normalizeHydratedMessage(updated);
       qc.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId), (old) =>
-        replaceCachedMessage(old, messageId, (msg) => ({ ...msg, ...updated })),
+        replaceCachedMessage(old, messageId, (msg) => ({ ...msg, ...normalizedUpdated })),
       );
       qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
     },

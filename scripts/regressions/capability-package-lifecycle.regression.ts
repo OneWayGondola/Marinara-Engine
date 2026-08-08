@@ -185,9 +185,7 @@ try {
     resolveCapabilityCatalogUrl,
     resolveCapabilityPackageArtifactUrl,
     resolveCapabilityPackageIconUrl,
-  } = await import(
-    "../../packages/server/src/services/capability-packages/package-manager.service.js"
-  );
+  } = await import("../../packages/server/src/services/capability-packages/package-manager.service.js");
   assert.equal(
     resolveCapabilityCatalogUrl("2.3.1", "", "main"),
     "https://raw.githubusercontent.com/Pasta-Devs/Marinara-Agents/main/catalog/v2/catalog.json",
@@ -248,7 +246,7 @@ try {
     "Packages that add Fastify routes must not claim they can activate after startup",
   );
 
-  const { createCapabilityEmbeddingHost } =
+  const { createCapabilityEmbeddingHost, createConfiguredCapabilityEmbeddingHost } =
     await import("../../packages/server/src/services/capability-packages/capability-embedding.service.js");
   const embeddingHost = createCapabilityEmbeddingHost();
   assert.match(embeddingHost.spaceId, /^local:/u);
@@ -331,10 +329,7 @@ try {
   assert.ok(Date.now() - timeoutStartedAt < 1_000, "Long-term memory capability calls must have a total-duration cap");
 
   const capabilityLanguageModelSource = readFileSync(
-    join(
-      repositoryRoot,
-      "packages/server/src/services/capability-packages/capability-language-model.service.ts",
-    ),
+    join(repositoryRoot, "packages/server/src/services/capability-packages/capability-language-model.service.ts"),
     "utf8",
   );
   assert.match(
@@ -647,10 +642,7 @@ try {
   );
   await capabilityPackageManager.completeHierarchicalMapsSelectionCorrection();
   assert.equal(await capabilityPackageManager.isHierarchicalMapsSelectionCorrectionComplete(), true);
-  writeFileSync(
-    mapsCorrectionPath,
-    JSON.stringify({ schemaVersion: 2, completedAt: new Date().toISOString() }),
-  );
+  writeFileSync(mapsCorrectionPath, JSON.stringify({ schemaVersion: 2, completedAt: new Date().toISOString() }));
   assert.equal(
     await capabilityPackageManager.isHierarchicalMapsSelectionCorrectionComplete(),
     false,
@@ -955,6 +947,7 @@ try {
   const configuredDataDir = process.env.DATA_DIR;
   process.env.DATA_DIR = "./data";
   prepareCapabilityRuntimeEnvironment(dataDir);
+  process.env.FILE_STORAGE_DIR = join(dataDir, "storage");
   assert.equal(
     process.env.DATA_DIR,
     dataDir,
@@ -967,6 +960,43 @@ try {
   const { closeDB, getDB } = await import("../../packages/server/src/db/connection.js");
   closeDatabase = closeDB;
   const db = await getDB();
+  const { createConnectionsStorage } =
+    await import("../../packages/server/src/services/storage/connections.storage.js");
+  const remoteEmbeddingConnection = await createConnectionsStorage(db).create({
+    name: "Capability remote embeddings",
+    provider: "custom",
+    baseUrl: "https://chat.example.invalid/v1",
+    embeddingBaseUrl: "https://embeddings.example.invalid/v1",
+    embeddingModel: "text-embedding-regression",
+  });
+  const configuredEmbeddingHost = await createConfiguredCapabilityEmbeddingHost(db, remoteEmbeddingConnection.id);
+  assert.equal(configuredEmbeddingHost.label, "Capability remote embeddings (text-embedding-regression)");
+  assert.match(configuredEmbeddingHost.spaceId, /^remote:/u);
+  const repeatedConfiguredEmbeddingHost = await createConfiguredCapabilityEmbeddingHost(
+    db,
+    remoteEmbeddingConnection.id,
+  );
+  assert.equal(
+    configuredEmbeddingHost.spaceId,
+    repeatedConfiguredEmbeddingHost.spaceId,
+    "the same configured embedding source must keep a stable space ID",
+  );
+  const caseDistinctEmbeddingConnection = await createConnectionsStorage(db).create({
+    name: "Capability case-distinct embeddings",
+    provider: "custom",
+    baseUrl: "https://chat.example.invalid/v1",
+    embeddingBaseUrl: "https://embeddings.example.invalid/v1",
+    embeddingModel: "Text-Embedding-Regression",
+  });
+  const caseDistinctEmbeddingHost = await createConfiguredCapabilityEmbeddingHost(
+    db,
+    caseDistinctEmbeddingConnection.id,
+  );
+  assert.notEqual(
+    configuredEmbeddingHost.spaceId,
+    caseDistinctEmbeddingHost.spaceId,
+    "opaque embedding model IDs must retain case distinctions",
+  );
   const { createCapabilityPersistenceHost } =
     await import("../../packages/server/src/services/capability-packages/capability-persistence.service.js");
   const { createCapabilityResourceHost } =

@@ -199,13 +199,14 @@ export interface SlashCommandResult {
 // ── Dice roller ────────────────
 
 function parseDice(notation: string): { count: number; sides: number; modifier: number } | null {
-  const match = notation.match(/^(\d+)?d(\d+)([+-]\d+)?$/i);
+  const match = notation.trim().match(/^(\d+)?d(\d+)([+-]\d+)?$/i);
   if (!match) return null;
-  return {
-    count: parseInt(match[1] || "1", 10),
-    sides: parseInt(match[2]!, 10),
-    modifier: match[3] ? parseInt(match[3], 10) : 0,
-  };
+  const count = parseInt(match[1] || "1", 10);
+  const sides = parseInt(match[2]!, 10);
+  // Same caps the server dice route enforces. Without them "/roll 99999999d6"
+  // spins the render thread, and "0d6" rolls nothing at all.
+  if (count < 1 || count > 100 || sides < 1 || sides > 1000) return null;
+  return { count, sides, modifier: match[3] ? parseInt(match[3], 10) : 0 };
 }
 
 function rollDice(count: number, sides: number): number[] {
@@ -1314,9 +1315,7 @@ const COMMANDS: SlashCommand[] = [
   },
 ];
 
-function buildConversationGameSlashCommands(
-  games: readonly ConversationGameSlashContribution[] = [],
-): SlashCommand[] {
+function buildConversationGameSlashCommands(games: readonly ConversationGameSlashContribution[] = []): SlashCommand[] {
   const reserved = new Set(
     COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]).map((name) => name.toLowerCase()),
   );

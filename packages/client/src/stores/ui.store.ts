@@ -537,6 +537,7 @@ interface UIState {
   appAccentPulseMode: boolean;
   appAccentRgbMode: boolean;
   customCursorEnabled: boolean;
+  reduceAmbientEffects: boolean;
   chatBackground: string | null;
   /** Default background applied when a Roleplay chat has no saved background yet. */
   defaultRoleplayBackground: string;
@@ -548,6 +549,8 @@ interface UIState {
   lorebookDetailId: string | null;
   /** When set, the main area shows the full-page preset editor instead of chat */
   presetDetailId: string | null;
+  /** One-shot tab the preset editor should open to. */
+  presetDetailInitialTab: string | null;
   /** When set, the main area shows the full-page connection editor instead of chat */
   connectionDetailId: string | null;
   /** When set, the main area shows the full-page agent editor. Value is the agent *type* id (e.g. "world-state") */
@@ -687,6 +690,8 @@ interface UIState {
   imageBackgroundHeight: number;
   imageIllustrationWidth: number;
   imageIllustrationHeight: number;
+  imageNoodleWidth: number;
+  imageNoodleHeight: number;
   imageGameWidth: number;
   imageGameHeight: number;
   imagePortraitWidth: number;
@@ -920,6 +925,7 @@ interface UIState {
   setAppAccentPulseMode: (enabled: boolean) => void;
   setAppAccentRgbMode: (enabled: boolean) => void;
   setCustomCursorEnabled: (enabled: boolean) => void;
+  setReduceAmbientEffects: (enabled: boolean) => void;
   setChatBackground: (url: string | null) => void;
   setDefaultRoleplayBackground: (url: string) => void;
   setChatBackgroundBlur: (v: number) => void;
@@ -956,7 +962,7 @@ interface UIState {
   closeCharacterDetail: () => void;
   openLorebookDetail: (id: string, options?: { initialTab?: string; preserveLorebookLibrary?: boolean }) => void;
   closeLorebookDetail: () => void;
-  openPresetDetail: (id: string) => void;
+  openPresetDetail: (id: string, options?: { initialTab?: string }) => void;
   closePresetDetail: () => void;
   openConnectionDetail: (id: string) => void;
   closeConnectionDetail: () => void;
@@ -1016,6 +1022,7 @@ interface UIState {
   setReviewImagePromptsBeforeSend: (v: boolean) => void;
   setImageBackgroundDimensions: (width: number, height: number) => void;
   setImageIllustrationDimensions: (width: number, height: number) => void;
+  setImageNoodleDimensions: (width: number, height: number) => void;
   setImageGameDimensions: (width: number, height: number) => void;
   setImagePortraitDimensions: (width: number, height: number) => void;
   setImageSelfieDimensions: (width: number, height: number) => void;
@@ -1203,6 +1210,7 @@ export function pickSyncedSettings(state: UIState) {
     theme: state.theme,
     appBackgroundColor: state.appBackgroundColor,
     appAccentColor: state.appAccentColor,
+    reduceAmbientEffects: state.reduceAmbientEffects,
     chatBackground: state.chatBackground,
     defaultRoleplayBackground: state.defaultRoleplayBackground,
     chatBackgroundBlur: state.chatBackgroundBlur,
@@ -1222,6 +1230,8 @@ export function pickSyncedSettings(state: UIState) {
     imageBackgroundHeight: state.imageBackgroundHeight,
     imageIllustrationWidth: state.imageIllustrationWidth,
     imageIllustrationHeight: state.imageIllustrationHeight,
+    imageNoodleWidth: state.imageNoodleWidth,
+    imageNoodleHeight: state.imageNoodleHeight,
     imageGameWidth: state.imageGameWidth,
     imageGameHeight: state.imageGameHeight,
     imagePortraitWidth: state.imagePortraitWidth,
@@ -1348,12 +1358,14 @@ export const useUIStore = create<UIState>()(
       appAccentPulseMode: false,
       appAccentRgbMode: false,
       customCursorEnabled: true,
+      reduceAmbientEffects: false,
       chatBackground: null,
       defaultRoleplayBackground: DEFAULT_ROLEPLAY_BACKGROUND_URL,
       chatBackgroundBlur: 0,
       characterDetailId: null,
       lorebookDetailId: null,
       presetDetailId: null,
+      presetDetailInitialTab: null,
       connectionDetailId: null,
       agentDetailId: null,
       toolDetailId: null,
@@ -1427,6 +1439,8 @@ export const useUIStore = create<UIState>()(
       imageBackgroundHeight: 720,
       imageIllustrationWidth: 896,
       imageIllustrationHeight: 1280,
+      imageNoodleWidth: 1024,
+      imageNoodleHeight: 1536,
       imageGameWidth: 1280,
       imageGameHeight: 720,
       imagePortraitWidth: 1024,
@@ -1652,6 +1666,7 @@ export const useUIStore = create<UIState>()(
       setAppAccentPulseMode: (enabled) => set({ appAccentPulseMode: enabled }),
       setAppAccentRgbMode: (enabled) => set({ appAccentRgbMode: enabled }),
       setCustomCursorEnabled: (enabled) => set({ customCursorEnabled: enabled }),
+      setReduceAmbientEffects: (enabled) => set({ reduceAmbientEffects: enabled }),
       setChatBackground: (url) => set({ chatBackground: url }),
       setDefaultRoleplayBackground: (url) =>
         set({ defaultRoleplayBackground: normalizeDefaultRoleplayBackground(url) }),
@@ -1749,9 +1764,10 @@ export const useUIStore = create<UIState>()(
           editorDirty: false,
           ...restoreMobileDetailReturnPanel(s.detailReturnRightPanel),
         })),
-      openPresetDetail: (id) =>
+      openPresetDetail: (id, options) =>
         set((s) => ({
           presetDetailId: id,
+          presetDetailInitialTab: options?.initialTab ?? null,
           characterLibraryOpen: false,
           lorebookLibraryOpen: false,
           agentCatalogOpen: false,
@@ -1771,6 +1787,7 @@ export const useUIStore = create<UIState>()(
       closePresetDetail: () =>
         set((s) => ({
           presetDetailId: null,
+          presetDetailInitialTab: null,
           editorDirty: false,
           ...restoreMobileDetailReturnPanel(s.detailReturnRightPanel),
         })),
@@ -2223,6 +2240,11 @@ export const useUIStore = create<UIState>()(
           imageIllustrationWidth: clampImageDimension(width),
           imageIllustrationHeight: clampImageDimension(height),
         }),
+      setImageNoodleDimensions: (width, height) =>
+        set({
+          imageNoodleWidth: clampImageDimension(width),
+          imageNoodleHeight: clampImageDimension(height),
+        }),
       setImageGameDimensions: (width, height) =>
         set({
           imageGameWidth: clampImageDimension(width),
@@ -2369,6 +2391,7 @@ export const useUIStore = create<UIState>()(
           appAccentColor: "",
           appAccentRgbMode: false,
           customCursorEnabled: true,
+          reduceAmbientEffects: false,
           chatBackground: null,
           defaultRoleplayBackground: DEFAULT_ROLEPLAY_BACKGROUND_URL,
           chatBackgroundBlur: 0,
@@ -3113,12 +3136,23 @@ export const useUIStore = create<UIState>()(
         if (version <= 87 && persisted.roleplayNarratorAvatarCycling === undefined) {
           persisted.roleplayNarratorAvatarCycling = true;
         }
+        // v88 -> v89: add the manual ambient-effects preference. The system
+        // reduced-motion preference is evaluated live and is not persisted.
+        if (version <= 88 && persisted.reduceAmbientEffects === undefined) {
+          persisted.reduceAmbientEffects = false;
+        }
+        // v89 -> v90: give Noodle timeline images their own provider-compatible canvas.
+        if (version <= 89) {
+          if (persisted.imageNoodleWidth === undefined) persisted.imageNoodleWidth = 1024;
+          if (persisted.imageNoodleHeight === undefined) persisted.imageNoodleHeight = 1536;
+        }
         // v84 -> v85: keep the historical blank-line behavior for /continue by default.
         if (version <= 84 && persisted.continueAddsNewline === undefined) {
           persisted.continueAddsNewline = true;
         }
         persisted.appAccentRgbMode = persisted.appAccentRgbMode === true;
         persisted.customCursorEnabled = persisted.customCursorEnabled !== false;
+        persisted.reduceAmbientEffects = persisted.reduceAmbientEffects === true;
         persisted.professorMariSuggestionsEnabled = persisted.professorMariSuggestionsEnabled !== false;
         persisted.includeReasoningInExports = persisted.includeReasoningInExports === true;
         persisted.roleplayReducedPaintEffects = persisted.roleplayReducedPaintEffects === true;
@@ -3199,6 +3233,7 @@ export const useUIStore = create<UIState>()(
         appAccentPulseMode: state.appAccentPulseMode,
         appAccentRgbMode: state.appAccentRgbMode,
         customCursorEnabled: state.customCursorEnabled,
+        reduceAmbientEffects: state.reduceAmbientEffects,
         chatBackground: state.chatBackground,
         defaultRoleplayBackground: state.defaultRoleplayBackground,
         chatBackgroundBlur: state.chatBackgroundBlur,
@@ -3221,6 +3256,8 @@ export const useUIStore = create<UIState>()(
         imageBackgroundHeight: state.imageBackgroundHeight,
         imageIllustrationWidth: state.imageIllustrationWidth,
         imageIllustrationHeight: state.imageIllustrationHeight,
+        imageNoodleWidth: state.imageNoodleWidth,
+        imageNoodleHeight: state.imageNoodleHeight,
         imageGameWidth: state.imageGameWidth,
         imageGameHeight: state.imageGameHeight,
         imagePortraitWidth: state.imagePortraitWidth,

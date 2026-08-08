@@ -5,6 +5,7 @@ import type {
   Message,
   MessageAttachment,
   PendingSpatialTransition,
+  ResolvedSpatialTravel,
   SpatialContextResponse,
   SpatialDefinitionIssue,
 } from "@marinara-engine/shared";
@@ -12,6 +13,11 @@ import { api, ApiError } from "../lib/api-client";
 import { useChatStore } from "../stores/chat.store";
 import { dispatchCapabilityClientEvent } from "../lib/capability-client-events";
 import { chatKeys } from "./use-chats";
+import {
+  shouldKeepPendingSpatialTransition,
+  spatialOwnerTurnRecoveryPath,
+  type RecoveredSpatialOwnerTurnResponse,
+} from "./spatial-owner-turn-recovery";
 
 export const spatialContextKeys = {
   all: ["spatial-context"] as const,
@@ -32,6 +38,7 @@ export interface CommitSpatialOwnerTurnInput {
 interface CommitSpatialOwnerTurnResponse {
   message: Message;
   spatial: SpatialContextResponse;
+  travel?: ResolvedSpatialTravel;
 }
 
 export interface SpatialContextProblem {
@@ -118,7 +125,10 @@ export function useCommitSpatialOwnerTurn() {
       api.post<CommitSpatialOwnerTurnResponse>(`/chats/${chatId}/spatial-context/turn`, request),
     onSuccess: (response, variables) => {
       queryClient.setQueryData(spatialContextKeys.detail(variables.chatId), response.spatial);
-      useChatStore.getState().clearPendingSpatialTransition(variables.chatId, variables.transition.commandId);
+      const stepwiseRouteRemainsQueued = shouldKeepPendingSpatialTransition(response.travel);
+      if (!stepwiseRouteRemainsQueued) {
+        useChatStore.getState().clearPendingSpatialTransition(variables.chatId, variables.transition.commandId);
+      }
       dispatchCapabilityClientEvent({
         packageId: "hierarchical-maps",
         type: "spatial_transition_committed",
@@ -128,6 +138,7 @@ export function useCommitSpatialOwnerTurn() {
           commandId: variables.transition.commandId,
           currentLocationId: response.spatial.currentLocationId,
           definitionRevision: response.spatial.definition?.revision,
+          ...(response.travel ? { travel: response.travel } : {}),
         },
       });
       void queryClient.invalidateQueries({ queryKey: chatKeys.messages(variables.chatId) });
@@ -135,8 +146,35 @@ export function useCommitSpatialOwnerTurn() {
       void queryClient.invalidateQueries({ queryKey: chatKeys.list() });
       void queryClient.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
     },
-    onError: (_error, variables) => {
-      useChatStore.getState().setPendingSpatialTransitionStatus(variables.chatId, "needs_review");
+    onError: async (_error, variables) => {
+      let recovered: RecoveredSpatialOwnerTurnResponse | null = null;
+      try {
+        recovered = await api.get<RecoveredSpatialOwnerTurnResponse>(
+          spatialOwnerTurnRecoveryPath(variables.chatId, variables.transition),
+        );
+      } catch {
+        // The original mutation error remains authoritative when command recovery is not confirmed.
+      }
+      if (recovered?.applied) {
+        const stepwiseRouteRemainsQueued = shouldKeepPendingSpatialTransition(recovered.travel);
+        if (!stepwiseRouteRemainsQueued) {
+          useChatStore.getState().clearPendingSpatialTransition(variables.chatId, variables.transition.commandId);
+        }
+        dispatchCapabilityClientEvent({
+          packageId: "hierarchical-maps",
+          type: "spatial_transition_committed",
+          chatId: variables.chatId,
+          data: {
+            chatId: variables.chatId,
+            commandId: variables.transition.commandId,
+            currentLocationId: recovered.currentLocationId,
+            definitionRevision: recovered.definitionRevision,
+            ...(recovered.travel ? { travel: recovered.travel } : {}),
+          },
+        });
+      } else {
+        useChatStore.getState().setPendingSpatialTransitionStatus(variables.chatId, "needs_review");
+      }
       void queryClient.invalidateQueries({ queryKey: spatialContextKeys.detail(variables.chatId) });
     },
   });

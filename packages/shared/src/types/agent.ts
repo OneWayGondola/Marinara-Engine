@@ -300,7 +300,8 @@ export interface AgentCallDebugEvent {
   agentName: string;
   phase: string;
   model: string;
-  temperature: number;
+  /** Effective sampling value sent to the provider; omitted when connection/model policy suppresses it. */
+  temperature?: number;
   maxTokens: number;
   messageCount: number;
   messages?: AgentCallDebugMessage[];
@@ -310,7 +311,10 @@ export interface AgentCallDebugEvent {
   completionTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
+  /** Duration of this provider request. */
   durationMs?: number;
+  /** Cumulative elapsed time for a multi-round agent run. */
+  elapsedMs?: number;
   finishReason?: string | null;
   response?: string;
   responsePreview?: string;

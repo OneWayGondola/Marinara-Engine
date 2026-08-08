@@ -67,7 +67,7 @@ import {
 } from "@marinara-engine/shared";
 import { ApiError } from "../../lib/api-client";
 import { showConfirmDialog } from "../../lib/app-dialogs";
-import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
+import { DEFAULT_NOODLE_SETTINGS, normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { cn } from "../../lib/utils";
 import { useActivePersona, useCharacterGroups, useCharacters, usePersonas } from "../../hooks/use-characters";
 import { useConnections } from "../../hooks/use-connections";
@@ -166,7 +166,6 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 
 type RawCharacter = { id?: unknown; data?: unknown; avatarPath?: unknown };
 type RawCharacterGroup = { id?: unknown; name?: unknown; description?: unknown; characterIds?: unknown };
-type RawPersona = { id?: unknown; createdAt?: unknown; updatedAt?: unknown };
 type NoodleComposerImage = { url: string; crop: NoodlePostImageCrop | null };
 type NoodlePendingComposerImage = { source: File | string; crop: NoodlePostImageCrop | null };
 type SocialSettingsTab = "noodle" | "noodler";
@@ -195,10 +194,6 @@ function isRawCharacter(value: unknown): value is RawCharacter {
 }
 
 function isRawCharacterGroup(value: unknown): value is RawCharacterGroup {
-  return isRecord(value);
-}
-
-function isRawPersona(value: unknown): value is RawPersona {
   return isRecord(value);
 }
 
@@ -597,10 +592,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const noodlerAccountsQuery = useNoodlerAccounts(data?.settings.enableNoodler === true);
   // The counter is the reason to come back, so it has to be visible from the Noodle side —
   // where the user is when they are not already watching NoodleR.
-  const noodlerUnseenCount = useNoodlerUnseenCount(
-    selectedPersonaId || null,
-    data?.settings.enableNoodler === true,
-  );
+  const noodlerUnseenCount = useNoodlerUnseenCount(selectedPersonaId || null, data?.settings.enableNoodler === true);
   // Same idea for Noodle's own timeline. Frozen per account for the same reason as NoodleR:
   // the stored value advances as soon as the timeline is shown, which would otherwise erase
   // the divider while the reader is still on it.
@@ -617,7 +609,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
           automating: noodlerAutomatingCount,
         });
   const { data: activePersona } = useActivePersona();
-  const { data: personasRaw } = usePersonas();
+  const { data: personasData } = usePersonas();
   const { data: charactersRaw } = useCharacters();
   const { data: characterGroupsRaw } = useCharacterGroups();
   const { data: connectionsRaw } = useConnections();
@@ -677,7 +669,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
     () => (Array.isArray(charactersRaw) ? charactersRaw.filter(isRawCharacter) : []),
     [charactersRaw],
   );
-  const personas = useMemo(() => (Array.isArray(personasRaw) ? personasRaw.filter(isRawPersona) : null), [personasRaw]);
+  const personas = personasData ?? null;
   const characterGroups = useMemo(
     () => (Array.isArray(characterGroupsRaw) ? characterGroupsRaw.filter(isRawCharacterGroup) : []),
     [characterGroupsRaw],
@@ -753,6 +745,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const [pendingImage, setPendingImage] = useState<NoodlePendingComposerImage | null>(null);
   const [imageUrlDraft, setImageUrlDraft] = useState("");
   const [imageGenerationPromptDraft, setImageGenerationPromptDraft] = useState("");
+  const [imageInstructionsEditorOpen, setImageInstructionsEditorOpen] = useState(false);
   const [pollEditorValue, setPollEditorValue] = useState<NoodlePollInput | null>(null);
   const [noodlerGenerationGuidanceDraft, setNoodlerGenerationGuidanceDraft] = useState("");
   const [draftPoll, setDraftPoll] = useState<NoodlePollInput | null>(null);
@@ -825,17 +818,14 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const livePersonaIds = useMemo(() => {
     const ids = new Set<string>();
     for (const persona of personas ?? []) {
-      const id = readString(persona.id);
-      if (id) ids.add(id);
+      ids.add(persona.id);
     }
     return ids;
   }, [personas]);
   const personaRecencyById = useMemo(() => {
     const recency = new Map<string, number>();
     for (const persona of personas ?? []) {
-      const id = readString(persona.id);
-      if (!id) continue;
-      recency.set(id, Date.parse(readString(persona.updatedAt) || readString(persona.createdAt)) || 0);
+      recency.set(persona.id, Date.parse(persona.updatedAt || persona.createdAt) || 0);
     }
     return recency;
   }, [personas]);
@@ -980,7 +970,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
     // still empty during initial hydration.
     if (!data || personas === null) return;
     if (selectedPersonaId && personaAccounts.some((account) => account.entityId === selectedPersonaId)) return;
-    const activeId = readString(activePersona?.id);
+    const activeId = activePersona?.id;
     const activeAccount = personaAccounts.find((account) => account.entityId === activeId);
     const nextPersonaId = activeAccount?.entityId ?? sortedPersonaAccounts[0]?.entityId ?? "";
     if (selectedPersonaId !== nextPersonaId) setSelectedPersonaId(nextPersonaId);
@@ -1003,8 +993,8 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   }, [mobileDrawerOpen]);
 
   useEffect(() => {
-    setImageGenerationPromptDraft(settings?.imageGenerationPrompt ?? "");
-  }, [settings?.imageGenerationPrompt]);
+    if (!imageInstructionsEditorOpen) setImageGenerationPromptDraft(settings?.imageGenerationPrompt ?? "");
+  }, [imageInstructionsEditorOpen, settings?.imageGenerationPrompt]);
 
   useEffect(() => {
     setNoodlerGenerationGuidanceDraft(settings?.noodlerGenerationGuidance ?? "");
@@ -1102,6 +1092,14 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
           : localizeUi("ui.noodle.noodlehome.couldNotRestoreTheDefaultNoodlePrompt"),
       );
     }
+  };
+
+  const imageInstructionsIsDefault =
+    (settings?.imageGenerationPrompt ?? "") === DEFAULT_NOODLE_SETTINGS.imageGenerationPrompt;
+
+  const restoreDefaultImageInstructions = () => {
+    setImageGenerationPromptDraft(DEFAULT_NOODLE_SETTINGS.imageGenerationPrompt);
+    saveSettings({ imageGenerationPrompt: DEFAULT_NOODLE_SETTINGS.imageGenerationPrompt });
   };
 
   const beginRefreshTimeEdit = (scheduledTime: string) => {
@@ -3537,23 +3535,52 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                       ))}
                     </select>
                   </label>
-                  <label className="block space-y-1.5">
-                    <FieldLabel
-                      help={localizeUi("ui.noodle.noodlehome.extraInstructionsPassedIntoTheNoodlePostImagePrompt")}
-                    >
-                      {localizeUi("ui.noodle.noodlehome.promptInstructions")}
-                    </FieldLabel>
-                    <textarea
-                      value={imageGenerationPromptDraft}
-                      onChange={(event) => setImageGenerationPromptDraft(event.target.value)}
-                      onBlur={() => {
-                        if (imageGenerationPromptDraft !== settings.imageGenerationPrompt) {
-                          saveSettings({ imageGenerationPrompt: imageGenerationPromptDraft });
-                        }
-                      }}
-                      className={textareaClass}
-                    />
-                  </label>
+                  <div data-component="NoodleView.ImageInstructionsSetting" className="space-y-3">
+                    <div className="flex items-start gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--noodle-accent)]/10 text-[var(--noodle-accent)]">
+                        <FileText size={16} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-xs font-semibold text-[var(--foreground)]">
+                            {localizeUi("ui.noodle.noodlehome.promptInstructions")}
+                          </p>
+                          <span className="rounded-full border border-[var(--noodle-accent)]/30 bg-[var(--noodle-accent)]/10 px-2 py-0.5 text-[0.625rem] font-semibold text-[var(--noodle-accent)]">
+                            {imageInstructionsIsDefault
+                              ? localizeUi("ui.noodle.noodlehome.default")
+                              : localizeUi("settings.notifications.customSound.status.custom")}
+                          </span>
+                        </div>
+                        <p className="mt-1 line-clamp-3 whitespace-pre-line text-[0.68rem] leading-5 text-[var(--muted-foreground)]">
+                          {settings.imageGenerationPrompt ||
+                            localizeUi("ui.noodle.noodlehome.extraInstructionsPassedIntoTheNoodlePostImagePrompt")}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => restoreDefaultImageInstructions()}
+                        disabled={updateSettings.isPending || imageInstructionsIsDefault}
+                        className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-[var(--noodle-accent)]/35 px-3 text-xs font-semibold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        <RotateCcw size={13} />
+                        {localizeUi("ui.noodle.noodlehome.restoreDefault")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImageGenerationPromptDraft(settings.imageGenerationPrompt);
+                          setImageInstructionsEditorOpen(true);
+                        }}
+                        disabled={updateSettings.isPending}
+                        className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--background)] px-3 py-2 text-xs font-semibold text-[var(--foreground)] transition-colors hover:border-[var(--noodle-accent)]/60 hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]/70 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        <Pencil size={14} aria-hidden="true" className="shrink-0 text-[var(--noodle-accent)]" />
+                        <span>{localizeUi("ui.noodle.noodlehome.editPrompt")}</span>
+                      </button>
+                    </div>
+                  </div>
                   <ToggleSetting
                     label={localizeUi("ui.noodle.noodlehome.useAvatarReferences")}
                     help={localizeUi("ui.noodle.noodlehome.sendsCharacterAvatarsOrPreferredFullBodyReferencesTo")}
@@ -5142,6 +5169,71 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
           </div>
         </div>
       </Modal>
+      <ExpandedTextarea
+        open={imageInstructionsEditorOpen}
+        onClose={() => {
+          if (updateSettings.isPending) return;
+          setImageGenerationPromptDraft(settings?.imageGenerationPrompt ?? "");
+          setImageInstructionsEditorOpen(false);
+        }}
+        title={localizeUi("ui.noodle.noodlehome.promptInstructions")}
+        value={imageGenerationPromptDraft}
+        onChange={setImageGenerationPromptDraft}
+        readOnly={updateSettings.isPending}
+        placeholder={DEFAULT_NOODLE_SETTINGS.imageGenerationPrompt}
+        closeLabel={localizeUi("chat.delete.dialog.cancel")}
+        overlayStyle={getNoodleAccentStyle(NOODLE_BLUE)}
+        footer={
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <button
+              type="button"
+              onClick={() => setImageGenerationPromptDraft(DEFAULT_NOODLE_SETTINGS.imageGenerationPrompt)}
+              disabled={
+                updateSettings.isPending || imageGenerationPromptDraft === DEFAULT_NOODLE_SETTINGS.imageGenerationPrompt
+              }
+              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-md border border-[var(--noodle-accent)]/35 px-3 text-xs font-semibold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <RotateCcw size={13} />
+              {localizeUi("ui.noodle.noodlehome.restoreDefault")}
+            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setImageGenerationPromptDraft(settings?.imageGenerationPrompt ?? "");
+                  setImageInstructionsEditorOpen(false);
+                }}
+                disabled={updateSettings.isPending}
+                className="min-h-10 flex-1 rounded-md border border-[var(--border)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-45 sm:flex-none"
+              >
+                {localizeUi("chat.delete.dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  updateSettings.mutate(
+                    { imageGenerationPrompt: imageGenerationPromptDraft },
+                    {
+                      onSuccess: () => setImageInstructionsEditorOpen(false),
+                      onError: (error) =>
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : localizeUi("ui.noodle.noodlehome.couldNotUpdateNoodleSettings"),
+                        ),
+                    },
+                  );
+                }}
+                disabled={updateSettings.isPending || imageGenerationPromptDraft === settings?.imageGenerationPrompt}
+                className="inline-flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-md bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 [&_svg]:!text-zinc-950 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 sm:flex-none"
+              >
+                <Save size={13} />
+                {localizeUi("ui.noodle.noodlehome.savePrompt")}
+              </button>
+            </div>
+          </div>
+        }
+      />
       <ExpandedTextarea
         open={noodlePromptEditorOpen}
         onClose={closeNoodlePromptEditor}

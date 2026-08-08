@@ -79,8 +79,7 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
     Boolean(generatedStyle) &&
     !promptContainsPositiveNormalizedValue(providerVisiblePrompt, generatedStyle, fragmentMode);
   const protectUserPositive =
-    Boolean(userPositive) &&
-    !promptContainsPositiveNormalizedValue(providerVisiblePrompt, userPositive, fragmentMode);
+    Boolean(userPositive) && !promptContainsPositiveNormalizedValue(providerVisiblePrompt, userPositive, fragmentMode);
   if (!protectGeneratedStyle && !protectUserPositive) return initial;
 
   return compileImagePromptPass(input, protectGeneratedStyle, protectUserPositive);
@@ -102,11 +101,7 @@ function compileImagePromptPass(
 
   const generatedStyle = input.generatedStyle?.trim() ?? "";
   const userPositive = input.userPositive?.trim() ?? "";
-  const {
-    preserveGeneratedPrompt,
-    compactPrompt,
-    fragmentMode,
-  } = resolveImagePromptCompilationMode(input, profile);
+  const { preserveGeneratedPrompt, compactPrompt, fragmentMode } = resolveImagePromptCompilationMode(input, profile);
   const duplicateComparisonPrompt = [input.prompt, input.dedupeAgainstPrompt].filter(Boolean).join("\n");
   const generatedStylePart = protectGeneratedStyle
     ? generatedStyle
@@ -133,6 +128,12 @@ function compileImagePromptPass(
   const positiveParts = compactPrompt
     ? [
         { value: promptPrefix, sourcePrompt: false, hardPrefix: true },
+        // Explicit profile configuration is a provider-facing prefix, even for
+        // compact avatar/portrait prompts. Protect it from priority sorting and
+        // the compact token budget so inferred source cues cannot move ahead of
+        // or silently replace the user's configured tags.
+        { value: profile.positiveTags, sourcePrompt: false, hardPrefix: true },
+        { value: profileSubjectTags, sourcePrompt: false, hardPrefix: true },
         { value: sourceCues.join(", "), sourcePrompt: false },
         {
           value: generatedStylePart,
@@ -145,8 +146,6 @@ function compileImagePromptPass(
           sourcePrompt: !protectUserPositive,
           hardPrefix: protectUserPositive,
         },
-        { value: profileSubjectTags, sourcePrompt: false },
-        { value: profile.positiveTags, sourcePrompt: false },
       ]
     : [
         { value: promptPrefix, sourcePrompt: false, hardPrefix: true },
@@ -452,9 +451,7 @@ function splitStandaloneNegativeInstruction(value: string): string[] {
 
   const body = match[1].trim();
   const sentenceBoundary = findTopLevelSentenceBoundary(body);
-  const listText = (sentenceBoundary >= 0 ? body.slice(0, sentenceBoundary) : body)
-    .replace(/[.!?]+$/g, "")
-    .trim();
+  const listText = (sentenceBoundary >= 0 ? body.slice(0, sentenceBoundary) : body).replace(/[.!?]+$/g, "").trim();
   const trailingText = sentenceBoundary >= 0 ? body.slice(sentenceBoundary + 1).trim() : "";
   const negativeItems = splitPromptListItems(listText)
     .map((item) => item.replace(/^(?:and|or)\s+/i, "").trim())
@@ -787,12 +784,28 @@ function distillVisualPhrases(value: string): string[] {
   addIfPresent(fragments, text, /\breading glasses\b/i, "reading glasses");
   addIfPresent(fragments, text, /\bstatement ring\b/i, "statement ring");
   addIfPresent(fragments, text, /\bdark red nails\b/i, "dark red nails");
-  addIfPresent(fragments, text, /\b(?:fox|kitsune|wolf|cat|rabbit|deer|lizard|dragon|bird|serpent)[-\s](?:woman|man|girl|boy|person|humanoid|creature)\b/i);
+  addIfPresent(
+    fragments,
+    text,
+    /\b(?:fox|kitsune|wolf|cat|rabbit|deer|lizard|dragon|bird|serpent)[-\s](?:woman|man|girl|boy|person|humanoid|creature)\b/i,
+  );
   addIfPresent(fragments, text, /\b(?:silver|white|black|brown|red|golden|blue|grey|gray|orange)[-\s]furred\b/i);
   addIfPresent(fragments, text, /\b(?:silver|white|black|brown|red|golden|blue|grey|gray|orange)\s+fur\b/i);
-  addIfPresent(fragments, text, /\b(?:fox|wolf|cat|rabbit|deer|lizard|dragon|bird|serpent)\s+(?:ears?|tail|tails?|horns?|wings?)\b/i);
-  addIfPresent(fragments, text, /\b(?:persimmon|red|blue|black|white|gold|golden|green|purple|pink|silver|grey|gray|brown)\s+kimono\b/i);
-  addIfPresent(fragments, text, /\b(?:kimono|sari|hanfu|cheongsam|qipao|cloak|cape|mantle|hood|veil|mask|visor|goggles)\b/i);
+  addIfPresent(
+    fragments,
+    text,
+    /\b(?:fox|wolf|cat|rabbit|deer|lizard|dragon|bird|serpent)\s+(?:ears?|tail|tails?|horns?|wings?)\b/i,
+  );
+  addIfPresent(
+    fragments,
+    text,
+    /\b(?:persimmon|red|blue|black|white|gold|golden|green|purple|pink|silver|grey|gray|brown)\s+kimono\b/i,
+  );
+  addIfPresent(
+    fragments,
+    text,
+    /\b(?:kimono|sari|hanfu|cheongsam|qipao|cloak|cape|mantle|hood|veil|mask|visor|goggles)\b/i,
+  );
   addIfPresent(fragments, text, /\b(?:scroll|debt[-\s]scroll|book|tome|lantern|fan|parasol|satchel|pouch)\b/i);
   addIfPresent(fragments, text, /\btucked in (?:her|his|their|a|the)?\s*sleeve\b/i);
 

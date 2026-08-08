@@ -12,7 +12,9 @@ import {
   normalizeAgentPhaseValue,
   resolveAgentPromptTemplate,
   findKnownModel,
+  shouldSuppressUnknownModelParameters,
   type APIProvider,
+  type GenerationParameterSendMap,
 } from "@marinara-engine/shared";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
 import { createLLMProvider } from "../llm/provider-registry.js";
@@ -30,6 +32,7 @@ import {
 import { parseStoredGenerationParameters } from "../../routes/generate/generate-route-utils.js";
 import { applyTextRewriteAgentChatSettings, normalizeProseGuardianPromptTemplate } from "./prose-guardian-settings.js";
 import { applyKnowledgeAgentChatSettings } from "./knowledge-agent-settings.js";
+import { applyCustomAgentImageChatSettings } from "./custom-agent-image-settings.js";
 import { withConnectionFallbackProvider, type FallbackConnection } from "../llm/connection-fallback-provider.js";
 import type { GenerationFallbackNotifier } from "./fallback-notification.js";
 
@@ -51,6 +54,9 @@ type ResolveAgentPipelineAgentsArgs = {
   chatConnectionId: string;
   chatModel: string;
   chatCustomParameters: Record<string, unknown>;
+  chatTemperature?: number;
+  chatEnabledParameters?: GenerationParameterSendMap;
+  chatSuppressModelParameters: boolean;
   chatMaxOutputTokens: number | null;
   chatMaxParallelJobs: number;
   chatEnableCaching: boolean;
@@ -66,6 +72,9 @@ type AgentProviderCacheEntry = {
   provider: BaseLLMProvider;
   model: string;
   customParameters: Record<string, unknown>;
+  temperature?: number;
+  enabledParameters?: GenerationParameterSendMap;
+  suppressModelParameters: boolean;
   maxOutputTokens: number | null;
   maxParallelJobs: number;
   enableCaching: boolean;
@@ -162,10 +171,6 @@ function getAgentFallbackPrompt(agentType: string, settings: Record<string, unkn
   return getDefaultAgentPrompt(agentType);
 }
 
-function resolveConnectionCustomParameters(connection: { defaultParameters?: unknown }): Record<string, unknown> {
-  return parseStoredGenerationParameters(connection.defaultParameters)?.customParameters ?? {};
-}
-
 function resolveConnectionMaxOutputTokens(connection: { provider: string; model: string }): number | null {
   const knownModel = findKnownModel(connection.provider as APIProvider, connection.model.trim());
   return knownModel?.maxOutput && knownModel.maxOutput > 0 ? Math.floor(knownModel.maxOutput) : null;
@@ -178,6 +183,9 @@ async function resolveAgentConnectionProvider(args: {
   fallbackProvider: BaseLLMProvider;
   fallbackModel: string;
   fallbackCustomParameters: Record<string, unknown>;
+  fallbackTemperature?: number;
+  fallbackEnabledParameters?: GenerationParameterSendMap;
+  fallbackSuppressModelParameters: boolean;
   fallbackMaxOutputTokens: number | null;
   fallbackMaxParallelJobs: number;
   fallbackEnableCaching: boolean;
@@ -204,6 +212,9 @@ async function resolveAgentConnectionProvider(args: {
       provider,
       model: args.fallbackModel,
       customParameters: args.fallbackCustomParameters,
+      temperature: args.fallbackTemperature,
+      enabledParameters: args.fallbackEnabledParameters,
+      suppressModelParameters: args.fallbackSuppressModelParameters,
       maxOutputTokens: args.fallbackMaxOutputTokens,
       maxParallelJobs: args.fallbackMaxParallelJobs,
       enableCaching: args.fallbackEnableCaching,
@@ -248,6 +259,7 @@ async function resolveAgentConnectionProvider(args: {
     agentConn.treatAsLocalEndpoint === "true",
     agentConn.defaultParameters,
   );
+  const storedParameters = parseStoredGenerationParameters(agentConn.defaultParameters);
   const resolved = {
     provider: withConnectionFallbackProvider({
       primary: primaryProvider,
@@ -258,7 +270,10 @@ async function resolveAgentConnectionProvider(args: {
       onFallback: args.onFallback,
     }),
     model,
-    customParameters: resolveConnectionCustomParameters(agentConn),
+    customParameters: storedParameters?.customParameters ?? {},
+    temperature: storedParameters?.temperature,
+    enabledParameters: storedParameters?.enabledParameters,
+    suppressModelParameters: shouldSuppressUnknownModelParameters(agentConn.provider, model),
     maxOutputTokens: resolveConnectionMaxOutputTokens({ provider: agentConn.provider, model }),
     maxParallelJobs: Number(agentConn.maxParallelJobs) || 1,
     enableCaching: agentConn.enableCaching === "true",
@@ -281,6 +296,9 @@ export async function resolveAgentPipelineAgents({
   chatConnectionId,
   chatModel,
   chatCustomParameters,
+  chatTemperature,
+  chatEnabledParameters,
+  chatSuppressModelParameters,
   chatMaxOutputTokens,
   chatMaxParallelJobs,
   chatEnableCaching,
@@ -315,8 +333,11 @@ export async function resolveAgentPipelineAgents({
       provider: getLocalSidecarProvider(),
       model: LOCAL_SIDECAR_MODEL,
       customParameters: {},
+      temperature: sidecarModelService.getConfig().temperature,
+      enabledParameters: { temperature: true },
+      suppressModelParameters: false,
       maxOutputTokens: null,
-      maxParallelJobs: 1,
+      maxParallelJobs: sidecarModelService.getConfig().maxParallelJobs,
       enableCaching: false,
       anthropicExtendedCacheTtl: false,
       cachingAtDepth: 5,
@@ -358,6 +379,7 @@ export async function resolveAgentPipelineAgents({
     }
     settings = applyTextRewriteAgentChatSettings(cfg.type as string, settings, chatMetadata);
     settings = applyKnowledgeAgentChatSettings(cfg.type as string, settings, chatMetadata);
+    settings = applyCustomAgentImageChatSettings(cfg.type as string, settings, chatMetadata);
     if (
       cfg.type === "spotify" &&
       settings.musicProvider !== "youtube" &&
@@ -407,6 +429,9 @@ export async function resolveAgentPipelineAgents({
       fallbackProvider: chatProvider,
       fallbackModel: chatModel,
       fallbackCustomParameters: chatCustomParameters,
+      fallbackTemperature: chatTemperature,
+      fallbackEnabledParameters: chatEnabledParameters,
+      fallbackSuppressModelParameters: chatSuppressModelParameters,
       fallbackMaxOutputTokens: chatMaxOutputTokens,
       fallbackMaxParallelJobs: chatMaxParallelJobs,
       fallbackEnableCaching: chatEnableCaching,
@@ -444,6 +469,9 @@ export async function resolveAgentPipelineAgents({
       provider: resolvedProvider.entry.provider,
       model: resolvedProvider.entry.model,
       customParameters: resolvedProvider.entry.customParameters,
+      temperature: resolvedProvider.entry.temperature,
+      enabledParameters: resolvedProvider.entry.enabledParameters,
+      suppressModelParameters: resolvedProvider.entry.suppressModelParameters,
       maxOutputTokens: resolvedProvider.entry.maxOutputTokens,
       maxParallelJobs: resolvedProvider.entry.maxParallelJobs,
       enableCaching: resolvedProvider.entry.enableCaching,
@@ -490,6 +518,9 @@ export async function resolveAgentPipelineAgents({
       fallbackProvider: chatProvider,
       fallbackModel: chatModel,
       fallbackCustomParameters: chatCustomParameters,
+      fallbackTemperature: chatTemperature,
+      fallbackEnabledParameters: chatEnabledParameters,
+      fallbackSuppressModelParameters: chatSuppressModelParameters,
       fallbackMaxOutputTokens: chatMaxOutputTokens,
       fallbackMaxParallelJobs: chatMaxParallelJobs,
       fallbackEnableCaching: chatEnableCaching,
@@ -553,6 +584,9 @@ export async function resolveAgentPipelineAgents({
       provider: builtInConnection.entry.provider,
       model: builtInConnection.entry.model,
       customParameters: builtInConnection.entry.customParameters,
+      temperature: builtInConnection.entry.temperature,
+      enabledParameters: builtInConnection.entry.enabledParameters,
+      suppressModelParameters: builtInConnection.entry.suppressModelParameters,
       maxOutputTokens: builtInConnection.entry.maxOutputTokens,
       maxParallelJobs: builtInConnection.entry.maxParallelJobs,
       enableCaching: builtInConnection.entry.enableCaching,

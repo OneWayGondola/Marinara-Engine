@@ -712,7 +712,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     const stream = createReadStream(thumbPath ?? filePath);
     return reply
       .header("Content-Type", thumbPath ? "image/webp" : (mimeMap[ext] ?? "application/octet-stream"))
-      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .header("Cache-Control", "no-cache, must-revalidate")
       .send(stream);
   });
 

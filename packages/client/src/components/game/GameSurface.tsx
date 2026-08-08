@@ -2209,8 +2209,7 @@ function GameSurfaceComponent({
   const useJsonMusicDjGameMusic = useYoutubeGameMusic || useCustomGameMusic;
   const useMusicDjPlayerMusic = useSpotifyGameMusic || useJsonMusicDjGameMusic;
   const { data: ttsConfig } = useTTSConfig();
-  const generateGameSoundEffects =
-    ttsConfig?.source === "elevenlabs" && ttsConfig.elevenLabsGameSoundEffects === true;
+  const generateGameSoundEffects = ttsConfig?.source === "elevenlabs" && ttsConfig.elevenLabsGameSoundEffects === true;
   const generateGameMusic =
     ttsConfig?.source === "elevenlabs" && ttsConfig.elevenLabsGameMusic === true && !useMusicDjPlayerMusic;
   const activeGameMetaId = typeof chatMeta.gameId === "string" ? chatMeta.gameId : "";
@@ -2391,31 +2390,28 @@ function GameSurfaceComponent({
       ...generatedAudioAssetsRef.current,
     };
   }, [gameAssetExcludedFolders, queryClient]);
-  const generateGameAudioAsset = useCallback(
-    async (kind: "sfx" | "music", prompt: string): Promise<string | null> => {
-      const category = kind === "sfx" ? "sfx" : "music";
-      if (prompt.startsWith(`${category}:generated:`)) return prompt;
-      try {
-        const generated = await withTimeout(
-          (signal) => api.post<{ tag: string; path: string }>("/tts/game-audio", { kind, prompt }, { signal }),
-          GAME_AUDIO_GENERATION_TIMEOUT_MS,
-        );
-        generatedAudioAssetsRef.current[generated.tag] = {
-          tag: generated.tag,
-          category,
-          subcategory: "generated",
-          name: generated.tag.split(":").at(-1) ?? generated.tag,
-          path: generated.path,
-          ext: ".mp3",
-        };
-        return generated.tag;
-      } catch (error) {
-        console.warn(`[game-audio] Failed to generate ${kind}:`, error);
-        return null;
-      }
-    },
-    [],
-  );
+  const generateGameAudioAsset = useCallback(async (kind: "sfx" | "music", prompt: string): Promise<string | null> => {
+    const category = kind === "sfx" ? "sfx" : "music";
+    if (prompt.startsWith(`${category}:generated:`)) return prompt;
+    try {
+      const generated = await withTimeout(
+        (signal) => api.post<{ tag: string; path: string }>("/tts/game-audio", { kind, prompt }, { signal }),
+        GAME_AUDIO_GENERATION_TIMEOUT_MS,
+      );
+      generatedAudioAssetsRef.current[generated.tag] = {
+        tag: generated.tag,
+        category,
+        subcategory: "generated",
+        name: generated.tag.split(":").at(-1) ?? generated.tag,
+        path: generated.path,
+        ext: ".mp3",
+      };
+      return generated.tag;
+    } catch (error) {
+      console.warn(`[game-audio] Failed to generate ${kind}:`, error);
+      return null;
+    }
+  }, []);
   const materializeGeneratedGameAudio = useCallback(
     async (input: SceneAnalysis): Promise<SceneAnalysis> => {
       if (!generateGameSoundEffects && !generateGameMusic) return input;
@@ -2437,9 +2433,7 @@ function GameSurfaceComponent({
               next.music = (await generateGameAudioAsset("music", next.music)) ?? undefined;
             }
             if (generateGameSoundEffects && next.sfx?.length) {
-              const generated = await Promise.all(
-                next.sfx.map((prompt) => generateGameAudioAsset("sfx", prompt)),
-              );
+              const generated = await Promise.all(next.sfx.map((prompt) => generateGameAudioAsset("sfx", prompt)));
               next.sfx = generated.filter((tag): tag is string => !!tag);
             }
             return next;
@@ -5068,8 +5062,7 @@ function GameSurfaceComponent({
         let preview: GameAssetGenerationPreview | undefined;
         try {
           preview = await withTimeout(
-            (signal) =>
-              api.post<GameAssetGenerationPreview>("/game/generate-assets/preview", payload, { signal }),
+            (signal) => api.post<GameAssetGenerationPreview>("/game/generate-assets/preview", payload, { signal }),
             GAME_ASSET_PREVIEW_TIMEOUT_MS,
             () => {
               toast.error(
@@ -5159,10 +5152,7 @@ function GameSurfaceComponent({
     [clearFailedNpcAvatars, fetchManifest, installGeneratedIllustration],
   );
 
-  async function applySceneResult(
-    incomingResult: SceneAnalysis,
-    msg: { id: string; content?: string | null },
-  ) {
+  async function applySceneResult(incomingResult: SceneAnalysis, msg: { id: string; content?: string | null }) {
     const result = await materializeGeneratedGameAudio(incomingResult);
     setSceneAnalysisFailed(false);
     // NOTE: Game state transitions are owned exclusively by the GM model via [state: ...] tags.
@@ -5872,6 +5862,12 @@ function GameSurfaceComponent({
 
         if (preview) {
           plannedStoryboard = preview.plannedStoryboard;
+          if (preview.plannerWarning) {
+            toast.warning(localizeUi("ui.game.gamesurfacecomponent.storyboardDegradedResult"), {
+              description: preview.plannerWarning,
+              duration: 12_000,
+            });
+          }
           if (preview.items.length > 0) {
             let overrides: GameImagePromptOverride[] | null | typeof IMAGE_PROMPT_REVIEW_TIMED_OUT | undefined;
             try {
@@ -5907,18 +5903,25 @@ function GameSurfaceComponent({
       if (!("storyboard" in result)) return;
       applyGeneratedStoryboardToCache(result.storyboard, { refetchTurnStoryboards: true });
       const frameCount = result.storyboard.keyframes.length;
-      toast.success(
-        isGameTurnStoryboardRendering(result.storyboard)
-          ? localizeUi("ui.game.gamesurfacecomponent.storyboardPlannedWithValue1KeyframesImagesAreRendering", {
-              value1: frameCount,
-            })
-          : result.storyboard.status === "partial"
-            ? localizeUi("ui.game.gamesurfacecomponent.storyboardSavedWithValue1KeyframesSomeMediaFailed", {
+      if (result.storyboard.error) {
+        toast.warning(localizeUi("ui.game.gamesurfacecomponent.storyboardDegradedResult"), {
+          description: result.storyboard.error,
+          duration: 12_000,
+        });
+      } else {
+        toast.success(
+          isGameTurnStoryboardRendering(result.storyboard)
+            ? localizeUi("ui.game.gamesurfacecomponent.storyboardPlannedWithValue1KeyframesImagesAreRendering", {
                 value1: frameCount,
               })
-            : localizeUi("ui.game.gamesurfacecomponent.storyboardSavedWithValue1Keyframes", { value1: frameCount }),
-        { duration: 2200 },
-      );
+            : result.storyboard.status === "partial"
+              ? localizeUi("ui.game.gamesurfacecomponent.storyboardSavedWithValue1KeyframesSomeMediaFailed", {
+                  value1: frameCount,
+                })
+              : localizeUi("ui.game.gamesurfacecomponent.storyboardSavedWithValue1Keyframes", { value1: frameCount }),
+          { duration: 2200 },
+        );
+      }
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : localizeUi("ui.game.gamesurfacecomponent.storyboardGenerationFailed"),
@@ -5985,7 +5988,14 @@ function GameSurfaceComponent({
         debugMode: useUIStore.getState().debugMode,
       })
       .then((result) => {
-        if ("storyboard" in result) applyGeneratedStoryboardToCache(result.storyboard);
+        if (!("storyboard" in result)) return;
+        applyGeneratedStoryboardToCache(result.storyboard);
+        if (result.storyboard.error) {
+          toast.warning(localizeUi("ui.game.gamesurfacecomponent.storyboardDegradedResult"), {
+            description: result.storyboard.error,
+            duration: 12_000,
+          });
+        }
       })
       .catch((error) => {
         console.warn("[game/storyboard] auto storyboard generation failed", error);
@@ -6004,6 +6014,7 @@ function GameSurfaceComponent({
     latestAssistantStoryboardSections,
     latestAssistantSwipeIndex,
     latestTurnStoryboardRendering,
+    localizeUi,
     manualStoryboardReviewActive,
     applyGeneratedStoryboardToCache,
     storyboardGenerating,
@@ -6437,33 +6448,59 @@ function GameSurfaceComponent({
   // Engine state handed to the slot, recomputed per turn so the surface tracks streaming and new
   // messages. Builds nothing unless the surface is mounted, so a Classic game never pays for it.
   const experienceSurfaceProps = useMemo(
-    () => (!experienceSurfaceActive ? undefined : {
-      chatId: activeChatId,
+    () =>
+      !experienceSurfaceActive
+        ? undefined
+        : {
+            chatId: activeChatId,
+            chatMeta,
+            messages,
+            latestAssistant: latestAssistantMsg,
+            isStreaming,
+            scopedAssetMap,
+            sendMessage: sendExperienceMessage,
+            setExperienceBackgroundTag: pushExperienceBackground,
+            setExperienceSpeakerAvatars,
+            setExperienceChrome,
+            // Who is speaking RIGHT NOW, as the narration plays. Deriving it from the turn text instead yields
+            // only the LAST speaker of the turn, which leaves a VN sprite stuck on whoever spoke last.
+            activeSpeaker: activeSpeaker
+              ? { name: activeSpeaker.name, expression: activeSpeaker.expression ?? null }
+              : null,
+            experienceChoiceSlotEl,
+            // Per-turn state, so the surface can hold its menu until the narration finishes.
+            narrationDone,
+            latestNarrationText,
+            scenePreparing,
+            directionsPlaying,
+            assetGenerationBlocksScene,
+            replayActive,
+            sessionInteractive: (chatMeta.gameSessionStatus as string) !== "concluded",
+            // The host's sprite-size setting, so the player's slider keeps working in this mode.
+            spriteScale: gameFullBodySpriteScale,
+          },
+    [
+      experienceSurfaceActive,
+      activeChatId,
       chatMeta,
       messages,
-      latestAssistant: latestAssistantMsg,
+      latestAssistantMsg,
       isStreaming,
       scopedAssetMap,
-      sendMessage: sendExperienceMessage,
-      setExperienceBackgroundTag: pushExperienceBackground,
+      sendExperienceMessage,
+      pushExperienceBackground,
       setExperienceSpeakerAvatars,
       setExperienceChrome,
-      // Who is speaking RIGHT NOW, as the narration plays. Deriving it from the turn text instead yields
-      // only the LAST speaker of the turn, which leaves a VN sprite stuck on whoever spoke last.
-      activeSpeaker: activeSpeaker ? { name: activeSpeaker.name, expression: activeSpeaker.expression ?? null } : null,
+      activeSpeaker,
       experienceChoiceSlotEl,
-      // Per-turn state, so the surface can hold its menu until the narration finishes.
       narrationDone,
       latestNarrationText,
       scenePreparing,
       directionsPlaying,
       assetGenerationBlocksScene,
       replayActive,
-      sessionInteractive: (chatMeta.gameSessionStatus as string) !== "concluded",
-      // The host's sprite-size setting, so the player's slider keeps working in this mode.
-      spriteScale: gameFullBodySpriteScale,
-    }),
-    [experienceSurfaceActive, activeChatId, chatMeta, messages, latestAssistantMsg, isStreaming, scopedAssetMap, sendExperienceMessage, pushExperienceBackground, setExperienceSpeakerAvatars, setExperienceChrome, activeSpeaker, experienceChoiceSlotEl, narrationDone, latestNarrationText, scenePreparing, directionsPlaying, assetGenerationBlocksScene, replayActive, gameFullBodySpriteScale],
+      gameFullBodySpriteScale,
+    ],
   );
 
   // Game mutations
@@ -6495,8 +6532,9 @@ function GameSurfaceComponent({
     selection: unknown;
     attempt: number;
   };
-  const [pendingSharedWorldSetupApply, setPendingSharedWorldSetupApply] =
-    useState<PendingSharedWorldSetupApply | null>(null);
+  const [pendingSharedWorldSetupApply, setPendingSharedWorldSetupApply] = useState<PendingSharedWorldSetupApply | null>(
+    null,
+  );
   const pendingSharedWorldSetupApplyRef = useRef<PendingSharedWorldSetupApply | null>(null);
   const updatePendingSharedWorldSetupApply = useCallback((pending: PendingSharedWorldSetupApply | null) => {
     pendingSharedWorldSetupApplyRef.current = pending;
@@ -6506,12 +6544,7 @@ function GameSurfaceComponent({
   activeChatIdRef.current = activeChatId;
   const clearPendingSharedWorldSetupApply = useCallback((chatId: string, attempt: number) => {
     const pending = pendingSharedWorldSetupApplyRef.current;
-    if (
-      activeChatIdRef.current !== chatId ||
-      !pending ||
-      pending.chatId !== chatId ||
-      pending.attempt !== attempt
-    ) {
+    if (activeChatIdRef.current !== chatId || !pending || pending.chatId !== chatId || pending.attempt !== attempt) {
       return false;
     }
     pendingSharedWorldSetupApplyRef.current = null;
@@ -9083,9 +9116,14 @@ function GameSurfaceComponent({
       const selectedChoice = choice.trim().replace(/\s+/g, " ");
       if (!selectedChoice) return;
       setActiveChoices(null);
-      sendMessage(`[choice: ${selectedChoice}]`);
+      const pendingSpatialTransition = useChatStore.getState().pendingSpatialTransitions.get(activeChatId);
+      sendMessage(
+        `[choice: ${selectedChoice}]`,
+        undefined,
+        pendingSpatialTransition?.status === "ready" ? pendingSpatialTransition.transition : undefined,
+      );
     },
-    [sendMessage, sessionInteractive],
+    [activeChatId, sendMessage, sessionInteractive],
   );
 
   const handleDismissChoices = useCallback(() => {
@@ -10067,7 +10105,8 @@ function GameSurfaceComponent({
         updateChat.isPending ||
         updateChatMetadata.isPending ||
         activePendingSharedWorldSetupApply
-      ) return;
+      )
+        return;
       useGameModeStore.getState().setSetupActive(false);
       if (canAutoDeleteEmptySetupChat) {
         deleteChat.mutate(activeChatId, {
@@ -10502,15 +10541,15 @@ function GameSurfaceComponent({
           <div className="ml-auto flex shrink-0 items-center gap-1 pt-0.5">
             {/* Hidden for an experience game: it opens a tour of chrome that isn't on screen. */}
             {!experienceOwnsGame ? (
-            <button
-              type="button"
-              onClick={() => setTutorialOpen(true)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
-              title={localizeUi("ui.game.gamesurfacecomponent.gameTutorial")}
-              aria-label={localizeUi("ui.game.gamesurfacecomponent.gameTutorial")}
-            >
-              <CircleHelp size={14} />
-            </button>
+              <button
+                type="button"
+                onClick={() => setTutorialOpen(true)}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
+                title={localizeUi("ui.game.gamesurfacecomponent.gameTutorial")}
+                aria-label={localizeUi("ui.game.gamesurfacecomponent.gameTutorial")}
+              >
+                <CircleHelp size={14} />
+              </button>
             ) : null}
             <button
               type="button"
@@ -11455,10 +11494,7 @@ function GameSurfaceComponent({
               <div
                 ref={hudSurfaceRef}
                 data-chat-resource-drop-surface
-                className={cn(
-                  "relative flex min-h-0 flex-1 flex-col overflow-hidden",
-                  experienceSurfaceClass,
-                )}
+                className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", experienceSurfaceClass)}
               >
                 {/* Main mount. pointer-events-none lets clicks fall through empty regions to the
                     narration underneath; the package sets pointer-events-auto on its own chrome. */}
@@ -11926,22 +11962,22 @@ function GameSurfaceComponent({
                           onMaxNavOffsetChange={handleMaxNavOffsetChange}
                           inputSlot={
                             activeExperienceChrome?.providesPlayerInput ? undefined : (
-                            <GameInput
-                              onSend={handleSendGameTurn}
-                              onRollDice={handleRollDice}
-                              hasPartyMembers={partyMembers.length > 0}
-                              pendingMoveLabel={pendingMapMove?.label ?? null}
-                              onClearPendingMove={() => setPendingMapMove(null)}
-                              disabled={gameInputGenerationBlocked || !sessionInteractive}
-                              draftDisabled={!sessionInteractive}
-                              isStreaming={gameInputGenerationBlocked}
-                              inline
-                              draftKey={activeChatId}
-                              focusToken={gameInputFocusToken}
-                              onIllustrate={handleManualSceneIllustration}
-                              spatialCapabilityEnabled={hierarchicalMapsActive}
-                              interruptMode={pendingInterruptMode}
-                            />
+                              <GameInput
+                                onSend={handleSendGameTurn}
+                                onRollDice={handleRollDice}
+                                hasPartyMembers={partyMembers.length > 0}
+                                pendingMoveLabel={pendingMapMove?.label ?? null}
+                                onClearPendingMove={() => setPendingMapMove(null)}
+                                disabled={gameInputGenerationBlocked || !sessionInteractive}
+                                draftDisabled={!sessionInteractive}
+                                isStreaming={gameInputGenerationBlocked}
+                                inline
+                                draftKey={activeChatId}
+                                focusToken={gameInputFocusToken}
+                                onIllustrate={handleManualSceneIllustration}
+                                spatialCapabilityEnabled={hierarchicalMapsActive}
+                                interruptMode={pendingInterruptMode}
+                              />
                             )
                           }
                         />
@@ -12019,22 +12055,22 @@ function GameSurfaceComponent({
                       // declaration is dynamic, so the input returns when it has no action to offer.
                       inputSlot={
                         activeExperienceChrome?.providesPlayerInput ? undefined : (
-                        <GameInput
-                          onSend={handleSendGameTurn}
-                          onRollDice={handleRollDice}
-                          hasPartyMembers={partyMembers.length > 0}
-                          pendingMoveLabel={pendingMapMove?.label ?? null}
-                          onClearPendingMove={() => setPendingMapMove(null)}
-                          disabled={gameInputGenerationBlocked || !sessionInteractive}
-                          draftDisabled={!sessionInteractive}
-                          isStreaming={gameInputGenerationBlocked}
-                          inline
-                          draftKey={activeChatId}
-                          focusToken={gameInputFocusToken}
-                          onIllustrate={handleManualSceneIllustration}
-                          spatialCapabilityEnabled={hierarchicalMapsActive}
-                          interruptMode={pendingInterruptMode}
-                        />
+                          <GameInput
+                            onSend={handleSendGameTurn}
+                            onRollDice={handleRollDice}
+                            hasPartyMembers={partyMembers.length > 0}
+                            pendingMoveLabel={pendingMapMove?.label ?? null}
+                            onClearPendingMove={() => setPendingMapMove(null)}
+                            disabled={gameInputGenerationBlocked || !sessionInteractive}
+                            draftDisabled={!sessionInteractive}
+                            isStreaming={gameInputGenerationBlocked}
+                            inline
+                            draftKey={activeChatId}
+                            focusToken={gameInputFocusToken}
+                            onIllustrate={handleManualSceneIllustration}
+                            spatialCapabilityEnabled={hierarchicalMapsActive}
+                            interruptMode={pendingInterruptMode}
+                          />
                         )
                       }
                     />
@@ -12232,29 +12268,33 @@ function GameSurfaceComponent({
 
               {/* HUD Widgets - Left & Right, tops aligned */}
               {/* Hidden while the package owns the game — it draws its own HUD. */}
-              {!replayActive && !combatUiActive && !experienceOwnsGame && hudWidgets.length > 0 && !compactHudWidgets && (
-                <>
-                  {/* Desktop: full widget cards */}
-                  <div className="pointer-events-none absolute inset-x-3 bottom-24 z-30 hidden items-end justify-between md:flex">
-                    <div className="w-44" data-game-widget-rail="left">
-                      <GameWidgetPanel
-                        widgets={normalizedWidgets}
-                        position="hud_left"
-                        chatId={activeChatId}
-                        constraintsRef={hudSurfaceRef}
-                      />
+              {!replayActive &&
+                !combatUiActive &&
+                !experienceOwnsGame &&
+                hudWidgets.length > 0 &&
+                !compactHudWidgets && (
+                  <>
+                    {/* Desktop: full widget cards */}
+                    <div className="pointer-events-none absolute inset-x-3 bottom-24 z-30 hidden items-end justify-between md:flex">
+                      <div className="w-44" data-game-widget-rail="left">
+                        <GameWidgetPanel
+                          widgets={normalizedWidgets}
+                          position="hud_left"
+                          chatId={activeChatId}
+                          constraintsRef={hudSurfaceRef}
+                        />
+                      </div>
+                      <div className="w-44" data-game-widget-rail="right">
+                        <GameWidgetPanel
+                          widgets={normalizedWidgets}
+                          position="hud_right"
+                          chatId={activeChatId}
+                          constraintsRef={hudSurfaceRef}
+                        />
+                      </div>
                     </div>
-                    <div className="w-44" data-game-widget-rail="right">
-                      <GameWidgetPanel
-                        widgets={normalizedWidgets}
-                        position="hud_right"
-                        chatId={activeChatId}
-                        constraintsRef={hudSurfaceRef}
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
+                  </>
+                )}
             </div>
           </div>
         </DirectionEngine>

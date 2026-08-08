@@ -12,18 +12,9 @@ import { useUpdateChat, useChat } from "../../hooks/use-chats";
 import { useChatStore } from "../../stores/chat.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { appendLocalSidecarConnectionOption, isLocalSidecarConnectionOption } from "../../lib/connection-filters";
-import { normalizeAvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
-
-interface Persona {
-  id: string;
-  name: string;
-  avatarPath?: string | null;
-  /** JSON-encoded AvatarCrop from the persona row. */
-  avatarCrop?: string;
-  comment?: string | null;
-}
+import type { Persona } from "@marinara-engine/shared";
 
 interface PersonaGroupRow {
   id: string;
@@ -59,7 +50,7 @@ export function QuickSwitcherMobile() {
   const sidecarModelDisplayName = useSidecarStore((state) => state.modelDisplayName);
 
   const activeConnectionId = (chat as unknown as Record<string, unknown>)?.connectionId as string | null;
-  const activePersonaId = (chat as unknown as Record<string, unknown>)?.personaId as string | null;
+  const activePersonaId = chat?.personaId ?? null;
   const chatMode = (chat as unknown as { mode?: string } | null | undefined)?.mode;
   const isRandom = activeConnectionId === "random";
 
@@ -71,9 +62,7 @@ export function QuickSwitcherMobile() {
     .filter((connection) => !isRandom || !isLocalSidecarConnectionOption(connection))
     .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
-  const sortedPersonas = ((rawPersonas ?? []) as Persona[])
-    .slice()
-    .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const sortedPersonas = (rawPersonas ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
 
   const personaMap = useMemo(() => {
     const map = new Map<string, Persona>();
@@ -233,7 +222,7 @@ export function QuickSwitcherMobile() {
               src={persona.avatarPath}
               alt={persona.name}
               className="h-full w-full object-cover"
-              style={getAvatarCropStyle(normalizeAvatarCrop(persona.avatarCrop))}
+              style={getAvatarCropStyle(persona.avatarCrop)}
             />
           </div>
         ) : (
@@ -289,7 +278,9 @@ export function QuickSwitcherMobile() {
                     : "text-foreground/50 hover:text-foreground/80",
                 )}
               >
-                <Link size="0.75rem" />{localizeUi("navigation.topbar.connections")}</button>
+                <Link size="0.75rem" />
+                {localizeUi("navigation.topbar.connections")}
+              </button>
               <button
                 onClick={() => setTab("personas")}
                 className={cn(
@@ -299,7 +290,9 @@ export function QuickSwitcherMobile() {
                     : "text-foreground/50 hover:text-foreground/80",
                 )}
               >
-                <CircleUser size="0.75rem" />{localizeUi("navigation.topbar.personas")}</button>
+                <CircleUser size="0.75rem" />
+                {localizeUi("navigation.topbar.personas")}
+              </button>
             </div>
 
             <div className="overflow-y-auto p-1">
@@ -313,10 +306,18 @@ export function QuickSwitcherMobile() {
                         ? "bg-foreground/10 font-semibold text-foreground/85 ring-1 ring-foreground/15"
                         : "hover:bg-foreground/10",
                     )}
-                    title={isRandom ?localizeUi("ui.chat.quickconnectionswitcher.randomPoolActiveClickToDisable") :localizeUi("ui.chat.quickconnectionswitcher.useRandomConnectionFromPool")}
+                    title={
+                      isRandom
+                        ? localizeUi("ui.chat.quickconnectionswitcher.randomPoolActiveClickToDisable")
+                        : localizeUi("ui.chat.quickconnectionswitcher.useRandomConnectionFromPool")
+                    }
                   >
                     <span>{localizeUi("ui.chat.quickswitchermobile.random")}</span>
-                    {isRandom && <span className="ml-auto text-[0.6875rem]">{localizeUi("ui.chat.quickswitchermobile.active")}</span>}
+                    {isRandom && (
+                      <span className="ml-auto text-[0.6875rem]">
+                        {localizeUi("ui.chat.quickswitchermobile.active")}
+                      </span>
+                    )}
                   </button>
                   <div className="mx-2 my-1 h-px bg-foreground/10" />
                   {sortedConnections.map((conn) => {
@@ -328,7 +329,11 @@ export function QuickSwitcherMobile() {
                           key={conn.id}
                           onClick={() => handleTogglePool(conn.id, inPool)}
                           className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-foreground/10"
-                          title={inPool ?localizeUi("ui.chat.quickconnectionswitcher.inRandomPoolClickToRemove") :localizeUi("ui.chat.quickconnectionswitcher.clickToAddToRandomPool")}
+                          title={
+                            inPool
+                              ? localizeUi("ui.chat.quickconnectionswitcher.inRandomPoolClickToRemove")
+                              : localizeUi("ui.chat.quickconnectionswitcher.clickToAddToRandomPool")
+                          }
                         >
                           <span className="flex-1 truncate">{conn.name || conn.id}</span>
                           <span
@@ -359,7 +364,9 @@ export function QuickSwitcherMobile() {
                     );
                   })}
                   {sortedConnections.length === 0 && (
-                    <div className="px-3 py-4 text-center text-[0.6875rem] italic text-foreground/45">{localizeUi("ui.chat.quickconnectionswitcher.noConnectionsFound")}</div>
+                    <div className="px-3 py-4 text-center text-[0.6875rem] italic text-foreground/45">
+                      {localizeUi("ui.chat.quickconnectionswitcher.noConnectionsFound")}
+                    </div>
                   )}
                 </>
               )}
@@ -379,8 +386,12 @@ export function QuickSwitcherMobile() {
                       ?
                     </div>
                     <div className="flex min-w-0 flex-1 flex-col">
-                      <span className={cn("text-xs font-semibold", !activePersonaId && "text-foreground")}>{localizeUi("ui.game.gamesurfacecomponent.none")}</span>
-                      <span className="text-[0.625rem] text-foreground/45">{localizeUi("ui.chat.quickpersonaswitcher.noPersonaSelected")}</span>
+                      <span className={cn("text-xs font-semibold", !activePersonaId && "text-foreground")}>
+                        {localizeUi("ui.game.gamesurfacecomponent.none")}
+                      </span>
+                      <span className="text-[0.625rem] text-foreground/45">
+                        {localizeUi("ui.chat.quickpersonaswitcher.noPersonaSelected")}
+                      </span>
                     </div>
                     {!activePersonaId && <span className="ml-auto text-[0.6875rem]">✓</span>}
                   </button>
@@ -406,7 +417,7 @@ export function QuickSwitcherMobile() {
                                 src={firstMember.avatarPath}
                                 alt={group.name}
                                 className="h-full w-full object-cover"
-                                style={getAvatarCropStyle(normalizeAvatarCrop(firstMember.avatarCrop))}
+                                style={getAvatarCropStyle(firstMember.avatarCrop)}
                               />
                             </div>
                           ) : (
@@ -424,7 +435,8 @@ export function QuickSwitcherMobile() {
                               {group.name} ({group.members.length})
                             </span>
                             <span className="text-[0.625rem] text-foreground/45">
-                              {group.members.length} {localizeUi("ui.chat.quickpersonaswitcher.persona")}{group.members.length !== 1 ?localizeUi("ui.noodle.stageprofileview.s") : ""}
+                              {group.members.length} {localizeUi("ui.chat.quickpersonaswitcher.persona")}
+                              {group.members.length !== 1 ? localizeUi("ui.noodle.stageprofileview.s") : ""}
                             </span>
                           </div>
                           <span className="ml-auto shrink-0 text-foreground/45">
@@ -440,7 +452,9 @@ export function QuickSwitcherMobile() {
                     );
                   })}
                   {sortedPersonas.length === 0 && (
-                    <div className="px-3 py-4 text-center text-[0.6875rem] italic text-foreground/45">{localizeUi("ui.chat.quickpersonaswitcher.noPersonasFound")}</div>
+                    <div className="px-3 py-4 text-center text-[0.6875rem] italic text-foreground/45">
+                      {localizeUi("ui.chat.quickpersonaswitcher.noPersonasFound")}
+                    </div>
                   )}
                 </>
               )}

@@ -121,7 +121,10 @@ function firstStringField(record: Record<string, unknown>, keys: string[]): stri
 
 function normalizeMariChipEntity(value: unknown): MariChipEntity | undefined {
   if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, "_");
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "_");
   if (MARI_CHIP_ENTITIES.has(normalized as MariChipEntity)) return normalized as MariChipEntity;
   return MARI_CHIP_ENTITY_ALIASES[normalized];
 }
@@ -138,7 +141,11 @@ export function sanitizeMariSuggestionChips(raw: unknown, options: { maxChips?: 
   const chips: MariSuggestionChip[] = [];
   for (const entry of raw) {
     const record: Record<string, unknown> =
-      typeof entry === "string" ? { label: entry, prompt: entry } : entry && typeof entry === "object" && !Array.isArray(entry) ? (entry as Record<string, unknown>) : {};
+      typeof entry === "string"
+        ? { label: entry, prompt: entry }
+        : entry && typeof entry === "object" && !Array.isArray(entry)
+          ? (entry as Record<string, unknown>)
+          : {};
     if (Object.keys(record).length === 0) continue;
     const rawLabel = firstStringField(record, CHIP_LABEL_KEYS);
     const rawPrompt = firstStringField(record, CHIP_PROMPT_KEYS) ?? rawLabel;
@@ -183,7 +190,10 @@ const PLAN_STEP_FIELD_KEY_KEYS = ["fieldKey", "key", "field", "name"];
 const PLAN_STEP_QUESTION_KEYS = ["question", "prompt", "label", "text"];
 
 /** Same tolerant-parsing philosophy as sanitizeMariSuggestionChips - accept near-miss shapes. */
-export function sanitizeMariGuidedPlan(raw: unknown, options: { maxSteps?: number; maxChipsPerStep?: number } = {}): MariGuidedPlanStep[] {
+export function sanitizeMariGuidedPlan(
+  raw: unknown,
+  options: { maxSteps?: number; maxChipsPerStep?: number } = {},
+): MariGuidedPlanStep[] {
   if (!Array.isArray(raw)) return [];
   const maxSteps = options.maxSteps ?? 8;
   const maxChipsPerStep = options.maxChipsPerStep ?? 5;
@@ -194,7 +204,9 @@ export function sanitizeMariGuidedPlan(raw: unknown, options: { maxSteps?: numbe
     const rawFieldKey = firstStringField(record, PLAN_STEP_FIELD_KEY_KEYS);
     const rawQuestion = firstStringField(record, PLAN_STEP_QUESTION_KEYS) ?? rawFieldKey;
     if (!rawFieldKey || !rawQuestion) continue;
-    const chips = sanitizeMariSuggestionChips(record.chips ?? record.options ?? record.suggestions, { maxChips: maxChipsPerStep });
+    const chips = sanitizeMariSuggestionChips(record.chips ?? record.options ?? record.suggestions, {
+      maxChips: maxChipsPerStep,
+    });
     if (chips.length === 0) continue;
     steps.push({
       fieldKey: truncateMariChipText(rawFieldKey, 40).replace(/\s+/g, "_"),
@@ -226,6 +238,7 @@ export interface MariWorkspaceConnectionSummary {
   name: string;
   provider: string;
   model: string;
+  maxContext: number;
 }
 
 export interface MariWorkspaceSkillSummary {

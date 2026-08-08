@@ -854,11 +854,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     }
     mappedMessages = resolveHistoryMessageMacros(mappedMessages);
     const shouldPrefixGroupHistorySpeakers =
-      chatMeta.groupSpeakerNamesInHistory === true &&
       characterIds.length > 1 &&
-      chatMode !== "conversation" &&
       chatMode !== "game" &&
-      dryRunGroupChatMode === "individual";
+      dryRunGroupChatMode === "individual" &&
+      (chatMode === "conversation" || chatMeta.groupSpeakerNamesInHistory === true);
     if (shouldPrefixGroupHistorySpeakers) {
       const characterNamesById = await resolveCharacterNameMap(allCharacterIds, (id) => chars.getById(id));
       mappedMessages = prefixGroupIndividualHistorySpeakers(mappedMessages, {

@@ -12,7 +12,13 @@ import {
   type SetStateAction,
 } from "react";
 import { toast } from "sonner";
-import { usePresets, useDeletePreset, useDuplicatePreset, useSetDefaultPreset } from "../../hooks/use-presets";
+import {
+  usePresets,
+  useDeletePreset,
+  useDuplicatePreset,
+  useSetDefaultPreset,
+  useUploadPresetImage,
+} from "../../hooks/use-presets";
 import { useUpdateChat, useUpdateChatMetadata } from "../../hooks/use-chats";
 import {
   useRegexScripts,
@@ -59,6 +65,7 @@ import {
   Wrench,
   Upload,
   ShieldCheck,
+  Camera,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { sortBasicPanelItems } from "../../lib/panel-sort";
@@ -91,11 +98,13 @@ import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
+import { resolvePresetArtwork } from "../../lib/preset-artwork";
 
 type PresetRow = {
   id: string;
   name: string;
   description: string;
+  imagePath?: string | null;
   wrapFormat?: string;
   isDefault?: string | boolean;
   author?: string;
@@ -103,14 +112,6 @@ type PresetRow = {
   createdAt?: string;
   updatedAt?: string;
 };
-
-const MARINARA_UNIVERSAL_PRESET_NAME = "Marinara's Universal Preset";
-const MARINARA_UNIVERSAL_PRESET_AUTHOR = "Marinara";
-const MARINARA_UNIVERSAL_PRESET_ARTWORK = "/illustrations/marinara-universal-preset.webp";
-
-function isMarinaraUniversalPreset(preset: PresetRow) {
-  return preset.name === MARINARA_UNIVERSAL_PRESET_NAME && preset.author === MARINARA_UNIVERSAL_PRESET_AUTHOR;
-}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -284,6 +285,7 @@ export function PresetsPanel() {
   const deletePreset = useDeletePreset();
   const duplicatePreset = useDuplicatePreset();
   const setDefaultPreset = useSetDefaultPreset();
+  const uploadPresetImage = useUploadPresetImage();
   const deleteRegex = useDeleteRegexScript();
   const createRegexScript = useCreateRegexScript();
   const updateRegex = useUpdateRegexScript();
@@ -324,6 +326,8 @@ export function PresetsPanel() {
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editFolderName, setEditFolderName] = useState("");
   const [draggedPresetId, setDraggedPresetId] = useState<string | null>(null);
+  const presetImageInputRef = useRef<HTMLInputElement>(null);
+  const imageTargetPresetIdRef = useRef<string | null>(null);
   const suppressPresetClickRef = useRef(false);
   const handleFolderRenameGesture = useFolderRenameGesture();
 
@@ -450,6 +454,54 @@ export function PresetsPanel() {
       return next;
     });
   }, []);
+
+  const handlePickPresetImage = useCallback((presetId: string) => {
+    imageTargetPresetIdRef.current = presetId;
+    if (presetImageInputRef.current) {
+      presetImageInputRef.current.value = "";
+      presetImageInputRef.current.click();
+    }
+  }, []);
+
+  const handlePresetImageSelected = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      const presetId = imageTargetPresetIdRef.current;
+      if (!file || !presetId) return;
+
+      if (!file.type.startsWith("image/")) {
+        imageTargetPresetIdRef.current = null;
+        toast.error(localizeUi("ui.panels.presetspanel.chooseAnImageFileForThePresetPicture"));
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const image = typeof reader.result === "string" ? reader.result : "";
+        if (!image) {
+          toast.error(localizeUi("ui.panels.agentspanel.couldNotReadThatImage"));
+          return;
+        }
+
+        try {
+          await uploadPresetImage.mutateAsync({ id: presetId, image });
+          toast.success(localizeUi("ui.panels.presetspanel.presetPictureUpdated"));
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : localizeUi("ui.panels.presetspanel.failedToUploadPresetPicture"),
+          );
+        } finally {
+          imageTargetPresetIdRef.current = null;
+        }
+      };
+      reader.onerror = () => {
+        imageTargetPresetIdRef.current = null;
+        toast.error(localizeUi("ui.panels.agentspanel.couldNotReadThatImage"));
+      };
+      reader.readAsDataURL(file);
+    },
+    [localizeUi, uploadPresetImage],
+  );
 
   const handleExportSelected = async () => {
     if (selectedPresetIds.size === 0) return;
@@ -817,7 +869,17 @@ export function PresetsPanel() {
       const sectionCount = getSectionCount(preset);
       const wrapFormat = (preset.wrapFormat ?? "xml") as string;
       const isDefault = String(preset.isDefault) === "true";
-      const hasMarinaraArtwork = isMarinaraUniversalPreset(preset);
+      const artwork = resolvePresetArtwork(preset);
+      const pictureLabel = artwork
+        ? localizeUi("ui.panels.presetspanel.replacePresetPicture")
+        : localizeUi("ui.panels.presetspanel.uploadPresetPicture");
+      const imageContent = artwork ? (
+        <img src={artwork} alt="" className="h-full w-full object-cover" draggable={false} />
+      ) : (
+        <FileText size="1rem" />
+      );
+      const imageClasses =
+        "mari-panel-gradient-surface mari-panel-gradient--presets relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm";
 
       return (
         <div
@@ -881,29 +943,42 @@ export function PresetsPanel() {
                 {isBulkSelected && <Check size="0.75rem" />}
               </div>
             )}
-            <div className="mari-panel-gradient-surface mari-panel-gradient--presets relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm">
-              {hasMarinaraArtwork ? (
-                <img
-                  src={MARINARA_UNIVERSAL_PRESET_ARTWORK}
-                  alt=""
-                  className="h-full w-full rounded-xl object-cover"
-                  draggable={false}
-                />
-              ) : (
-                <FileText size="1rem" />
-              )}
-              {!selectionMode && isSelected && (
-                <div className="mari-panel-gradient-surface mari-panel-gradient--presets absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-md shadow-sm">
-                  <Check size="0.625rem" />
-                </div>
-              )}
-            </div>
+            {selectionMode ? (
+              <div className={cn(imageClasses, "overflow-hidden")}>{imageContent}</div>
+            ) : (
+              <button
+                type="button"
+                data-preset-image-action={preset.id}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handlePickPresetImage(preset.id);
+                }}
+                className={cn(
+                  imageClasses,
+                  "group/preset-picture transition-transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]",
+                )}
+                title={pictureLabel}
+                aria-label={pictureLabel}
+              >
+                <span className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-xl">
+                  {imageContent}
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 transition-opacity group-hover/preset-picture:opacity-100 group-focus-visible/preset-picture:opacity-100 [@media(pointer:coarse)]:opacity-100">
+                    <Camera size="0.875rem" />
+                  </span>
+                </span>
+                {isSelected && (
+                  <span
+                    data-preset-selected-indicator
+                    className="mari-panel-gradient-surface mari-panel-gradient--presets absolute -right-1 -top-1 z-10 flex h-4 w-4 items-center justify-center rounded-md shadow-sm"
+                  >
+                    <Check size="0.625rem" />
+                  </span>
+                )}
+              </button>
+            )}
             <div
-              className={cn(
-                "min-w-0 flex-1",
-                !selectionMode &&
-                  "pr-0 max-md:pr-36 [@media(pointer:coarse)]:pr-36",
-              )}
+              data-preset-open-action={preset.id}
+              className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-36 [@media(pointer:coarse)]:pr-36")}
             >
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="min-w-0 flex-1 truncate text-sm font-medium leading-5" title={preset.name}>
@@ -1036,6 +1111,7 @@ export function PresetsPanel() {
       duplicatePreset,
       getDraggedPresetIds,
       getSectionCount,
+      handlePickPresetImage,
       openPresetDetail,
       selectedPresetIds,
       selectPreset,
@@ -1049,6 +1125,14 @@ export function PresetsPanel() {
 
   return (
     <div className="flex min-h-full flex-col gap-2 p-3">
+      <input
+        ref={presetImageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handlePresetImageSelected}
+      />
+
       {/* Action buttons */}
       <div className="flex gap-2">
         <button
@@ -1235,11 +1319,25 @@ export function PresetsPanel() {
                     )}
                   </div>
                   {(presetSearchActive ? folderItems.length : folder.itemIds.length) > 0 && (
-                    <span className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)]">
+                    <span
+                      data-folder-item-count="inline"
+                      className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)] max-md:hidden [@media(pointer:coarse)]:hidden"
+                    >
                       {presetSearchActive ? folderItems.length : folder.itemIds.length}
                     </span>
                   )}
-                  <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                  <div
+                    data-folder-actions
+                    className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                  >
+                    {(presetSearchActive ? folderItems.length : folder.itemIds.length) > 0 && (
+                      <span
+                        data-folder-item-count="actions"
+                        className="hidden px-1 text-[0.5625rem] text-[var(--muted-foreground)] max-md:inline [@media(pointer:coarse)]:inline"
+                      >
+                        {presetSearchActive ? folderItems.length : folder.itemIds.length}
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={(event) => {

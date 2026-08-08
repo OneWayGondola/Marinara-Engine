@@ -21,6 +21,7 @@ import {
   type NoodlerPostMediaUpload,
 } from "./noodle-noodler-media.js";
 import { tryNoodlerAccountOperation } from "./noodle-noodler-account-operation-lock.js";
+import { resolveNoodlerSourceSnapshot } from "./noodle-noodler-source.js";
 import { settleAgentJobsWithConcurrencyLimit } from "../agents/agent-concurrency.js";
 
 export type GenerateAndApplyNoodlerPostResult =
@@ -80,6 +81,10 @@ export async function generateAndApplyNoodlerPost(
     if (!account) {
       return { status: "noodler_account_not_found" } as const;
     }
+    const publicAccount = account.noodleAccountId ? await noodle.getAccountById(account.noodleAccountId) : null;
+    if (!publicAccount) {
+      return { status: "noodler_account_not_found" } as const;
+    }
     if (request.executionId) {
       const existing = await noodle.getNoodlerPostByWizardExecution(account.id, request.executionId);
       if (existing) {
@@ -88,6 +93,9 @@ export async function generateAndApplyNoodlerPost(
         await invalidateNearFutureReserve(noodle, account.id, existing.createdAt);
         return { status: "generated", post: existing, imagePromptReview: null } as const;
       }
+    }
+    if (!(await resolveNoodlerSourceSnapshot(db, publicAccount))) {
+      return { status: "noodler_account_not_found" } as const;
     }
     const connectionId = request.connectionId ?? settings.generationConnectionId;
     if (!connectionId) return { status: "connection_required" } as const;
@@ -220,7 +228,11 @@ export async function createNoodlerPost(
     try {
       await noodle.discardPreparedPostsAfterManualPost(input.targetAccountId, post.createdAt);
     } catch (error) {
-      logger.warn(error, "[noodler] Failed to discard prepared posts after a manual post for %s", input.targetAccountId);
+      logger.warn(
+        error,
+        "[noodler] Failed to discard prepared posts after a manual post for %s",
+        input.targetAccountId,
+      );
     }
     return { status: "created", post } as const;
   });

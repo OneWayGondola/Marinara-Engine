@@ -122,7 +122,9 @@ export function ChatRowPeek({ containerRef, activeChatId, disabled }: ChatRowPee
       style={{ top: pos.top, left: pos.left }}
     >
       {isLoading ? (
-        <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{localizeUi("ui.layout.chatsidebar.loading")}</p>
+        <p className="mari-chrome-accent-text-muted mari-accent-animated text-[0.6875rem]">
+          {localizeUi("ui.layout.chatsidebar.loading")}
+        </p>
       ) : messages?.length ? (
         <div className="flex flex-col gap-2">
           {messages.map((message) => (

@@ -51,6 +51,8 @@ export interface PromptPreset {
   id: string;
   name: string;
   description: string;
+  /** Optional custom picture shown in preset lists and editors. */
+  imagePath: string | null;
   /** Conversation-mode system prompt template. Empty means use the built-in fallback. */
   conversationPrompt: string;
   /** Game-mode GM prompt template. Empty means use the built-in fallback. */

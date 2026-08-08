@@ -1,4 +1,4 @@
-import type { PendingSpatialTransition, SpatialContextSnapshot } from "@marinara-engine/shared";
+import type { PendingSpatialTransition, ResolvedSpatialTravel, SpatialContextSnapshot } from "@marinara-engine/shared";
 
 type SpatialGenerationMode = "conversation" | "roleplay" | "game";
 export type SpatialGenerationOrigin = "owner" | "guided" | "autonomous" | "turn_game";
@@ -14,11 +14,12 @@ export type AlreadyAppliedSpatialTurn = {
   swipeIndex: number;
   currentLocationId: string | null;
   definitionRevision: number;
+  travel?: ResolvedSpatialTravel;
 };
 
 export function resolveAlreadyAppliedSpatialTurn(error: {
   code: string;
-  details?: { messageId?: string; snapshot?: SpatialContextSnapshot };
+  details?: { messageId?: string; snapshot?: SpatialContextSnapshot; travel?: ResolvedSpatialTravel };
 }): AlreadyAppliedSpatialTurn | null {
   if (error.code !== "spatial_transition_already_applied") return null;
   const snapshot = error.details?.snapshot;
@@ -29,7 +30,27 @@ export function resolveAlreadyAppliedSpatialTurn(error: {
     swipeIndex: snapshot.swipeIndex,
     currentLocationId: snapshot.currentLocationId,
     definitionRevision: snapshot.definitionRevision,
+    ...(error.details?.travel ? { travel: error.details.travel } : {}),
   };
+}
+
+export function shouldSuppressAssistantSpatialMutation(input: {
+  impersonate?: boolean;
+  pendingSpatialTransition?: PendingSpatialTransition | null;
+}): boolean {
+  return Boolean(input.impersonate || input.pendingSpatialTransition);
+}
+
+export function shouldSaveHiddenGenerationAnchor(input: {
+  impersonate?: boolean;
+  parsedCommandCount: number;
+  parsedRawCommandCount: number;
+  spatialDirectiveDetected: boolean;
+}): boolean {
+  return Boolean(
+    input.spatialDirectiveDetected ||
+    (!input.impersonate && (input.parsedCommandCount > 0 || input.parsedRawCommandCount > 0)),
+  );
 }
 
 export function resolveSpatialGenerationOrigin(input: {

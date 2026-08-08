@@ -157,6 +157,20 @@ export function illustratorPromptRequestsRenderedText(prompt: string): boolean {
 }
 
 /**
+ * Dedicated comic/manga prompt templates own their framing and must not inherit
+ * the generic Illustration composition. Ordinary Illustration templates should
+ * still receive the selected profile's per-image tags.
+ */
+export function illustratorPromptTemplateOwnsComposition(promptTemplate: string): boolean {
+  return (
+    illustratorPromptRequestsRenderedText(promptTemplate) ||
+    /\b(?:comic page|manga (?:illustration|page|scene|beat)|panel(?:led|s?\b|-inspired| layout| composition| flow| language))\b/iu.test(
+      promptTemplate,
+    )
+  );
+}
+
+/**
  * Preserve the default ban on accidental image text for ordinary illustrations,
  * but do not contradict comic pages or other prompts that explicitly request
  * lettering. User- and agent-authored negative prompts remain intact.
@@ -165,7 +179,22 @@ export function mergeIllustratorNegativePrompt(
   prompt: string,
   negativePrompt?: string | null,
   authoredNegativePrompt?: string | null,
+  provider?: ReferencePromptImageProvider | null,
 ): string {
+  if (provider && isNovelAiImageConnection(provider)) {
+    const seen = new Set<string>();
+    return (negativePrompt ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => {
+        const key = item.toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .join(", ");
+  }
+
   const requestsRenderedText = illustratorPromptRequestsRenderedText(prompt);
   const authoredItems = new Set(
     (authoredNegativePrompt ?? "")

@@ -139,6 +139,12 @@ export interface ImageGenRequest {
     imageEndpointId?: string;
     comfyWorkflow?: string;
     imageDefaults?: ImageGenerationDefaultsProfile | null;
+    imageGenerationSource?: string;
+    imageService?: string;
+    /** Prompt compiled for this fallback connection's provider and defaults. */
+    prompt?: string;
+    /** `null` explicitly removes the primary connection's negative prompt. */
+    negativePrompt?: string | null;
   };
 }
 
@@ -149,6 +155,9 @@ export interface ImageGenResult {
   mimeType: string;
   /** File extension without dot */
   ext: string;
+  /** The provider-specific prompt used when a fallback connection rendered the image. */
+  effectivePrompt?: string;
+  effectiveNegativePrompt?: string;
   /** Present when a configured fallback connection produced the image. */
   effectiveConnection?: {
     connectionId: string;
@@ -160,6 +169,7 @@ export interface ImageGenResult {
 
 const EXPLICIT_IMAGE_SOURCES = new Set([
   "openai",
+  "arli",
   "nanogpt",
   "openrouter",
   "pollinations",
@@ -172,6 +182,7 @@ const EXPLICIT_IMAGE_SOURCES = new Set([
   "zai",
   "atlas",
   "comfyui",
+  "swarmui",
   "automatic1111",
   "runpod_comfyui",
   "gemini_image",
@@ -210,11 +221,7 @@ const COMFYUI_GEN_TIMEOUT_SECONDS = Number(process.env.COMFYUI_GEN_TIMEOUT ?? 24
  * URL already is the physical target, and a stale `imageEndpointId` left on an imported or
  * copied connection must not split one ComfyUI/A1111 endpoint into separate slots.
  */
-export function imageAdmissionKey(
-  normalizedBaseUrl: string,
-  resolvedSource: string,
-  imageEndpointId?: string,
-): string {
+export function imageAdmissionKey(normalizedBaseUrl: string, resolvedSource: string, imageEndpointId?: string): string {
   if (resolvedSource === "runpod_comfyui") {
     const endpointId = imageEndpointId?.trim();
     return endpointId ? `${normalizedBaseUrl}#${endpointId}` : normalizedBaseUrl;
@@ -241,7 +248,7 @@ export async function generateImage(
   const resolvedSource = resolveImageBackend(source, baseUrl, serviceHint, request.model);
   const normalizedBaseUrl = normalizeImageUrl(baseUrl);
   const generationTimeoutMs =
-    resolvedSource === "comfyui" || resolvedSource === "runpod_comfyui"
+    resolvedSource === "comfyui" || resolvedSource === "swarmui" || resolvedSource === "runpod_comfyui"
       ? Math.max(IMAGE_GEN_TIMEOUT, COMFYUI_GEN_TIMEOUT_SECONDS * 1000)
       : IMAGE_GEN_TIMEOUT;
   // Primary plus fallback is one logical attempt, booked once here and reported once below with
@@ -253,62 +260,67 @@ export async function generateImage(
   let outcome: ConnectionAttemptOutcome = "failed";
 
   try {
-    const physicalRequest = () => withImageGenerationDeadline(request, generationTimeoutMs, async (signal) => {
-      const allowLocalUrls =
-        request.allowLocalUrls ?? (await shouldAllowLocalUrlsForImageConnection(normalizedBaseUrl, resolvedSource));
-      const scopedRequest = {
-        ...request,
-        fallback: undefined,
-        signal,
-        allowLocalUrls,
-        privateImageResultOrigin: allowLocalUrls ? imageProviderOrigin(normalizedBaseUrl) : undefined,
-      };
+    const physicalRequest = () =>
+      withImageGenerationDeadline(request, generationTimeoutMs, async (signal) => {
+        const allowLocalUrls =
+          request.allowLocalUrls ?? (await shouldAllowLocalUrlsForImageConnection(normalizedBaseUrl, resolvedSource));
+        const scopedRequest = {
+          ...request,
+          fallback: undefined,
+          signal,
+          allowLocalUrls,
+          privateImageResultOrigin: allowLocalUrls ? imageProviderOrigin(normalizedBaseUrl) : undefined,
+        };
 
-      switch (resolvedSource) {
-        case "openai":
-          return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "nanogpt":
-          return generateNanoGPT(normalizedBaseUrl, apiKey, scopedRequest);
-        case "openrouter":
-          return generateOpenRouter(normalizedBaseUrl, apiKey, scopedRequest);
-        case "pollinations":
-          return generatePollinations(scopedRequest);
-        case "stability":
-          return generateStability(normalizedBaseUrl, apiKey, scopedRequest);
-        case "togetherai":
-          return generateTogetherAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "novelai":
-          return generateNovelAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "horde":
-          return generateHorde(normalizedBaseUrl, apiKey, scopedRequest);
-        case "xai":
-          return generateXAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "venice":
-          return generateVenice(normalizedBaseUrl, apiKey, scopedRequest);
-        case "zai":
-          return generateZai(normalizedBaseUrl, apiKey, scopedRequest);
-        case "atlas":
-          return generateAtlasCloudImage(normalizedBaseUrl, apiKey, scopedRequest);
-        case "comfyui":
-          return generateComfyUI(normalizedBaseUrl, scopedRequest);
-        case "runpod_comfyui": {
-          const endpointId = scopedRequest.imageEndpointId || "";
-          if (!endpointId) {
-            throw new Error(
-              "RunPod ComfyUI requires an endpoint ID. " +
-                "Enter your RunPod endpoint ID in the Endpoint ID field (e.g. 'abc123def456').",
-            );
+        switch (resolvedSource) {
+          case "openai":
+            return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "arli":
+            return generateArli(normalizedBaseUrl, apiKey, scopedRequest);
+          case "nanogpt":
+            return generateNanoGPT(normalizedBaseUrl, apiKey, scopedRequest);
+          case "openrouter":
+            return generateOpenRouter(normalizedBaseUrl, apiKey, scopedRequest);
+          case "pollinations":
+            return generatePollinations(scopedRequest);
+          case "stability":
+            return generateStability(normalizedBaseUrl, apiKey, scopedRequest);
+          case "togetherai":
+            return generateTogetherAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "novelai":
+            return generateNovelAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "horde":
+            return generateHorde(normalizedBaseUrl, apiKey, scopedRequest);
+          case "xai":
+            return generateXAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "venice":
+            return generateVenice(normalizedBaseUrl, apiKey, scopedRequest);
+          case "zai":
+            return generateZai(normalizedBaseUrl, apiKey, scopedRequest);
+          case "atlas":
+            return generateAtlasCloudImage(normalizedBaseUrl, apiKey, scopedRequest);
+          case "comfyui":
+            return generateComfyUI(normalizedBaseUrl, scopedRequest);
+          case "swarmui":
+            return generateSwarmUI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "runpod_comfyui": {
+            const endpointId = scopedRequest.imageEndpointId || "";
+            if (!endpointId) {
+              throw new Error(
+                "RunPod ComfyUI requires an endpoint ID. " +
+                  "Enter your RunPod endpoint ID in the Endpoint ID field (e.g. 'abc123def456').",
+              );
+            }
+            return generateRunPodComfyUI(normalizedBaseUrl, endpointId, apiKey, scopedRequest);
           }
-          return generateRunPodComfyUI(normalizedBaseUrl, endpointId, apiKey, scopedRequest);
+          case "automatic1111":
+            return generateAutomatic1111(normalizedBaseUrl, scopedRequest, serviceHint);
+          case "gemini_image":
+            return generateViaChatCompletions(normalizedBaseUrl, apiKey, scopedRequest);
+          default:
+            return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
         }
-        case "automatic1111":
-          return generateAutomatic1111(normalizedBaseUrl, scopedRequest, serviceHint);
-        case "gemini_image":
-          return generateViaChatCompletions(normalizedBaseUrl, apiKey, scopedRequest);
-        default:
-          return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
-      }
-    });
+      });
     // Admit on the resolved endpoint rather than a connection id: every caller reaches this
     // function, but only some have a connection row in scope, and foreground work that
     // registers nothing would let background preparation start on top of it.
@@ -345,6 +357,9 @@ export async function generateImage(
       ...request,
       fallback: undefined,
       admissionMode: fallbackMode,
+      prompt: fallback.prompt ?? request.prompt,
+      negativePrompt:
+        fallback.negativePrompt === null ? undefined : (fallback.negativePrompt ?? request.negativePrompt),
       model: fallback.model,
       imageEndpointId: fallback.imageEndpointId,
       comfyWorkflow: fallback.comfyWorkflow,
@@ -360,6 +375,10 @@ export async function generateImage(
         provider: fallback.provider,
         model: fallback.model,
       },
+      effectivePrompt: result.effectivePrompt ?? fallback.prompt ?? request.prompt,
+      effectiveNegativePrompt:
+        result.effectiveNegativePrompt ??
+        (fallback.negativePrompt === null ? undefined : (fallback.negativePrompt ?? request.negativePrompt)),
     };
   } finally {
     await settle(outcome);
@@ -483,7 +502,7 @@ export function stageImageToDisk(chatId: string, base64: string, ext: string): S
 // ── Provider Implementations ──
 
 const MAX_IMAGE_RESPONSE_BYTES = 30 * 1024 * 1024;
-const LOCAL_IMAGE_BACKENDS = new Set(["comfyui", "automatic1111"]);
+const LOCAL_IMAGE_BACKENDS = new Set(["comfyui", "swarmui", "automatic1111"]);
 const NANOGPT_REFERENCE_IMAGE_LIMIT = 3;
 
 class ImageGenerationDeadlineError extends Error {
@@ -1693,6 +1712,91 @@ async function generateTogetherAI(baseUrl: string, apiKey: string, request: Imag
   return { base64: b64, mimeType: "image/png", ext: "png" };
 }
 
+export function buildArliImageUrl(baseUrl: string, endpoint: "txt2img" | "img2img"): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    if (/\/(?:txt2img|img2img)$/i.test(path)) {
+      parsed.pathname = path.replace(/\/(?:txt2img|img2img)$/i, `/${endpoint}`);
+    } else if (path === "" || path === "/") {
+      parsed.pathname = `/v1/${endpoint}`;
+    } else {
+      parsed.pathname = `${path}/${endpoint}`;
+    }
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return `${trimmed}/${endpoint}`;
+  }
+}
+
+export function buildArliImageRequest(request: ImageGenRequest): Record<string, unknown> {
+  const model = request.model?.trim();
+  if (!model) throw new Error("Arli.ai image generation requires a model");
+
+  const defaults = resolveAutomatic1111Defaults(request);
+  const body: Record<string, unknown> = {
+    sd_model_checkpoint: model,
+    prompt: mergePromptPrefix(defaults.promptPrefix, request.prompt),
+    negative_prompt: mergeNegativePrompt(defaults.negativePromptPrefix, request.negativePrompt),
+    width: request.width ?? 512,
+    height: request.height ?? 768,
+    steps: defaults.steps,
+    sampler_name: defaults.sampler || DEFAULT_AUTOMATIC1111_DEFAULTS.sampler,
+    cfg_scale: defaults.cfgScale,
+    seed: resolveSeed(request.imageDefaults),
+    batch_size: 1,
+    stream: false,
+  };
+  if (defaults.clipSkip) body.clip_skip = defaults.clipSkip;
+
+  const reference = request.referenceImage ?? request.referenceImages?.[0];
+  if (reference) {
+    body.init_images = [decodeReferenceImage(reference).base64];
+    body.denoising_strength = defaults.denoisingStrength;
+  }
+  return body;
+}
+
+async function generateArli(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
+  if (!apiKey.trim()) throw new Error("Arli.ai image generation requires an API key");
+  const body = buildArliImageRequest(request);
+  const useImg2Img = Array.isArray(body.init_images);
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/arli] final request payload:\n%s",
+    JSON.stringify({ ...body, ...(useImg2Img ? { init_images: "[1 reference image]" } : {}) }, null, 2),
+  );
+  const resp = await imageFetch(
+    buildArliImageUrl(baseUrl, useImg2Img ? "img2img" : "txt2img"),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: imageRequestSignal(request),
+    },
+    { allowLocal: request.allowLocalUrls },
+  );
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "Unknown error");
+    throw new Error(`Arli.ai image generation failed (${resp.status}): ${sanitizeErrorText(errText)}`);
+  }
+
+  const data = (await resp.json()) as { images?: string[] };
+  const image = data.images?.[0];
+  if (!image) throw new Error("No image data in Arli.ai response");
+  if (image.trim().startsWith("data:")) return decodeImageDataUrl(image);
+  const base64 = normalizeBase64ImagePayload(image, "Arli.ai image response");
+  const mimeType = detectImageMimeType(base64) ?? "image/png";
+  return { base64, mimeType, ext: imageExtensionFromMimeType(mimeType) };
+}
+
 const NOVELAI_V4_PROMPT_HINT =
   "NovelAI V4/V4.5 prompts support roughly 512 T5 tokens and reject most Unicode prompt characters; try a shorter ASCII prompt without emoji or non-Latin text.";
 const NOVELAI_SIZE_MULTIPLE = 64;
@@ -1761,6 +1865,10 @@ export function resolveNovelAiRequestSize(
   const model = request.model || "nai-diffusion-4-5-full";
   const scenePrompt = isNovelAiV4Model(model) ? sanitizeNovelAiV4Prompt(request.prompt) : request.prompt;
   return resolveNovelAiSize(request, scenePrompt, defaults);
+}
+
+export function resolveNovelAiStyleReferenceSecondaryStrength(fidelity: number): number {
+  return 1 - Math.max(0, Math.min(1, fidelity));
 }
 
 function isNovelAiV4Model(model: string): boolean {
@@ -2075,7 +2183,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
       index < styleReferenceOffset ? defaults.styleReferenceStrength : 1,
     );
     parameters.director_reference_secondary_strength_values = directorReferenceImages.map((_, index) =>
-      index < styleReferenceOffset ? defaults.styleReferenceFidelity : 0,
+      index < styleReferenceOffset ? resolveNovelAiStyleReferenceSecondaryStrength(defaults.styleReferenceFidelity) : 0,
     );
   }
 
@@ -3004,6 +3112,182 @@ async function generateComfyUI(baseUrl: string, request: ImageGenRequest): Promi
   }
 
   throw new Error(`ComfyUI generation timed out after ${Math.round(pollTimeoutMs / 1000)} seconds`);
+}
+
+// ── SwarmUI ──
+
+function swarmUiHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = apiKey.trim();
+  if (token) headers.Cookie = `swarm_token=${encodeURIComponent(token)}`;
+  return headers;
+}
+
+function swarmUiApiError(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const error = typeof value.error === "string" ? value.error.trim() : "";
+  const errorId = typeof value.error_id === "string" ? value.error_id.trim() : "";
+  if (!error && !errorId) return null;
+  return sanitizeErrorText(error || errorId);
+}
+
+async function createSwarmUiSession(base: string, apiKey: string, request: ImageGenRequest): Promise<string> {
+  const response = await localImageBackendFetch(`${base}/API/GetNewSession`, {
+    method: "POST",
+    headers: swarmUiHeaders(apiKey),
+    body: "{}",
+    signal: imageRequestSignal(request),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`SwarmUI session request failed (${response.status}): ${sanitizeErrorText(text)}`);
+  }
+
+  let result: unknown;
+  try {
+    result = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("SwarmUI session request returned invalid JSON");
+  }
+  const apiError = swarmUiApiError(result);
+  if (apiError) throw new Error(`SwarmUI API error: ${apiError}`);
+  const sessionId = isRecord(result) && typeof result.session_id === "string" ? result.session_id.trim() : "";
+  if (!sessionId) throw new Error("SwarmUI did not return a session_id");
+  return sessionId;
+}
+
+export function buildSwarmUiGenerationBody(request: ImageGenRequest, sessionId: string): Record<string, unknown> {
+  const defaults = resolveComfyUiDefaults(request);
+  const seed = resolveSeed(request.imageDefaults);
+  const prompt = mergePromptPrefix(defaults.promptPrefix, request.prompt || "");
+  const negativePrompt = mergeNegativePrompt(defaults.negativePromptPrefix, request.negativePrompt);
+  const model = request.model?.trim();
+  const body: Record<string, unknown> = {
+    session_id: sessionId,
+    images: 1,
+    donotsave: true,
+    prompt,
+    negativeprompt: negativePrompt,
+    width: request.width ?? 512,
+    height: request.height ?? 768,
+    seed,
+    steps: defaults.steps,
+    cfgscale: defaults.cfgScale,
+    sampler: defaults.sampler,
+    scheduler: defaults.scheduler,
+  };
+  if (model) body.model = model;
+
+  const workflowText = request.comfyWorkflow?.trim();
+  if (!workflowText) return body;
+  if (/%reference_image_name(?:_0[1-4])?%/.test(workflowText)) {
+    throw new Error(
+      "SwarmUI workflows must use %reference_image% placeholders; backend-local filename placeholders cannot be distributed safely.",
+    );
+  }
+
+  let workflow: Record<string, unknown>;
+  try {
+    workflow = JSON.parse(workflowText) as Record<string, unknown>;
+  } catch {
+    throw new Error("Invalid ComfyUI workflow JSON");
+  }
+  const replacements: Record<string, string | number> = {
+    "%prompt%": prompt,
+    "%negative_prompt%": negativePrompt,
+    "%width%": request.width ?? 512,
+    "%height%": request.height ?? 768,
+    "%seed%": seed,
+    "%steps%": defaults.steps,
+    "%cfg%": defaults.cfgScale,
+    "%cfg_scale%": defaults.cfgScale,
+    "%scale%": defaults.cfgScale,
+    "%sampler%": defaults.sampler,
+    "%scheduler%": defaults.scheduler,
+    "%denoise%": defaults.denoisingStrength,
+    "%denoising_strength%": defaults.denoisingStrength,
+    "%clip_skip%": defaults.clipSkip ?? 0,
+  };
+  Object.assign(replacements, buildComfyUiLoraWorkflowReplacements(defaults.loras));
+  if (model) replacements["%model%"] = model;
+
+  const references = collectComfyReferenceImages(request, defaults);
+  for (let index = 0; index < references.length; index++) {
+    const base64 = decodeReferenceImage(references[index]!).base64;
+    replacements[numberedComfyReferencePlaceholder("reference_image", index)] = base64;
+    if (index === 0) replacements["%reference_image%"] = base64;
+  }
+  if (defaults.uploadPlaceholderOnMissingReference) {
+    for (const index of findMissingComfyReferenceSlots(workflowText, "reference_image", references.length)) {
+      replacements[numberedComfyReferencePlaceholder("reference_image", index)] = COMFYUI_PLACEHOLDER_REFERENCE_BASE64;
+    }
+  }
+
+  body.comfyworkflowraw = JSON.stringify(replaceComfyUiPlaceholders(workflow, replacements));
+  return body;
+}
+
+function redactSwarmUiWorkflowImages(workflowText: string, request: ImageGenRequest): string {
+  const imageValues = [
+    COMFYUI_PLACEHOLDER_REFERENCE_BASE64,
+    ...collectComfyReferenceImages(request, resolveComfyUiDefaults(request)).map(
+      (reference) => decodeReferenceImage(reference).base64,
+    ),
+  ];
+  return [...new Set(imageValues)].reduce(
+    (redacted, image) =>
+      redacted.replaceAll(image, `[redacted image: ${Buffer.from(image, "base64").byteLength} bytes]`),
+    workflowText,
+  );
+}
+
+export function parseSwarmUiImageReference(value: unknown): string {
+  const apiError = swarmUiApiError(value);
+  if (apiError) throw new Error(`SwarmUI API error: ${apiError}`);
+  if (!isRecord(value) || !Array.isArray(value.images)) {
+    throw new Error("SwarmUI did not return an images array");
+  }
+  const image = value.images.find(
+    (candidate): candidate is string => typeof candidate === "string" && !!candidate.trim(),
+  );
+  if (!image) throw new Error("SwarmUI completed without an image output");
+  return image.trim();
+}
+
+async function generateSwarmUI(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
+  const base = baseUrl.replace(/\/+$/, "");
+  const sessionId = await createSwarmUiSession(base, apiKey, request);
+  const body = buildSwarmUiGenerationBody(request, sessionId);
+  const debugBody: Record<string, unknown> = { ...body, session_id: "[session]" };
+  if (typeof debugBody.comfyworkflowraw === "string") {
+    debugBody.comfyworkflowraw = redactSwarmUiWorkflowImages(debugBody.comfyworkflowraw, request);
+  }
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/swarmui] final request payload:\n%s",
+    JSON.stringify(debugBody, null, 2),
+  );
+  const response = await localImageBackendFetch(`${base}/API/GenerateText2Image`, {
+    method: "POST",
+    headers: swarmUiHeaders(apiKey),
+    body: JSON.stringify(body),
+    signal: imageRequestSignal(request),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`SwarmUI generation failed (${response.status}): ${sanitizeErrorText(text)}`);
+  }
+
+  let result: unknown;
+  try {
+    result = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("SwarmUI generation returned invalid JSON");
+  }
+  const imageReference = parseSwarmUiImageReference(result);
+  if (imageReference.startsWith("data:")) return decodeImageDataUrl(imageReference);
+  const imageUrl = new URL(imageReference, `${base}/`).toString();
+  return downloadImageUrl(imageUrl, request.privateImageResultOrigin, request.signal);
 }
 
 // ── AUTOMATIC1111 / SD Web UI / Forge ──

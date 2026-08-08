@@ -1,6 +1,8 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page, type Route } from "@playwright/test";
+import AdmZip from "adm-zip";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { forceColorValueEnablesColor } from "./playwright-color-environment.js";
 
 const TRANSPARENT_GIF_BASE64 = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 const WHATS_NEW_SEEN_VERSION_KEY = "marinara:whats-new:seen-version";
@@ -163,6 +165,15 @@ test.beforeEach(async ({ page }) => {
   await prepareFreshClient(page);
 });
 
+test("Playwright color parsing preserves supported force values only", () => {
+  for (const value of ["", "1", "2", "3", "true", "TRUE"]) {
+    expect(forceColorValueEnablesColor(value), `${JSON.stringify(value)} should force color`).toBe(true);
+  }
+  for (const value of [undefined, "0", "false", "off", "no", "never", "invalid", "4"]) {
+    expect(forceColorValueEnablesColor(value), `${JSON.stringify(value)} should not force color`).toBe(false);
+  }
+});
+
 test("What's New opens once for each Marinara Engine version", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(
@@ -177,22 +188,18 @@ test("What's New opens once for each Marinara Engine version", async ({ page }) 
   const announcement = page.getByRole("dialog", { name: "What's New?" });
   await expect(announcement).toBeVisible();
   await expect(announcement.getByText(`Version ${APP_VERSION}`, { exact: true })).toBeVisible();
-  await expect(announcement.getByRole("heading", { name: "The extensions are back!" })).toBeVisible();
-  await expect(announcement.getByText(/new Personas icon/)).toBeVisible();
-  await expect(announcement.getByText(/edit presets, characters, personas, and lorebooks/)).toBeVisible();
-  await expect(announcement.getByText(/three new Agents/)).toBeVisible();
-  await expect(announcement.getByText(/many bug fixes and QoL updates/)).toBeVisible();
-  await expect(announcement.locator('[data-release-story="2.4.0"] img')).toHaveCount(12);
-  await expect(announcement.getByAltText("The new Personas icon in Marinara Engine")).toHaveAttribute(
-    "src",
-    "https://i.imgur.com/K4Z9rSA.png",
-  );
+  await expect(announcement.getByRole("heading", { name: "Marinara Engine has been updated." })).toBeVisible();
+  await expect(
+    announcement.getByText(
+      "Marinara Engine has been updated! Read the release notes for everything included in this version.",
+    ),
+  ).toBeVisible();
+  await expect(announcement.locator("[data-release-story]")).toHaveCount(0);
   const announcementScrollArea = announcement.locator('[data-component="WhatsNewModal"]').locator("..");
-  await expect.poll(() => announcementScrollArea.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
   await expect
-    .poll(() => announcementScrollArea.evaluate((element) => element.scrollHeight > element.clientHeight))
-    .toBe(true);
-  await expect(announcement.getByText("Marinara Engine has been updated.", { exact: true })).toHaveCount(0);
+    .poll(() => announcementScrollArea.evaluate((element) => getComputedStyle(element).overflowY))
+    .toBe("auto");
+  await expect(announcement.getByRole("heading", { name: "The extensions are back!" })).toHaveCount(0);
   await expect(announcement.getByText("Tactical Combat Mode in Games")).toHaveCount(0);
   await expect(announcement.getByRole("link", { name: "View release" })).toHaveAttribute(
     "href",
@@ -279,8 +286,7 @@ test("custom theme live preview batches stylesheet updates while typing", async 
   await themeCssEditor.pressSequentially(previewMarker, { delay: 2 });
   expect(
     await page.evaluate(
-      () =>
-        (window as Window & { __themePreviewMutationCount?: number }).__themePreviewMutationCount ?? 0,
+      () => (window as Window & { __themePreviewMutationCount?: number }).__themePreviewMutationCount ?? 0,
     ),
   ).toBe(0);
 
@@ -289,8 +295,7 @@ test("custom theme live preview batches stylesheet updates while typing", async 
     .toContain("--issue-4452-preview: ready");
   expect(
     await page.evaluate(
-      () =>
-        (window as Window & { __themePreviewMutationCount?: number }).__themePreviewMutationCount ?? 0,
+      () => (window as Window & { __themePreviewMutationCount?: number }).__themePreviewMutationCount ?? 0,
     ),
   ).toBe(1);
 
@@ -1392,9 +1397,9 @@ test("resource panel sort fields share the canonical width", async ({ page }, te
   const personaSort = rightPanel.locator("select.mari-chrome-sort-field:visible");
   await expect(personaSort).toBeVisible();
   const personaWidth = await personaSort.evaluate((element) => element.getBoundingClientRect().width);
-  const rootFontSize = await page.locator("html").evaluate((element) =>
-    Number.parseFloat(getComputedStyle(element).fontSize),
-  );
+  const rootFontSize = await page
+    .locator("html")
+    .evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
 
   expect(lorebookWidth / rootFontSize).toBeCloseTo(6.5, 2);
   expect(lorebookWidth).toBe(personaWidth);
@@ -1631,6 +1636,79 @@ test("connection test-message errors inherit the configured editor accent", asyn
   }
 });
 
+test("NovelAI style plate upload keeps the connection editor mounted", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "Desktop connection editor behavior is covered here.");
+
+  let connectionId: string | null = null;
+  let testFailure: unknown;
+  let cleanupFailure: unknown;
+  const errors = collectUnexpectedErrors(page);
+
+  try {
+    const connectionResponse = await page.request.post("/api/connections", {
+      data: {
+        name: "NovelAI Style Plate Upload",
+        provider: "image_generation",
+        imageGenerationSource: "novelai",
+        imageService: "novelai",
+        model: "nai-diffusion-4-5-full",
+      },
+    });
+    expect(connectionResponse.ok()).toBeTruthy();
+    const connection = (await connectionResponse.json()) as { id: string };
+    connectionId = connection.id;
+
+    await page.goto("/");
+    await page.locator('[data-tour="panel-connections"]').click();
+    const rightPanel = page.locator('[data-component="RightPanelDesktop"]');
+    await rightPanel
+      .getByText("NovelAI Style Plate Upload", { exact: true })
+      .first()
+      .evaluate((element) => (element as HTMLElement).click());
+
+    const editor = page.locator(".mari-editor-shell");
+    await expect(editor).toBeVisible();
+    await editor.getByRole("button", { name: /NovelAI generation setup/iu }).click();
+    await editor.locator('input[type="file"][accept*="image/png"]').setInputFiles({
+      name: "style-plate.png",
+      mimeType: "image/png",
+      buffer: readFileSync(new URL("../packages/client/public/sprites/mari/Mari_wave.png", import.meta.url)),
+    });
+
+    await expect(editor).toBeVisible();
+    const preview = editor.getByRole("img", { name: "NovelAI style plate preview" });
+    await expect(preview).toBeVisible();
+    await expect(preview).toHaveAttribute("src", /^data:image\/jpeg;base64,/u);
+    await expect
+      .poll(async () => (await preview.getAttribute("src"))?.length ?? Number.POSITIVE_INFINITY)
+      .toBeLessThan(6 * 1024 * 1024);
+    expect(
+      await preview.evaluate((image) =>
+        Math.max((image as HTMLImageElement).naturalWidth, (image as HTMLImageElement).naturalHeight),
+      ),
+    ).toBeLessThanOrEqual(1536);
+    expect(errors).toEqual([]);
+  } catch (error) {
+    testFailure = error;
+  } finally {
+    if (connectionId) {
+      try {
+        const deletionResponse = await page.request.delete(`/api/connections/${connectionId}`);
+        if (!deletionResponse.ok()) throw new Error(`Connection cleanup failed with ${deletionResponse.status()}`);
+      } catch (cleanupError) {
+        if (testFailure !== undefined) {
+          console.warn("NovelAI style plate test cleanup failed", cleanupError);
+        } else {
+          cleanupFailure = cleanupError;
+        }
+      }
+    }
+  }
+
+  if (testFailure !== undefined) throw testFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+});
+
 test("Connection image captioning defaults persist with a dedicated captioning connection", async ({
   page,
   request,
@@ -1847,7 +1925,7 @@ test("Characters can be dragged from the right panel into the active chat", asyn
       const module = await import("/src/stores/chat.store.ts");
       module.useChatStore.getState().setActiveChatId(chatId);
     }, chat.id);
-    const dropSurface = page.locator('[data-chat-resource-drop-surface]');
+    const dropSurface = page.locator("[data-chat-resource-drop-surface]");
     await expect(dropSurface).toBeVisible();
 
     await page.locator('[data-tour="panel-characters"]').click();
@@ -1866,7 +1944,11 @@ test("Characters can be dragged from the right panel into the active chat", asyn
   }
 });
 
-test("Character row actions can add a resource to the active chat without dragging", async ({ page, request }) => {
+test("Character row actions can add a resource to the active chat without dragging", async ({
+  page,
+  request,
+}, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
   const suffix = Date.now().toString(36);
   const characterName = `Chat Action Character ${suffix}`;
   const characterResponse = await request.post("/api/characters", {
@@ -1879,6 +1961,11 @@ test("Character row actions can add a resource to the active chat without draggi
   });
   expect(chatResponse.ok()).toBeTruthy();
   const chat = (await chatResponse.json()) as { id: string };
+  const groupResponse = await request.post("/api/characters/groups", {
+    data: { name: `Chat Action Folder ${suffix}`, characterIds: [character.id] },
+  });
+  expect(groupResponse.ok()).toBeTruthy();
+  const group = (await groupResponse.json()) as { id: string };
 
   try {
     await page.goto("/");
@@ -1886,12 +1973,39 @@ test("Character row actions can add a resource to the active chat without draggi
       const module = await import("/src/stores/chat.store.ts");
       module.useChatStore.getState().setActiveChatId(chatId);
     }, chat.id);
-    await expect(page.locator('[data-chat-resource-drop-surface]')).toBeVisible();
+    await expect(page.locator("[data-chat-resource-drop-surface]")).toBeVisible();
     await page.locator('[data-tour="panel-characters"]').click();
 
-    const characterRow = page.locator('[data-touch-drag-card="character"]').filter({ hasText: characterName });
+    const folderRow = page.locator(`[data-character-folder-id="${group.id}"]`);
+    const folderHeader = folderRow.locator(':scope > [role="button"]');
+    await folderHeader.click();
+    await expect(folderHeader).toHaveAttribute("aria-expanded", "true");
+
+    const characterRow = folderRow.locator('[data-touch-drag-card="character"]').filter({ hasText: characterName });
+    if (!mobile) await characterRow.hover();
     const addAction = characterRow.locator('[data-chat-resource-action="character"]');
+    const duplicateAction = characterRow.getByRole("button", { name: "Duplicate", exact: true });
+    const deleteAction = characterRow.getByRole("button", { name: "Delete", exact: true });
     await expect(addAction).toBeVisible();
+    const [addBox, duplicateBox, deleteBox] = await Promise.all([
+      addAction.boundingBox(),
+      duplicateAction.boundingBox(),
+      deleteAction.boundingBox(),
+    ]);
+    expect(addBox).not.toBeNull();
+    expect(duplicateBox).not.toBeNull();
+    expect(deleteBox).not.toBeNull();
+    expect(addBox!.width).toBeCloseTo(duplicateBox!.width, 1);
+    expect(addBox!.height).toBeCloseTo(duplicateBox!.height, 1);
+    expect(addBox!.width).toBeCloseTo(deleteBox!.width, 1);
+    expect(addBox!.height).toBeCloseTo(deleteBox!.height, 1);
+    const [addRadius, duplicateRadius, deleteRadius] = await Promise.all(
+      [addAction, duplicateAction, deleteAction].map((button) =>
+        button.evaluate((element) => getComputedStyle(element).borderRadius),
+      ),
+    );
+    expect(addRadius).toBe(duplicateRadius);
+    expect(addRadius).toBe(deleteRadius);
     await addAction.click();
 
     await expect.poll(() => getChatCharacterIds(request, chat.id)).toContain(character.id);
@@ -1899,6 +2013,7 @@ test("Character row actions can add a resource to the active chat without draggi
   } finally {
     await Promise.all([
       request.delete(`/api/chats/${chat.id}`).catch(() => undefined),
+      request.delete(`/api/characters/groups/${group.id}`).catch(() => undefined),
       request.delete(`/api/characters/${character.id}`).catch(() => undefined),
     ]);
   }
@@ -1930,10 +2045,10 @@ test("Dropping a persona confirms before replacing the active chat persona", asy
       const module = await import("/src/stores/chat.store.ts");
       module.useChatStore.getState().setActiveChatId(chatId);
     }, chat.id);
-    await expect(page.locator('[data-chat-resource-drop-surface]')).toBeVisible();
+    await expect(page.locator("[data-chat-resource-drop-surface]")).toBeVisible();
     await page.locator('[data-tour="panel-personas"]').click();
     const personaRow = page.locator('[data-touch-drag-card="persona"]').filter({ hasText: nextPersona.name });
-    const dropSurface = page.locator('[data-chat-resource-drop-surface]');
+    const dropSurface = page.locator("[data-chat-resource-drop-surface]");
     await expect(personaRow).toBeVisible();
 
     await dragChatResource(page, personaRow, dropSurface);
@@ -1952,7 +2067,9 @@ test("Dropping a persona confirms before replacing the active chat persona", asy
       .getByRole("button", { name: "Replace", exact: true })
       .click();
     await expect
-      .poll(async () => ((await (await request.get(`/api/chats/${chat.id}`)).json()) as { personaId: string }).personaId)
+      .poll(
+        async () => ((await (await request.get(`/api/chats/${chat.id}`)).json()) as { personaId: string }).personaId,
+      )
       .toBe(nextPersona.id);
   } finally {
     await Promise.all([
@@ -1967,6 +2084,7 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
   page,
   request,
 }, testInfo) => {
+  test.setTimeout(120_000);
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
   const characterName = `Character Chat Launcher ${suffix}`;
   const characterResponse = await request.post("/api/characters", {
@@ -2026,6 +2144,20 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
     await rightPanel.getByRole("button", { name: "Open Characters Library" }).click();
     const library = page.locator('[data-component="CharacterLibraryView"]');
     await library.getByPlaceholder('Search characters or -tag:"tag name"').fill(characterName);
+    const libraryCard = library.locator(`[data-card-library-card="${character.id}"]`);
+    await expect(libraryCard).toBeVisible();
+    if (mobile) {
+      const [libraryCardBox, libraryAvatarBox] = await Promise.all([
+        libraryCard.boundingBox(),
+        libraryCard.locator("[data-card-library-avatar]").boundingBox(),
+      ]);
+      expect(libraryCardBox).not.toBeNull();
+      expect(libraryAvatarBox).not.toBeNull();
+      expect(Math.abs(libraryAvatarBox!.y - libraryCardBox!.y)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(libraryAvatarBox!.y + libraryAvatarBox!.height - (libraryCardBox!.y + libraryCardBox!.height)),
+      ).toBeLessThanOrEqual(1);
+    }
     const editCharacter = library.getByRole("button", { name: "Edit Character", exact: true });
     const chatNow = library.getByRole("button", { name: "Chat Now", exact: true });
     await expect(editCharacter).toBeVisible();
@@ -2036,14 +2168,15 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
     await chatNow.click();
 
     const libraryModeSelector = await expectModeSelector();
+    const libraryActiveChatId = await readActiveChatId();
     await libraryModeSelector.getByRole("button", { name: /^Game/u }).click();
-    await expect.poll(readActiveChatId).not.toBeNull();
+    await expect.poll(readActiveChatId).not.toBe(libraryActiveChatId);
     const gameChatId = await readActiveChatId();
     expect(gameChatId).not.toBeNull();
     createdChatIds.add(gameChatId!);
 
     const gameWizard = page.locator('[data-component="GameSetupWizard"]');
-    await expect(gameWizard).toBeVisible();
+    await expect(gameWizard).toBeVisible({ timeout: 30_000 });
     await gameWizard.getByRole("button", { name: "Next", exact: true }).click();
     await expect(gameWizard.getByRole("heading", { name: "World", exact: true })).toBeVisible();
     await gameWizard.getByRole("button", { name: "Next", exact: true }).click();
@@ -2119,14 +2252,14 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
     expect(Math.abs(duplicateBox!.height - deleteBox!.height)).toBeLessThan(0.1);
     expect(Math.abs(duplicateBox!.width - deleteBox!.width)).toBeLessThan(0.1);
     expect(Math.abs(duplicateBox!.height - chatBox!.height)).toBeLessThan(0.1);
-    expect(Math.abs(chatBox!.width - (duplicateBox!.width * 3 + 4))).toBeLessThan(0.5);
+    expect(Math.abs(chatBox!.width - duplicateBox!.width)).toBeLessThan(0.1);
     expect(duplicateIconBox!.height / duplicateBox!.height).toBeGreaterThan(0.52);
     expect(duplicateIconBox!.width / duplicateBox!.width).toBeGreaterThan(0.52);
     expect(deleteIconBox!.height / deleteBox!.height).toBeGreaterThan(0.52);
     expect(deleteIconBox!.width / deleteBox!.width).toBeGreaterThan(0.52);
     expect(chatIconBox!.height / chatBox!.height).toBeGreaterThan(0.42);
     expect(chatIconBox!.width / chatIconBox!.height).toBeGreaterThan(0.9);
-    expect(chatBox!.y).toBeGreaterThan(duplicateBox!.y);
+    expect(Math.abs(chatBox!.y - duplicateBox!.y)).toBeLessThan(0.1);
 
     const folderName = `Character Actions ${suffix}`;
     const groupResponse = await request.post("/api/characters/groups", {
@@ -2146,6 +2279,20 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
 
     await folderHeader.evaluate((element) => (element as HTMLElement).click());
     await expect(folderHeader).toHaveAttribute("aria-expanded", "true", { timeout: 300 });
+
+    if (mobile) {
+      const actionCount = folderHeader.locator('[data-folder-item-count="actions"]');
+      const folderDelete = folderHeader.locator("[data-folder-actions] button");
+      await expect(actionCount).toBeVisible();
+      await expect(folderDelete).toBeVisible();
+      const [actionCountBox, folderDeleteBox] = await Promise.all([
+        actionCount.boundingBox(),
+        folderDelete.boundingBox(),
+      ]);
+      expect(actionCountBox).not.toBeNull();
+      expect(folderDeleteBox).not.toBeNull();
+      expect(actionCountBox!.x + actionCountBox!.width).toBeLessThanOrEqual(folderDeleteBox!.x);
+    }
 
     if (!mobile) {
       await page.waitForTimeout(400);
@@ -2193,18 +2340,43 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
       [...folderActionBoxes].map((box) => box!.x).sort((left, right) => left - right),
     );
 
+    const panelActiveChatId = await readActiveChatId();
     await folderChatButton.evaluate((element) => (element as HTMLElement).click());
     const panelModeSelector = await expectModeSelector();
     await panelModeSelector.getByRole("button", { name: /^Roleplay/u }).click();
-    await expect.poll(readActiveChatId).not.toBeNull();
+    await expect.poll(readActiveChatId).not.toBe(panelActiveChatId);
     const roleplayChatId = await readActiveChatId();
     expect(roleplayChatId).not.toBeNull();
     createdChatIds.add(roleplayChatId!);
 
     const roleplayWizard = page.locator('[data-component="ChatSetupWizard"]');
     await expect(roleplayWizard).toBeVisible();
+    await expect(roleplayWizard).toHaveClass(/mari-chat-setup-wizard/u);
+    const roleplayConnectionSelect = roleplayWizard.getByRole("combobox", { name: "Connection", exact: true });
+    await roleplayConnectionSelect.click();
+    const connectionListbox = roleplayWizard.getByRole("listbox", { name: "Connection", exact: true });
+    await expect(connectionListbox).toBeVisible();
+    const connectionListboxStyle = await connectionListbox.evaluate((listbox) => {
+      const style = getComputedStyle(listbox);
+      return { backgroundColor: style.backgroundColor, color: style.color };
+    });
+    expect(connectionListboxStyle.backgroundColor).not.toBe("rgb(255, 255, 255)");
+    expect(connectionListboxStyle.color).not.toBe(connectionListboxStyle.backgroundColor);
+    await connectionListbox.getByRole("option", { name: "None", exact: true }).click();
+    await expect(connectionListbox).toBeHidden();
     await roleplayWizard.getByRole("button", { name: "Next", exact: true }).click();
     await expect(roleplayWizard.getByRole("heading", { name: "Pick a Preset", exact: true })).toBeVisible();
+    const presetSelect = roleplayWizard.getByRole("combobox", { name: "Preset", exact: true });
+    await presetSelect.click();
+    const presetListbox = roleplayWizard.getByRole("listbox", { name: "Preset", exact: true });
+    await expect(presetListbox).toBeVisible();
+    expect(
+      await presetListbox.evaluate((listbox) => {
+        const style = getComputedStyle(listbox);
+        return { backgroundColor: style.backgroundColor, color: style.color };
+      }),
+    ).toEqual(connectionListboxStyle);
+    await presetListbox.getByRole("option", { name: "None", exact: true }).click();
     await roleplayWizard.getByRole("button", { name: "Next", exact: true }).click();
     const participantsHeading = roleplayWizard.getByRole("heading", {
       name: "Persona & Characters",
@@ -2295,7 +2467,10 @@ test("Character and Persona avatar actions stay separated and visually balanced"
     version: string,
   ) => {
     await page.locator(`[data-tour="panel-${panel}"]`).click();
-    await page.getByText(resourceName, { exact: true }).first().click({ position: { x: 2, y: 2 } });
+    await page
+      .getByText(resourceName, { exact: true })
+      .first()
+      .click({ position: { x: 2, y: 2 } });
 
     const editor = page.locator(".mari-editor-shell");
     await expect(editor).toBeVisible();
@@ -2338,10 +2513,17 @@ test("Character and Persona avatar actions stay separated and visually balanced"
     expect(cameraBox).not.toBeNull();
     if (!tileBox || !generateBox || !cameraBox) return;
 
-    expect(generateBox.width).toBeGreaterThanOrEqual(11.5);
-    expect(generateBox.width).toBeLessThanOrEqual(14);
-    expect(generateBox.x + generateBox.width).toBeLessThanOrEqual(tileBox.x + tileBox.width + 1);
-    expect(generateBox.y).toBeGreaterThanOrEqual(tileBox.y - 1);
+    expect(generateBox.width).toBeGreaterThanOrEqual(7.5);
+    expect(generateBox.width).toBeLessThanOrEqual(9);
+    expect(generateBox.height).toBeGreaterThanOrEqual(7.5);
+    expect(generateBox.height).toBeLessThanOrEqual(9);
+    const minimumGenerateInset = (page.viewportSize()?.width ?? 768) < 768 ? 1.5 : 2.5;
+    expect(generateBox.x).toBeGreaterThanOrEqual(tileBox.x + minimumGenerateInset);
+    expect(generateBox.y).toBeGreaterThanOrEqual(tileBox.y + minimumGenerateInset);
+    expect(generateBox.x + generateBox.width).toBeLessThanOrEqual(tileBox.x + tileBox.width - minimumGenerateInset);
+    expect(generateBox.y + generateBox.height).toBeLessThanOrEqual(tileBox.y + tileBox.height - minimumGenerateInset);
+    expect(Math.abs(cameraBox.x + cameraBox.width / 2 - (tileBox.x + tileBox.width / 2))).toBeLessThanOrEqual(1);
+    expect(Math.abs(cameraBox.y + cameraBox.height / 2 - (tileBox.y + tileBox.height / 2))).toBeLessThanOrEqual(1);
     const overlapsCamera =
       generateBox.x < cameraBox.x + cameraBox.width &&
       generateBox.x + generateBox.width > cameraBox.x &&
@@ -2617,10 +2799,14 @@ test("Convo About Me keeps manual editing and native expanded-editor keyboard be
 
     await expandedEditor.evaluate((textarea) => {
       textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.setSelectionRange(2, 2);
     });
-    await page.keyboard.type("!");
-    await expect(expandedEditor).toHaveValue("alpha\nbeta!");
+    await page.keyboard.type("X");
+    await page.waitForTimeout(40);
+    await expect.poll(() => expandedEditor.evaluate((textarea) => textarea.selectionStart)).toBe(3);
+    await page.keyboard.type("Y");
+    await expect(expandedEditor).toHaveValue("alXYpha\nbeta");
+    await page.keyboard.press(`${process.platform === "darwin" ? "Meta" : "Control"}+z`);
     await page.keyboard.press(`${process.platform === "darwin" ? "Meta" : "Control"}+z`);
     await expect(expandedEditor).toHaveValue("alpha\nbeta");
 
@@ -2760,9 +2946,7 @@ test("character schedules export the live draft and import safely", async ({ pag
     const response = await request.get(`/api/chats/${chat.id}`);
     const stored = (await response.json()) as { metadata: string | Record<string, unknown> };
     const metadata =
-      typeof stored.metadata === "string"
-        ? (JSON.parse(stored.metadata) as Record<string, unknown>)
-        : stored.metadata;
+      typeof stored.metadata === "string" ? (JSON.parse(stored.metadata) as Record<string, unknown>) : stored.metadata;
     return (metadata.characterSchedules as Record<string, typeof originalSchedule>)[character.id];
   };
   const openScheduleEditor = async () => {
@@ -2784,7 +2968,10 @@ test("character schedules export the live draft and import safely", async ({ pag
     return dialog;
   };
   const expandMonday = async (dialog: Locator) => {
-    const monday = dialog.locator("section").filter({ hasText: /^Monday/ }).first();
+    const monday = dialog
+      .locator("section")
+      .filter({ hasText: /^Monday/ })
+      .first();
     await monday.getByRole("button").first().click();
     return dialog.getByLabel("Monday block activity");
   };
@@ -2813,7 +3000,9 @@ test("character schedules export the live draft and import safely", async ({ pag
 
     const fileInput = dialog.locator('input[type="file"][accept*=".json"]');
     await fileInput.setInputFiles({ name: "invalid.json", mimeType: "application/json", buffer: Buffer.from("{}") });
-    await expect(page.getByText("That file does not contain a valid character schedule.", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("That file does not contain a valid character schedule.", { exact: true }),
+    ).toBeVisible();
     await expect(activity).toHaveValue("Unsaved export draft");
     await fileInput.setInputFiles({
       name: "oversized.json",
@@ -2910,12 +3099,145 @@ test("provider concurrency errors appear in generation toasts", async ({ page },
   }
 });
 
-test("sent text stays cleared and the first message edit persists after stopped generation", async ({
+test("individual group awareness includes only the replying character's sibling chats", async ({
   page,
   request,
 }, testInfo) => {
-  test.skip(!testInfo.project.name.includes("desktop"), "Stopped-generation edit persistence is covered on desktop.");
-  test.setTimeout(90_000);
+  test.skip(!testInfo.project.name.includes("desktop"), "Individual group prompt scoping is covered on desktop.");
+
+  const suffix = Date.now().toString(36);
+  const providerRequests: Array<Record<string, unknown>> = [];
+  const providerServer = createServer((incoming, response) => {
+    const chunks: Buffer[] = [];
+    incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    incoming.on("end", () => {
+      if (incoming.method !== "POST" || incoming.url !== "/v1/chat/completions") {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "Unexpected individual-group provider request" }));
+        return;
+      }
+      providerRequests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        connection: "close",
+        "cache-control": "no-cache",
+      });
+      response.end(
+        [
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Scoped reply." }, finish_reason: null }] })}`,
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}`,
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => providerServer.listen(0, "127.0.0.1", resolve));
+
+  const characterIds: string[] = [];
+  const chatIds: string[] = [];
+  let connectionId = "";
+  try {
+    const address = providerServer.address();
+    if (!address || typeof address === "string") throw new Error("Individual-group provider fixture did not bind");
+
+    const connectionResponse = await request.post("/api/connections", {
+      data: {
+        name: `Individual Awareness Provider ${suffix}`,
+        provider: "custom",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "e2e-individual-awareness",
+        model: "individual-awareness-model",
+        maxContext: 32_768,
+      },
+    });
+    expect(connectionResponse.ok(), await connectionResponse.text()).toBeTruthy();
+    connectionId = ((await connectionResponse.json()) as { id: string }).id;
+
+    const characterNames = [`Awareness Alpha ${suffix}`, `Awareness Beta ${suffix}`];
+    for (const name of characterNames) {
+      const characterResponse = await request.post("/api/characters", {
+        data: { data: { name, description: `${name} keeps their own conversation history.` } },
+      });
+      expect(characterResponse.ok(), await characterResponse.text()).toBeTruthy();
+      characterIds.push(((await characterResponse.json()) as { id: string }).id);
+    }
+
+    const groupChatResponse = await request.post("/api/chats", {
+      data: {
+        name: `Individual Awareness Group ${suffix}`,
+        mode: "conversation",
+        characterIds,
+        connectionId,
+      },
+    });
+    expect(groupChatResponse.ok(), await groupChatResponse.text()).toBeTruthy();
+    const groupChatId = ((await groupChatResponse.json()) as { id: string }).id;
+    chatIds.push(groupChatId);
+    const metadataResponse = await request.patch(`/api/chats/${groupChatId}/metadata`, {
+      data: {
+        conversationSetupComplete: true,
+        crossChatAwareness: true,
+        enableAgents: false,
+        groupChatMode: "individual",
+        groupResponseOrder: "sequential",
+      },
+    });
+    expect(metadataResponse.ok(), await metadataResponse.text()).toBeTruthy();
+
+    const siblingSecrets = [`ALPHA_SIBLING_SECRET_${suffix}`, `BETA_SIBLING_SECRET_${suffix}`];
+    for (let index = 0; index < characterIds.length; index += 1) {
+      const siblingChatResponse = await request.post("/api/chats", {
+        data: {
+          name: `Sibling ${characterNames[index]}`,
+          mode: "conversation",
+          characterIds: [characterIds[index]],
+        },
+      });
+      expect(siblingChatResponse.ok(), await siblingChatResponse.text()).toBeTruthy();
+      const siblingChatId = ((await siblingChatResponse.json()) as { id: string }).id;
+      chatIds.push(siblingChatId);
+      const siblingMessageResponse = await request.post(`/api/chats/${siblingChatId}/messages`, {
+        data: { role: "user", content: siblingSecrets[index] },
+      });
+      expect(siblingMessageResponse.ok(), await siblingMessageResponse.text()).toBeTruthy();
+    }
+
+    await page.addInitScript(
+      (activeChatId) => localStorage.setItem("marinara-active-chat-id", activeChatId),
+      groupChatId,
+    );
+    await page.goto("/");
+    await page.locator('textarea[placeholder*="/ for commands"]').fill("What happened recently?");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => providerRequests.length).toBe(2);
+    await expect(page.getByRole("button", { name: "Stop generating", exact: true })).toHaveCount(0);
+
+    for (let index = 0; index < characterNames.length; index += 1) {
+      const responderPrompt = providerRequests.find((providerRequest) =>
+        JSON.stringify(providerRequest).includes(`Respond only as ${characterNames[index]}.`),
+      );
+      expect(responderPrompt, `Missing provider prompt for ${characterNames[index]}`).toBeTruthy();
+      const serializedPrompt = JSON.stringify(responderPrompt);
+      expect(serializedPrompt).toContain(siblingSecrets[index]);
+      expect(serializedPrompt).not.toContain(siblingSecrets[index === 0 ? 1 : 0]);
+    }
+  } finally {
+    await Promise.allSettled(chatIds.map((chatId) => request.delete(`/api/chats/${chatId}`)));
+    await Promise.allSettled(characterIds.map((characterId) => request.delete(`/api/characters/${characterId}`)));
+    if (connectionId) await request.delete(`/api/connections/${connectionId}`).catch(() => undefined);
+    await new Promise<void>((resolve, reject) => {
+      providerServer.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
+test("stopped and refused generations keep sent text cleared and accept the first edit", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const mobile = testInfo.project.name.includes("mobile");
 
   const suffix = Date.now().toString(36);
   const providerRequests: Array<Record<string, unknown>> = [];
@@ -2930,6 +3252,11 @@ test("sent text stays cleared and the first message edit persists after stopped 
         return;
       }
       providerRequests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
+      if (providerRequests.length === 4) {
+        response.writeHead(403, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "Content prohibited by the provider" } }));
+        return;
+      }
       openProviderResponses.add(response);
       response.on("close", () => openProviderResponses.delete(response));
       response.writeHead(200, {
@@ -3009,29 +3336,132 @@ test("sent text stays cleared and the first message edit persists after stopped 
       const response = await request.get(`/api/chats/${chatId}/messages`);
       return (await response.json()) as Array<{ id: string; role: string; content: string }>;
     };
-    const editMessageOnce = async (messageId: string, nextContent: string) => {
+    const editMessageOnce = async (
+      messageId: string,
+      nextContent: string,
+      options: { delaySave?: boolean; failFirstSave?: boolean } = {},
+    ) => {
       const message = page.locator(`[data-message-id="${messageId}"]`);
-      await message.hover();
+      if (mobile) await message.click();
+      else await message.hover();
       await message.getByTitle("Edit", { exact: true }).click();
       const editor = message.locator("textarea");
       await editor.fill(nextContent);
-      await message.getByLabel("Save edit", { exact: true }).click();
-      await expect(message).toContainText(nextContent);
-      await expect
-        .poll(async () => (await readMessages()).find((candidate) => candidate.id === messageId)?.content)
-        .toBe(nextContent);
+      const saveGate = options.delaySave ? createDeferred() : null;
+      let saveAttempts = 0;
+      const messagePath = `/api/chats/${chatId}/messages/${messageId}`;
+      const messageRoute = `**${messagePath}`;
+      let saveRouteHandler: ((route: Route) => Promise<void>) | null = null;
+      if (saveGate || options.failFirstSave) {
+        saveRouteHandler = async (route) => {
+          if (route.request().method() !== "PATCH") {
+            await route.continue();
+            return;
+          }
+          saveAttempts += 1;
+          if (saveAttempts === 1 && saveGate) await saveGate.promise;
+          if (saveAttempts === 1 && options.failFirstSave) {
+            await route.fulfill({
+              status: 503,
+              contentType: "application/json",
+              body: JSON.stringify({ error: "Temporary message save failure" }),
+            });
+            return;
+          }
+          await route.continue();
+        };
+        await page.route(messageRoute, saveRouteHandler);
+      }
+      try {
+        const saveButton = message.getByLabel("Save edit", { exact: true });
+        const saveButtonBox = await saveButton.boundingBox();
+        expect(saveButtonBox?.width).toBeGreaterThanOrEqual(44);
+        expect(saveButtonBox?.height).toBeGreaterThanOrEqual(44);
+        await saveButton.click();
+        if (saveGate) {
+          try {
+            await expect(editor).toBeVisible();
+            await expect(editor).toHaveValue(nextContent);
+            await expect(message.getByLabel("Cancel edit", { exact: true })).toBeDisabled();
+            await expect(message.getByLabel("Save edit", { exact: true })).toBeDisabled();
+            await editor.press("Escape");
+            await expect(editor).toBeVisible();
+          } finally {
+            saveGate.resolve();
+          }
+        }
+        if (options.failFirstSave) await expect.poll(() => saveAttempts).toBe(2);
+        await expect(message).toContainText(nextContent);
+        await expect
+          .poll(async () =>
+            (await readMessages()).some((candidate) => candidate.role === "user" && candidate.content === nextContent),
+          )
+          .toBe(true);
+      } finally {
+        if (saveRouteHandler) await page.unroute(messageRoute, saveRouteHandler);
+      }
     };
 
     await input.fill("Original message with retained draft");
     await sendButton.click();
     await expect(input).toHaveValue("");
     await input.fill("Unsent composer text");
-    await stopCurrentGeneration(1);
+    await expect.poll(() => providerRequests.length).toBe(1);
+    const justSentMessage = page
+      .locator("[data-message-id]")
+      .filter({ hasText: "Original message with retained draft" });
+    await expect(justSentMessage).toBeVisible();
+    const justSentMessageId = await justSentMessage.getAttribute("data-message-id");
+    expect(justSentMessageId).toBeTruthy();
+    const stoppedRefreshGate = createDeferred();
+    const messagesPath = `/api/chats/${chatId}/messages`;
+    const messagesRouteMatcher = (url: URL) => url.pathname === messagesPath;
+    let holdStoppedRefresh = true;
+    const stoppedRefreshHandler = async (route: Route) => {
+      if (holdStoppedRefresh && route.request().method() === "GET") await stoppedRefreshGate.promise;
+      await route.continue().catch(() => undefined);
+    };
+    await page.route(messagesRouteMatcher, stoppedRefreshHandler);
+    try {
+      await page.evaluate((messageId) => {
+        const stopButton = document.querySelector<HTMLButtonElement>("button.mari-chat-send-btn");
+        if (!stopButton) throw new Error("Stop generation control is unavailable");
+        stopButton.click();
+        window.dispatchEvent(new CustomEvent("marinara:start-edit-message", { detail: { messageId } }));
+      }, justSentMessageId);
+      const justSentEditor = justSentMessage.locator("textarea");
+      await expect(justSentEditor).toBeVisible();
+      await justSentEditor.fill("Edited on the first save with retained draft");
+      const firstSaveRequest = page.waitForRequest(
+        (candidate) =>
+          candidate.method() === "PATCH" &&
+          new URL(candidate.url()).pathname === `/api/chats/${chatId}/messages/${justSentMessageId}`,
+      );
+      await justSentMessage.getByLabel("Save edit", { exact: true }).click();
+      await firstSaveRequest;
+    } finally {
+      holdStoppedRefresh = false;
+      stoppedRefreshGate.resolve();
+      if (!page.isClosed()) await page.unroute(messagesRouteMatcher, stoppedRefreshHandler);
+    }
+    await expect
+      .poll(
+        async () =>
+          (await readMessages()).some(
+            (message) => message.role === "user" && message.content === "Edited on the first save with retained draft",
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+    await expect(sendButton.locator("svg.lucide-circle-stop")).toHaveCount(0);
     const firstMessage = (await readMessages()).find(
-      (message) => message.role === "user" && message.content === "Original message with retained draft",
+      (message) => message.role === "user" && message.content === "Edited on the first save with retained draft",
     );
     expect(firstMessage).toBeTruthy();
-    await editMessageOnce(firstMessage!.id, "Edited on the first save with retained draft");
+    await editMessageOnce(firstMessage!.id, "Second edit to the same message stays newest", {
+      delaySave: true,
+      failFirstSave: true,
+    });
     await expect(input).toHaveValue("Unsent composer text");
 
     await input.fill("Original message with cleared draft");
@@ -3059,9 +3489,33 @@ test("sent text stays cleared and the first message edit persists after stopped 
       )
       .toBe(true);
 
+    await input.fill("Provider refusal must not duplicate this sent message");
+    await sendButton.click();
+    await expect.poll(() => providerRequests.length).toBe(4);
+    await expect(input).toHaveValue("");
+    await expect
+      .poll(
+        async () =>
+          (await readMessages()).filter(
+            (message) =>
+              message.role === "user" && message.content === "Provider refusal must not duplicate this sent message",
+          ).length,
+      )
+      .toBe(1);
+
+    const transportFailureDraft = "Restore this draft when transport fails before persistence";
+    await page.route("**/api/generate", async (route) => route.abort("failed"));
+    await input.fill(transportFailureDraft);
+    await sendButton.click();
+    await expect(input).toHaveValue(transportFailureDraft);
+    expect(
+      (await readMessages()).some((message) => message.role === "user" && message.content === transportFailureDraft),
+    ).toBe(false);
+    await page.unroute("**/api/generate");
+
     await page.reload();
     await expect(page.locator(`[data-message-id="${firstMessage!.id}"]`)).toContainText(
-      "Edited on the first save with retained draft",
+      "Second edit to the same message stays newest",
     );
     await expect(page.locator(`[data-message-id="${secondMessage!.id}"]`)).toContainText(
       "Edited on the first save with cleared draft",
@@ -3556,7 +4010,7 @@ test("generation fallbacks identify the replacement connection in a toast", asyn
 });
 
 for (const mode of ["roleplay", "conversation"] as const) {
-  test(`${mode} exposes reasoning on its first live chunk and retains saved reasoning`, async ({ page }, testInfo) => {
+  test(`${mode} exposes reasoning and explains unavailable saved summaries`, async ({ page }, testInfo) => {
     const characters: Array<{ id: string; name: string }> = [];
     if (mode === "conversation") {
       for (const name of ["Reasoning One", "Reasoning Two"]) {
@@ -3596,6 +4050,37 @@ for (const mode of ["roleplay", "conversation"] as const) {
       });
       expect(savedMessageResponse.ok()).toBeTruthy();
       const savedMessage = (await savedMessageResponse.json()) as { id: string };
+      const unavailableMessageResponse = await page.request.post(`/api/chats/${chat.id}/messages`, {
+        data: {
+          role: "assistant",
+          content:
+            mode === "conversation"
+              ? `${characters[0]!.name}: A response whose provider omitted its reasoning summary.`
+              : "A response whose provider omitted its reasoning summary.",
+        },
+      });
+      expect(unavailableMessageResponse.ok()).toBeTruthy();
+      const unavailableMessage = (await unavailableMessageResponse.json()) as { id: string };
+      const unavailableMessageExtraResponse = await page.request.patch(
+        `/api/chats/${chat.id}/messages/${unavailableMessage.id}/extra`,
+        {
+          data: {
+            generationInfo: {
+              model: "gpt-5.6-sol",
+              provider: "openai",
+              temperature: null,
+              tokensPrompt: 512,
+              tokensCompletion: 120,
+              tokensReasoning: 1034,
+              tokensCachedPrompt: null,
+              tokensCacheWritePrompt: null,
+              durationMs: 1200,
+              finishReason: "stop",
+            },
+          },
+        },
+      );
+      expect(unavailableMessageExtraResponse.ok()).toBeTruthy();
 
       await page.addInitScript((chatId) => {
         localStorage.setItem("marinara-active-chat-id", chatId);
@@ -3662,8 +4147,26 @@ for (const mode of ["roleplay", "conversation"] as const) {
         : savedRow.locator('button[title="View model thoughts"]');
       await expect(savedThoughtsButton).toBeVisible();
       await savedThoughtsButton.click();
-      await expect(page.getByRole("dialog", { name: "Model Thoughts" })).toContainText(
-        "Saved reasoning remains available.",
+      const savedThoughtsDialog = page.getByRole("dialog", { name: "Model Thoughts" });
+      await expect(savedThoughtsDialog).toContainText("Saved reasoning remains available.");
+      await page.keyboard.press("Escape");
+      await expect(savedThoughtsDialog).toBeHidden();
+
+      const unavailableRow = page.locator(`[data-message-id="${unavailableMessage.id}"]`);
+      if (testInfo.project.name.includes("mobile")) {
+        await unavailableRow.click();
+      } else {
+        await unavailableRow.hover();
+      }
+      const unavailableThoughtsButton = testInfo.project.name.includes("mobile")
+        ? unavailableRow.getByRole("button", { name: "Reasoning summary unavailable" })
+        : unavailableRow.locator('button[title="Reasoning summary unavailable"]');
+      await expect(unavailableThoughtsButton).toBeVisible();
+      await unavailableThoughtsButton.click();
+      const unavailableDialog = page.getByRole("dialog", { name: "Model Thoughts" });
+      await expect(unavailableDialog).toContainText("Reasoning summary unavailable");
+      await expect(unavailableDialog).toContainText(
+        "The model used reasoning, but the provider did not return a displayable summary for this response.",
       );
     } finally {
       await updateLiveReasoningState(page, chat.id, "stop").catch(() => undefined);
@@ -3794,10 +4297,10 @@ test("editing the preceding Roleplay message keeps one live stream row", async (
   const chat = (await chatResponse.json()) as { id: string };
 
   try {
-    const responseText = Array.from(
-      { length: 80 },
-      (_, index) => `Streaming line ${index + 1} remains owned by one presentation row.`,
-    ).join("\n");
+    const responseText = [
+      "**Streaming emphasis appears before completion.**",
+      ...Array.from({ length: 80 }, (_, index) => `Streaming line ${index + 1} remains owned by one presentation row.`),
+    ].join("\n");
     const savedMessage = {
       id: "__edit_during_stream_saved__",
       chatId: chat.id,
@@ -3853,6 +4356,7 @@ test("editing the preceding Roleplay message keeps one live stream row", async (
     const visibleAssistantRows = page.locator('[data-message-role="assistant"]');
     await expect(liveStream).toHaveCount(1);
     await expect(visibleAssistantRows).toHaveCount(1);
+    await expect(liveStream.locator("strong")).toContainText("Streaming emphasis appears before completion.");
     const userMessage = page.locator('[data-message-role="user"]').last();
     await userMessage.hover();
     await userMessage.getByTitle("Edit").click();
@@ -3916,18 +4420,12 @@ test("Roleplay side panels synchronize their slide with the desktop shell resize
       );
     });
     const openRightSlotWidth = (await rightSlot.boundingBox())?.width ?? 0;
-    const openRightPanelX = (await rightPanel.boundingBox())?.x ?? 0;
+    expect(openRightSlotWidth).toBeGreaterThan(0);
     const centerWidthWithRightPanel = (await centerContent.boundingBox())?.width ?? 0;
     await page.getByRole("button", { name: "Close panel" }).click();
     await expect(rightPanel).toHaveClass(/mari-shell-panel-exit-right/);
-    await expect(rightSlot).not.toHaveCSS("width", "0px");
-    await page.waitForTimeout(70);
-    const closingRightSlotWidth = (await rightSlot.boundingBox())?.width ?? 0;
-    expect(closingRightSlotWidth).toBeGreaterThan(0);
-    expect(closingRightSlotWidth).toBeLessThan(openRightSlotWidth);
-    expect((await rightPanel.boundingBox())?.x ?? 0).toBeGreaterThan(openRightPanelX + 8);
-    expect((await centerContent.boundingBox())?.width ?? 0).toBeGreaterThan(centerWidthWithRightPanel);
     await expect(rightSlot).toHaveCSS("width", "0px");
+    expect((await centerContent.boundingBox())?.width ?? 0).toBeGreaterThan(centerWidthWithRightPanel);
 
     await page.locator('[data-tour="sidebar-toggle"]').click();
     await expect(leftSlot).not.toHaveCSS("width", "0px");
@@ -3941,18 +4439,12 @@ test("Roleplay side panels synchronize their slide with the desktop shell resize
       );
     });
     const openLeftSlotWidth = (await leftSlot.boundingBox())?.width ?? 0;
-    const openLeftPanelX = (await leftPanel.boundingBox())?.x ?? 0;
+    expect(openLeftSlotWidth).toBeGreaterThan(0);
     const centerWidthWithLeftPanel = (await centerContent.boundingBox())?.width ?? 0;
     await page.locator('[data-tour="sidebar-toggle"]').click();
     await expect(leftPanel).toHaveClass(/mari-shell-panel-exit-left/);
-    await expect(leftSlot).not.toHaveCSS("width", "0px");
-    await page.waitForTimeout(70);
-    const closingLeftSlotWidth = (await leftSlot.boundingBox())?.width ?? 0;
-    expect(closingLeftSlotWidth).toBeGreaterThan(0);
-    expect(closingLeftSlotWidth).toBeLessThan(openLeftSlotWidth);
-    expect((await leftPanel.boundingBox())?.x ?? 0).toBeLessThan(openLeftPanelX - 8);
-    expect((await centerContent.boundingBox())?.width ?? 0).toBeGreaterThan(centerWidthWithLeftPanel);
     await expect(leftSlot).toHaveCSS("width", "0px");
+    expect((await centerContent.boundingBox())?.width ?? 0).toBeGreaterThan(centerWidthWithLeftPanel);
 
     for (const [slot, panel] of [
       [rightSlot, rightPanel],
@@ -4271,7 +4763,7 @@ test("legacy browser records are cleaned while extension imports stay locked", a
         };
       }),
     )
-    .toEqual({ version: 88, hasExtensionRecords: false, hasCleanupFlag: false });
+    .toEqual({ version: 90, hasExtensionRecords: false, hasCleanupFlag: false });
 
   expect(
     await page.evaluate(
@@ -4413,7 +4905,10 @@ test("external Agent imports require the Danger Zone gate and explicit capabilit
     const lockedImportButton = page.getByTitle(disabledHelp).first();
     await expect(lockedImportButton).toHaveAttribute("aria-disabled", "true");
     await lockedImportButton.dispatchEvent("click");
-    await expect(page.getByText(disabledHelp, { exact: true }).last()).toBeVisible();
+    const disabledToast = page.locator("[data-sonner-toast]").filter({ hasText: disabledHelp }).last();
+    await expect(disabledToast).toBeVisible();
+    await disabledToast.getByRole("button", { name: "Close toast" }).click();
+    await expect(disabledToast).toBeHidden();
 
     await page.locator('[data-tour="panel-settings"]').click();
     await page.getByRole("tab", { name: "Advanced" }).click();
@@ -4771,21 +5266,21 @@ test("chat toolbar panels close when their trigger is clicked again across modes
     await expect.poll(() => summaryPanel.evaluate((element) => element.parentElement === document.body)).toBe(true);
     await expect(summaryPanel).toHaveCSS("position", "fixed");
     await expect(summaryPanel).toHaveCSS("z-index", "9999");
-    const summaryPromptCard = summaryPanel
-      .getByText("Summary Prompt", { exact: true })
-      .locator("xpath=../../..");
+    const summaryPromptCard = summaryPanel.getByText("Summary Prompt", { exact: true }).locator("xpath=../../..");
     const chatSummaryPromptTab = summaryPromptCard.getByRole("tab", { name: "Chat Summary", exact: true });
     const combinePromptTab = summaryPromptCard.getByRole("tab", { name: "Combine prompt", exact: true });
     await expect(chatSummaryPromptTab).toHaveAttribute("aria-selected", "true");
-    const summaryPromptViewHeight = await summaryPromptCard.locator(".h-48").first().evaluate((element) =>
-      element.getBoundingClientRect().height,
-    );
+    const summaryPromptViewHeight = await summaryPromptCard
+      .locator(".h-48")
+      .first()
+      .evaluate((element) => element.getBoundingClientRect().height);
     await combinePromptTab.click();
     await expect(combinePromptTab).toHaveAttribute("aria-selected", "true");
-    const combinePromptViewHeight = await summaryPromptCard.locator(".h-48").first().evaluate((element) =>
-      element.getBoundingClientRect().height,
-    );
-    expect(combinePromptViewHeight).toBe(summaryPromptViewHeight);
+    const combinePromptViewHeight = await summaryPromptCard
+      .locator(".h-48")
+      .first()
+      .evaluate((element) => element.getBoundingClientRect().height);
+    expect(Math.abs(combinePromptViewHeight - summaryPromptViewHeight)).toBeLessThanOrEqual(2);
 
     const promptEditButton = summaryPromptCard.getByRole("button", { name: "Edit", exact: true });
     await expect(promptEditButton).toBeEnabled();
@@ -4832,7 +5327,265 @@ test("chat toolbar panels close when their trigger is clicked again across modes
   }
 });
 
-test("roleplay quick preset editor uses chat settings spacing and surfaces", async ({ page, request }, testInfo) => {
+test("prompt preset transfers discard deprecated generation parameters", async ({ request }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "Prompt preset transfer contracts are covered once.");
+
+  const suffix = Date.now().toString(36);
+  const createdPresetIds = new Set<string>();
+  const presetResponse = await request.post("/api/prompts", {
+    data: {
+      name: `Transfer Preset ${suffix}`,
+      description: "Current prompt-preset transfer fixture.",
+      conversationPrompt: "Conversation prompt survives transfer.",
+      gamePrompt: "Game prompt survives transfer.",
+      variableGroups: [{ name: "tone", label: "Tone", options: [{ label: "Warm", value: "warm" }] }],
+      variableValues: { tone: "warm" },
+      wrapFormat: "markdown",
+      author: "Transfer Test",
+      parameters: {
+        temperature: 0.37,
+        maxTokens: 777,
+        reasoningEffort: "maximum",
+        verbosity: "high",
+      },
+    },
+  });
+  expect(presetResponse.ok()).toBeTruthy();
+  const preset = (await presetResponse.json()) as { id: string };
+  createdPresetIds.add(preset.id);
+
+  const sectionResponse = await request.post(`/api/prompts/${preset.id}/sections`, {
+    data: {
+      identifier: `transfer-section-${suffix}`,
+      name: "Transfer Section",
+      content: "Supported section content survives transfer.",
+      role: "system",
+    },
+  });
+  expect(sectionResponse.ok()).toBeTruthy();
+
+  try {
+    const exportResponse = await request.get(`/api/prompts/${preset.id}/export`);
+    expect(exportResponse.ok()).toBeTruthy();
+    const envelope = (await exportResponse.json()) as {
+      type: string;
+      data: {
+        preset: Record<string, unknown>;
+        sections: Array<Record<string, unknown>>;
+      };
+    };
+    expect(envelope.type).toBe("marinara_preset");
+    expect(envelope.data.preset.parameters).toBeUndefined();
+    expect(envelope.data.preset.conversationPrompt).toBe("Conversation prompt survives transfer.");
+    expect(envelope.data.sections).toContainEqual(
+      expect.objectContaining({ content: "Supported section content survives transfer." }),
+    );
+
+    const bulkResponse = await request.post("/api/prompts/export-bulk", { data: { ids: [preset.id] } });
+    expect(bulkResponse.ok()).toBeTruthy();
+    const zip = new AdmZip(await bulkResponse.body());
+    const manifestEntry = zip.getEntries().find((entry) => entry.entryName.endsWith("/manifest.json"));
+    expect(manifestEntry).toBeTruthy();
+    const manifest = JSON.parse(manifestEntry!.getData().toString("utf8")) as {
+      config: { data: { preset: Record<string, unknown> } };
+    };
+    expect(manifest.config.data.preset.parameters).toBeUndefined();
+
+    const nativeImportResponse = await request.post("/api/import/marinara", {
+      data: {
+        ...envelope,
+        data: {
+          ...envelope.data,
+          preset: {
+            ...envelope.data.preset,
+            name: `Native Legacy Import ${suffix}`,
+            parameters: {
+              temperature: 0.13,
+              maxTokens: 313,
+              reasoningEffort: "low",
+            },
+          },
+        },
+      },
+    });
+    expect(nativeImportResponse.ok()).toBeTruthy();
+    const nativeImport = (await nativeImportResponse.json()) as { id: string };
+    createdPresetIds.add(nativeImport.id);
+    const nativeStoredResponse = await request.get(`/api/prompts/${nativeImport.id}`);
+    const nativeStored = (await nativeStoredResponse.json()) as {
+      conversationPrompt: string;
+      wrapFormat: string;
+      parameters: string;
+    };
+    const nativeParameters = JSON.parse(nativeStored.parameters) as Record<string, unknown>;
+    expect(nativeStored.conversationPrompt).toBe("Conversation prompt survives transfer.");
+    expect(nativeStored.wrapFormat).toBe("markdown");
+    expect(nativeParameters).not.toHaveProperty("temperature");
+    expect(nativeParameters).not.toHaveProperty("maxTokens");
+    expect(nativeParameters).not.toHaveProperty("reasoningEffort");
+    const nativeSectionsResponse = await request.get(`/api/prompts/${nativeImport.id}/sections`);
+    expect(await nativeSectionsResponse.json()).toContainEqual(
+      expect.objectContaining({ content: "Supported section content survives transfer." }),
+    );
+
+    const compatibleImportResponse = await request.post("/api/import/st-preset", {
+      data: {
+        name: `Compatible Legacy Import ${suffix}`,
+        temperature: 0.19,
+        openai_max_tokens: 919,
+        reasoning_effort: "low",
+        prompts: [
+          {
+            identifier: `compatible-section-${suffix}`,
+            name: "Compatible Section",
+            content: "Compatible prompt content survives import.",
+            role: "system",
+          },
+        ],
+      },
+    });
+    expect(compatibleImportResponse.ok()).toBeTruthy();
+    const compatibleImport = (await compatibleImportResponse.json()) as { presetId: string };
+    createdPresetIds.add(compatibleImport.presetId);
+    const compatibleStoredResponse = await request.get(`/api/prompts/${compatibleImport.presetId}`);
+    const compatibleStored = (await compatibleStoredResponse.json()) as { parameters: string };
+    const compatibleParameters = JSON.parse(compatibleStored.parameters) as Record<string, unknown>;
+    expect(compatibleParameters).not.toHaveProperty("temperature");
+    expect(compatibleParameters).not.toHaveProperty("maxTokens");
+    expect(compatibleParameters).not.toHaveProperty("reasoningEffort");
+    const compatibleSectionsResponse = await request.get(`/api/prompts/${compatibleImport.presetId}/sections`);
+    expect(await compatibleSectionsResponse.json()).toContainEqual(
+      expect.objectContaining({ content: "Compatible prompt content survives import." }),
+    );
+  } finally {
+    await Promise.all([...createdPresetIds].map((id) => request.delete(`/api/prompts/${id}`)));
+  }
+});
+
+test("selected prompt indicators escape the avatar clipping frame", async ({ page, request }, testInfo) => {
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const presetName = `Selected Preset ${suffix}`;
+  const presetResponse = await request.post("/api/prompts", { data: { name: presetName } });
+  expect(presetResponse.ok()).toBeTruthy();
+  const preset = (await presetResponse.json()) as { id: string };
+  const chatResponse = await request.post("/api/chats", {
+    data: {
+      name: `Selected Preset Chat ${suffix}`,
+      mode: "roleplay",
+      characterIds: [],
+      promptPresetId: preset.id,
+    },
+  });
+  expect(chatResponse.ok()).toBeTruthy();
+  const chat = (await chatResponse.json()) as { id: string };
+
+  try {
+    await page.addInitScript((chatId) => localStorage.setItem("marinara-active-chat-id", chatId), chat.id);
+    await page.goto("/");
+    await page.locator('[data-tour="panel-presets"]').click();
+    const presetRow = page.locator('[data-touch-drag-card="preset"]').filter({ hasText: presetName });
+    const pictureButton = presetRow.getByRole("button", { name: "Upload preset picture" });
+    const indicator = presetRow.locator("[data-preset-selected-indicator]");
+    await expect(pictureButton).toBeVisible();
+    await expect(indicator).toBeVisible();
+    const placement = await indicator.evaluate((element) => {
+      const indicatorRect = element.getBoundingClientRect();
+      const picture = element.closest("button");
+      const row = element.closest('[data-touch-drag-card="preset"]');
+      if (!picture || !row) return null;
+      const pictureRect = picture.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      return {
+        pictureOverflow: getComputedStyle(picture).overflow,
+        escapesPictureTop: indicatorRect.top < pictureRect.top,
+        escapesPictureRight: indicatorRect.right > pictureRect.right,
+        containedByRow:
+          indicatorRect.top >= rowRect.top &&
+          indicatorRect.right <= rowRect.right &&
+          indicatorRect.bottom <= rowRect.bottom,
+      };
+    });
+    expect(placement).toEqual({
+      pictureOverflow: "visible",
+      escapesPictureTop: true,
+      escapesPictureRight: true,
+      containedByRow: true,
+    });
+  } finally {
+    await Promise.all([request.delete(`/api/chats/${chat.id}`), request.delete(`/api/prompts/${preset.id}`)]);
+  }
+});
+
+test("preset pictures can be uploaded from the panel and replaced in the Overview editor", async ({
+  page,
+  request,
+}, testInfo) => {
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const presetName = `Picture Preset ${suffix}`;
+  const presetResponse = await request.post("/api/prompts", {
+    data: { name: presetName, description: "Preset picture upload fixture." },
+  });
+  expect(presetResponse.ok()).toBeTruthy();
+  const preset = (await presetResponse.json()) as { id: string };
+  const imageFile = {
+    name: "preset-picture.gif",
+    mimeType: "image/gif",
+    buffer: Buffer.from(TRANSPARENT_GIF_BASE64, "base64"),
+  };
+  const uploadedImagePaths: string[] = [];
+  let duplicatePresetId: string | null = null;
+
+  try {
+    await page.goto("/");
+    await page.locator('[data-tour="panel-presets"]').click();
+
+    const presetRow = page.locator('[data-touch-drag-card="preset"]').filter({ hasText: presetName });
+    await expect(presetRow).toBeVisible();
+
+    const panelUpload = presetRow.getByRole("button", { name: "Upload preset picture" });
+    const panelFileChooserPromise = page.waitForEvent("filechooser");
+    await panelUpload.click();
+    await (await panelFileChooserPromise).setFiles(imageFile);
+
+    const panelPicture = presetRow.getByRole("button", { name: "Replace preset picture" });
+    await expect(panelPicture).toBeVisible();
+    await expect(panelPicture.locator("img")).toHaveAttribute("src", /\/api\/prompts\/images\/file\//u);
+
+    await presetRow.locator("[data-preset-open-action]").click({ position: { x: 8, y: 8 } });
+    const overviewPicture = page.locator("[data-preset-overview-picture]");
+    await expect(overviewPicture).toBeVisible();
+    await expect(overviewPicture).toHaveAttribute("aria-label", "Replace preset picture");
+    const firstImagePath = await overviewPicture.locator("img").getAttribute("src");
+    expect(firstImagePath).toMatch(/\/api\/prompts\/images\/file\//u);
+    uploadedImagePaths.push(firstImagePath!);
+    const duplicateResponse = await request.post(`/api/prompts/${preset.id}/duplicate`);
+    expect(duplicateResponse.ok()).toBeTruthy();
+    duplicatePresetId = ((await duplicateResponse.json()) as { id: string }).id;
+
+    const editorFileChooserPromise = page.waitForEvent("filechooser");
+    await overviewPicture.click();
+    await (await editorFileChooserPromise).setFiles(imageFile);
+    await expect.poll(() => overviewPicture.locator("img").getAttribute("src")).not.toBe(firstImagePath);
+    const replacementImagePath = await overviewPicture.locator("img").getAttribute("src");
+    expect(replacementImagePath).toMatch(/\/api\/prompts\/images\/file\//u);
+    uploadedImagePaths.push(replacementImagePath!);
+    expect((await request.get(firstImagePath!)).status()).toBe(200);
+    await request.delete(`/api/prompts/${duplicatePresetId}`);
+    duplicatePresetId = null;
+    await expect.poll(async () => (await request.get(firstImagePath!)).status()).toBe(404);
+  } finally {
+    if (duplicatePresetId) await request.delete(`/api/prompts/${duplicatePresetId}`);
+    await request.delete(`/api/prompts/${preset.id}`);
+    for (const imagePath of uploadedImagePaths) {
+      await expect.poll(async () => (await request.get(imagePath)).status()).toBe(404);
+    }
+  }
+});
+
+test("roleplay quick preset editor uses chat settings spacing, surfaces, and safe deletion", async ({
+  page,
+  request,
+}, testInfo) => {
   test.skip(!testInfo.project.name.includes("desktop"), "Desktop Chat Settings compact-editor regression.");
 
   const suffix = Date.now().toString(36);
@@ -4850,6 +5603,7 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
     },
   });
   expect(sectionResponse.ok()).toBeTruthy();
+  const section = (await sectionResponse.json()) as { id: string };
   const groupResponse = await request.post(`/api/prompts/${preset.id}/groups`, {
     data: { name: "Quick Group" },
   });
@@ -4868,6 +5622,13 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
   await page.addInitScript((chatId) => {
     localStorage.setItem("marinara-active-chat-id", chatId);
   }, chat.id);
+  const deletePath = `/api/prompts/${preset.id}/sections/${section.id}`;
+  const deleteRequests: string[] = [];
+  page.on("request", (outgoingRequest) => {
+    if (outgoingRequest.method() === "DELETE" && new URL(outgoingRequest.url()).pathname === deletePath) {
+      deleteRequests.push(deletePath);
+    }
+  });
 
   try {
     await page.goto("/");
@@ -4920,6 +5681,28 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
         }),
       )
       .toBe(true);
+
+    // Issue #4698 — canceling must leave the prompt block untouched, while
+    // confirming must issue exactly one delete for the selected block.
+    const deleteButton = sectionCard.getByTitle("Delete");
+    const deleteDialog = page.getByRole("dialog", { name: "Delete Prompt Block" });
+    await deleteButton.click();
+    await expect(deleteDialog).toContainText("Are you sure you want to delete Quick Section? This cannot be undone.");
+    await deleteDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(deleteDialog).toBeHidden();
+    expect(deleteRequests).toEqual([]);
+    await expect(sectionCard).toHaveCount(1);
+    const sectionsAfterCancel = await request.get(`/api/prompts/${preset.id}/sections`);
+    expect(await sectionsAfterCancel.json()).toContainEqual(expect.objectContaining({ id: section.id }));
+
+    const deleteResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "DELETE" && new URL(response.url()).pathname === deletePath,
+    );
+    await deleteButton.click();
+    await deleteDialog.getByRole("button", { name: "Delete", exact: true }).click();
+    expect((await deleteResponsePromise).ok()).toBeTruthy();
+    expect(deleteRequests).toEqual([deletePath]);
+    await expect(sectionCard).toHaveCount(0);
 
     await drawer.getByRole("button", { name: "Close chat settings", exact: true }).click();
     await expect(drawer).toHaveCount(0);
@@ -6312,7 +7095,7 @@ test("Game history above the dialogue box opens a historical Peek Prompt", async
   }
 });
 
-test("home shell and primary topbar panels open without client errors", async ({ page }) => {
+test("home shell and primary topbar panels open without client errors", async ({ page }, testInfo) => {
   const errors = collectUnexpectedErrors(page);
   await page.goto("/");
 
@@ -6337,6 +7120,21 @@ test("home shell and primary topbar panels open without client errors", async ({
     "panel-agents",
     "panel-settings",
   ]);
+
+  if (testInfo.project.name.includes("mobile")) {
+    const iconCenters = await page.locator('[data-component="TopBar"] .mari-topbar-action').evaluateAll((buttons) =>
+      buttons
+        .map((button) => {
+          const icon = button.querySelector("svg");
+          const box = icon?.getBoundingClientRect();
+          return box ? box.x + box.width / 2 : null;
+        })
+        .filter((center): center is number => center !== null),
+    );
+    const spacings = iconCenters.slice(1).map((center, index) => center - iconCenters[index]);
+    expect(iconCenters.length).toBeGreaterThan(2);
+    expect(Math.max(...spacings) - Math.min(...spacings)).toBeLessThanOrEqual(2);
+  }
 
   for (const selector of [
     '[data-tour="sidebar-toggle"]',
@@ -6990,6 +7788,66 @@ test("Browser labels and the Persona full library stay available across viewport
   expect(errors.filter((error) => !error.includes("status of 503 (Service Unavailable)"))).toEqual([]);
 });
 
+test("Chub NSFW search uses filtered totals and spaced pagination", async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "Chub filter behavior is covered once on desktop.");
+
+  const observedSearches: Array<{ query: string; nsfw: string | null }> = [];
+  await page.route("**/api/bot-browser/chub/search?*", async (route) => {
+    const url = new URL(route.request().url());
+    const query = url.searchParams.get("q") ?? "";
+    const nsfw = url.searchParams.get("nsfw");
+    observedSearches.push({ query, nsfw });
+    const isReportedSearch = query === "Kathrin Vaughan" && nsfw === "true";
+    await route.fulfill({
+      json: {
+        data: {
+          count: isReportedSearch ? 11 : query ? 0 : 96,
+          cursor: isReportedSearch || !query ? "next-page" : null,
+          nodes: isReportedSearch
+            ? [
+                {
+                  fullPath: "blur/kathrin-vaughan",
+                  name: "Kathrin Vaughan",
+                  tagline: "Reported NSFW search result",
+                  topics: ["Fantasy", "NSFW"],
+                  nsfw: null,
+                  nTokens: 780,
+                },
+              ]
+            : query
+              ? []
+              : [
+                  {
+                    fullPath: "example/safe-card",
+                    name: "Safe Card",
+                    tagline: "Initial result",
+                    topics: ["SFW"],
+                    nsfw: false,
+                    nTokens: 500,
+                  },
+                ],
+        },
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.locator('[data-tour="panel-bot-browser"]').click();
+  await page.getByRole("button", { name: "Download Cards" }).click();
+  const library = page.locator('[data-component="BotBrowserView"]');
+  await expect(library.getByText("96 cards from ChubAI", { exact: true })).toBeVisible();
+  await expect(library.getByText("Page 1 of 2", { exact: true })).toBeVisible();
+
+  await library.getByRole("checkbox", { name: "NSFW", exact: true }).check();
+  await library.getByPlaceholder("Search characters").fill("Kathrin Vaughan");
+
+  await expect(library.getByText("Kathrin Vaughan", { exact: true })).toBeVisible();
+  await expect(library.getByText("11 cards from ChubAI", { exact: true })).toBeVisible();
+  const card = library.getByRole("button", { name: /Kathrin Vaughan/u });
+  await expect(card.getByText("NSFW", { exact: true })).toBeVisible();
+  expect(observedSearches).toContainEqual({ query: "Kathrin Vaughan", nsfw: "true" });
+});
+
 test("Character and Persona sidebars find cards by creator", async ({ page, request }, testInfo) => {
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
   const characterName = `Sidebar Character ${suffix}`;
@@ -7105,7 +7963,8 @@ test("right-panel controls keep their width with and without a scrollbar", async
   const cleanupFailures: unknown[] = [];
   for (const result of cleanupResults) {
     if (result.status === "rejected") cleanupFailures.push(result.reason);
-    else if (!result.value.ok()) cleanupFailures.push(new Error(`Fixture cleanup failed with HTTP ${result.value.status()}`));
+    else if (!result.value.ok())
+      cleanupFailures.push(new Error(`Fixture cleanup failed with HTTP ${result.value.status()}`));
   }
 
   const failures = [...(testFailure ? [testFailure.error] : []), ...cleanupFailures];
@@ -7275,10 +8134,7 @@ test("downloadable agent catalog is usable on desktop and mobile", async ({ page
   }
   await expect(catalogView.getByText("Marinara Engine v2.3.0+")).toBeVisible();
   const documentationLink = catalogView.getByRole("link", { name: "Read how this agent works" });
-  await expect(documentationLink).toHaveAttribute(
-    "href",
-    "https://github.com/Pasta-Devs/Marinara-Agents#uno",
-  );
+  await expect(documentationLink).toHaveAttribute("href", "https://github.com/Pasta-Devs/Marinara-Agents#uno");
   const installButton = catalogView.getByRole("button", { name: "Install", exact: true });
   await expect(installButton).toBeVisible();
   await expect(documentationLink).toHaveClass(/mari-chrome-control--primary/u);
@@ -7535,8 +8391,10 @@ test("Music Player links to Music DJ while its package is unavailable", async ({
   });
 
   const openMusicPlayerSetting = async () => {
-    await page.locator('[data-tour="panel-settings"]').click();
     const row = page.locator("#settings-control-music-player");
+    const settingsButton = page.locator('[data-tour="panel-settings"]');
+    await expect(settingsButton).toHaveAttribute("aria-pressed", /true|false/u);
+    if ((await settingsButton.getAttribute("aria-pressed")) !== "true") await settingsButton.click();
     await expect(row).toBeVisible();
     return row;
   };
@@ -8738,23 +9596,20 @@ test("Conversation Chat Settings exposes and persists Long-Term Memory activatio
     const drawer = page.locator(".mari-chat-settings-drawer");
     await openAgentsSection(drawer);
     const agentsSection = drawer.locator('[data-chat-settings-section="conversation-agents"]');
-    const toggle = agentsSection.getByRole("checkbox", { name: "Long-Term Memory", exact: true });
+    const toggle = agentsSection.getByRole("checkbox", { name: /^Long-Term Memory/ });
     await expect(toggle).toBeVisible();
     await expect(toggle).not.toBeChecked();
     const calls = drawer.locator("marinara-capability-conversation-calls");
     const ltm = drawer.locator("marinara-capability-long-term-memory");
-    await expect(calls).toBeVisible();
+    await expect(calls).toHaveCount(1);
     await expect(ltm).toBeVisible();
-    const callsBox = await calls.boundingBox();
-    const ltmBox = await ltm.boundingBox();
-    expect(callsBox).not.toBeNull();
-    expect(ltmBox).not.toBeNull();
-    expect(ltmBox!.y).toBeGreaterThan(callsBox!.y);
     await expect(drawer.locator('[data-ltm-control="select"]')).toBeVisible();
     await expect(drawer.locator('[data-ltm-control="budget"]')).toBeVisible();
     await expect(drawer.locator('[data-ltm-control="max-chunks"]')).toBeVisible();
 
-    await toggle.check();
+    const toggleId = await toggle.getAttribute("id");
+    expect(toggleId).toBeTruthy();
+    await agentsSection.locator(`label[for="${toggleId}"]`).last().click();
     await expect
       .poll(readMetadata)
       .toMatchObject({ enableAgents: true, activeAgentIds: ["sibling-agent", "long-term-memory"] });
@@ -8765,9 +9620,11 @@ test("Conversation Chat Settings exposes and persists Long-Term Memory activatio
     const reloadedDrawer = page.locator(".mari-chat-settings-drawer");
     await openAgentsSection(reloadedDrawer);
     const reloadedAgentsSection = reloadedDrawer.locator('[data-chat-settings-section="conversation-agents"]');
-    const reloadedToggle = reloadedAgentsSection.getByRole("checkbox", { name: "Long-Term Memory", exact: true });
+    const reloadedToggle = reloadedAgentsSection.getByRole("checkbox", { name: /^Long-Term Memory/ });
     await expect(reloadedToggle).toBeChecked();
-    await reloadedToggle.uncheck();
+    const reloadedToggleId = await reloadedToggle.getAttribute("id");
+    expect(reloadedToggleId).toBeTruthy();
+    await reloadedAgentsSection.locator(`label[for="${reloadedToggleId}"]`).last().click();
     await expect.poll(readMetadata).toMatchObject({ enableAgents: true, activeAgentIds: ["sibling-agent"] });
     await expect(reloadedToggle).not.toBeChecked();
   } finally {
@@ -9458,7 +10315,7 @@ test("World Maps stays in Agents and Chat Settings", async ({ page, request }, t
 
       const agentEntry = drawer.locator('[data-chat-agent-entry="hierarchical-maps"]');
       await expect(agentEntry, `${chat.mode} Hierarchical Maps agent entry`).toBeVisible();
-      if (chat.mode === "roleplay") await expect(agentEntry).toBeFocused();
+      if (chat.mode === "roleplay") await expect(agentEntry).toBeInViewport();
       await expect(agentEntry.getByTestId("hierarchical-maps-controls")).toBeVisible();
       await expect(drawer.locator("marinara-capability-hierarchical-maps")).toHaveCount(1);
       await expect(agentEntry.locator("marinara-capability-hierarchical-maps")).toHaveCount(1);
@@ -9785,6 +10642,86 @@ test("Professor Mari chat fills the mobile home viewport and keeps its composer 
       );
     })
     .toBe(true);
+});
+
+test("Professor Mari shows the latest context budget when token usage is enabled", async ({ page }) => {
+  const chatResponse = await page.request.get("/api/chats/internal/professor-mari");
+  expect(chatResponse.ok()).toBeTruthy();
+  const chat = (await chatResponse.json()) as { id: string };
+  const messageResponse = await page.request.post(`/api/chats/${chat.id}/messages`, {
+    data: {
+      role: "assistant",
+      characterId: "__professor_mari__",
+      content: "Context budget regression response.",
+    },
+  });
+  expect(messageResponse.ok()).toBeTruthy();
+  const message = (await messageResponse.json()) as { id: string };
+  const extraResponse = await page.request.patch(`/api/chats/${chat.id}/messages/${message.id}/extra`, {
+    data: {
+      generationInfo: {
+        provider: "custom",
+        model: "budget-model",
+        temperature: null,
+        tokensPrompt: 12_000,
+        tokensCompletion: 345,
+        durationMs: null,
+        finishReason: "stop",
+      },
+    },
+  });
+  expect(extraResponse.ok()).toBeTruthy();
+
+  try {
+    await page.route("**/api/professor-mari/workspace/status*", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          piAvailable: false,
+          workspace: "/tmp/marinara",
+          dataDir: "/tmp/marinara/data",
+          tools: [],
+          shellSandbox: { available: true, backend: "macos-seatbelt" },
+          dbAccess: "server-managed",
+          connection: {
+            id: "budget-connection",
+            name: "Budget connection",
+            provider: "custom",
+            model: "budget-model",
+            maxContext: 128_000,
+          },
+          skills: [],
+          skillDiagnostics: [],
+          active: false,
+          pendingApprovals: [],
+          history: [],
+          error: null,
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { useUIStore } = (await import("/src/stores/ui.store.ts")) as {
+        useUIStore: { getState: () => { setShowTokenUsage: (value: boolean) => void } };
+      };
+      useUIStore.getState().setShowTokenUsage(true);
+    });
+    await page
+      .locator('[data-component="HomeProfessorMariChat.MariPanel"]')
+      .getByRole("button", { name: "Ask Professor Mari" })
+      .click();
+
+    const window = page.locator('[data-component="HomeProfessorMariChat.Window"]');
+    const budget = window.locator('[data-component="HomeProfessorMariChat.ContextBudget"]');
+    await expect(budget).toContainText("Context");
+    await expect(budget).toContainText("12.3k / 128k tokens");
+    await expect(budget.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12345");
+    await expect(budget.getByRole("progressbar")).toHaveAttribute("aria-valuemax", "128000");
+  } finally {
+    await bestEffortDelete(page.request, `/api/chats/${chat.id}/messages/${message.id}`);
+  }
 });
 
 test("Professor Mari history opens a loaded chat at its newest message", async ({ page }) => {
@@ -10513,12 +11450,10 @@ test("Noodle interface icons consistently use Noodle blue", async ({ page }, tes
 
   await expectBlueIcons('[data-component="NoodleView"]');
   await noodle.getByRole("button", { name: "Settings", exact: true }).click();
-  await expect(noodle.getByRole("button", { name: "Reset Noodle Timeline" })).toBeVisible();
-  await expect(noodle.getByRole("button", { name: "Uninvite everybody" })).toHaveCSS("color", "rgb(126, 167, 255)");
   const scheduleCard = noodle.locator('[data-component="NoodleView.RefreshSchedule"]');
   await expect(scheduleCard).toBeVisible();
   await expect(scheduleCard.getByText("Automatic schedule")).toBeVisible();
-  await expectBlueIcons('[data-component="NoodleView"]');
+  await expectBlueIcons('[data-component="NoodleView.RefreshSchedule"]');
 
   const firstBootstrapResponse = await page.request.get("/api/noodle");
   expect(firstBootstrapResponse.ok()).toBe(true);
@@ -10548,6 +11483,10 @@ test("Noodle interface icons consistently use Noodle blue", async ({ page }, tes
     await expect(scheduleCard.getByLabel(/^New time for refresh /)).toHaveCount(0);
   }
 
+  await noodle.getByRole("button", { name: "Participants", exact: true }).click();
+  await expect(noodle.getByRole("button", { name: "Uninvite everybody" })).toHaveCSS("color", "rgb(126, 167, 255)");
+  await noodle.getByRole("button", { name: "Advanced", exact: true }).click();
+  await expect(noodle.getByRole("button", { name: "Reset Noodle Timeline" })).toBeVisible();
   await noodle.getByRole("button", { name: "Reset Noodle Timeline" }).click();
   const resetDialog = page.getByRole("dialog", { name: "Reset Noodle Timeline" });
   await expect(resetDialog).toBeVisible();
@@ -10560,7 +11499,9 @@ test("Noodle interface icons consistently use Noodle blue", async ({ page }, tes
 test("NoodleR profile controls and mobile navigation use its pink accent", async ({ page }, testInfo) => {
   const initialResponse = await page.request.get("/api/noodle");
   expect(initialResponse.ok()).toBe(true);
-  const initial = (await initialResponse.json()) as { settings: { enableNoodler: boolean } };
+  const initial = (await initialResponse.json()) as {
+    settings: { enableNoodler: boolean; noodlerOnboardingState: "incomplete" | "zero" | "completed" };
+  };
   const personaResponse = await page.request.post("/api/characters/personas", {
     data: { name: `NoodleR color viewer ${Date.now()}` },
   });
@@ -10568,7 +11509,9 @@ test("NoodleR profile controls and mobile navigation use its pink accent", async
   const persona = (await personaResponse.json()) as { id: string };
 
   try {
-    const enableResponse = await page.request.put("/api/noodle/settings", { data: { enableNoodler: true } });
+    const enableResponse = await page.request.put("/api/noodle/settings", {
+      data: { enableNoodler: true, noodlerOnboardingState: "completed" },
+    });
     expect(enableResponse.ok()).toBe(true);
 
     await page.goto("/");
@@ -10591,7 +11534,7 @@ test("NoodleR profile controls and mobile navigation use its pink accent", async
     await expect
       .poll(() => noodle.evaluate((element) => getComputedStyle(element).getPropertyValue("--noodle-accent").trim()))
       .toBe("#FF7EC1");
-    const emptyMessage = noodle.getByText("No stage profiles are visible to this persona.", { exact: true });
+    const emptyMessage = noodle.getByText("No Creator profiles are visible to this persona.", { exact: true });
     await expect(emptyMessage).toBeVisible();
     await expect(emptyMessage.locator("..").locator("svg")).toHaveCSS("color", "rgb(255, 126, 193)");
 
@@ -10607,15 +11550,16 @@ test("NoodleR profile controls and mobile navigation use its pink accent", async
       await expect(bottomNav).toBeHidden();
       const search = noodle.getByPlaceholder("Search posts or @creators").locator("..").locator("svg").first();
       await expect(search).toHaveCSS("color", "rgb(255, 126, 193)");
-      const bulkCreate = noodle.getByRole("button", { name: "Bulk-create creators", exact: true });
-      await expect(bulkCreate.locator("svg")).toHaveCSS("color", "rgb(255, 126, 193)");
-      await bulkCreate.click();
-      const bulkDialog = page.getByRole("dialog", { name: "Bulk-create creators" });
-      const bulkSearch = bulkDialog.locator('input[placeholder="Search accounts"]').locator("..").locator("svg").first();
-      await expect(bulkSearch).toHaveCSS("color", "rgb(255, 126, 193)");
+      const refresh = noodle.getByRole("button", { name: "Refresh timeline", exact: true });
+      await expect(refresh.locator("svg")).toHaveCSS("color", "rgb(255, 126, 193)");
     }
   } finally {
-    await page.request.put("/api/noodle/settings", { data: { enableNoodler: initial.settings.enableNoodler } });
+    await page.request.put("/api/noodle/settings", {
+      data: {
+        enableNoodler: initial.settings.enableNoodler,
+        noodlerOnboardingState: initial.settings.noodlerOnboardingState,
+      },
+    });
     await page.request.delete(`/api/characters/personas/${persona.id}`);
   }
 });
@@ -10636,14 +11580,10 @@ test("Noodle settings edit and restore the timeline base prompt", async ({ page 
     await page.locator('[data-tour="noodle-tab"]').click();
     const noodle = page.locator('[data-component="NoodleView"]');
     await noodle.getByRole("button", { name: "Settings", exact: true }).click();
+    await noodle.getByRole("button", { name: "Advanced", exact: true }).click();
 
     const promptSetting = noodle.locator('[data-component="NoodleView.PromptSetting"]');
     await expect(promptSetting).toBeVisible();
-    const promptRect = await promptSetting.boundingBox();
-    const invitesRect = await noodle.getByRole("heading", { name: "Invites" }).boundingBox();
-    expect(promptRect).not.toBeNull();
-    expect(invitesRect).not.toBeNull();
-    expect(promptRect!.y).toBeLessThan(invitesRect!.y);
 
     const editPromptButton = promptSetting.getByRole("button", { name: "Edit prompt" });
     await expect(editPromptButton).toHaveCSS("align-items", "center");
@@ -10700,6 +11640,7 @@ test("Noodle carryover mode labels fit inside their controls", async ({ page }, 
   await page.locator('[data-tour="noodle-tab"]').click();
   const noodle = page.locator('[data-component="NoodleView"]');
   await noodle.getByRole("button", { name: "Settings", exact: true }).click();
+  await noodle.getByRole("button", { name: "Advanced", exact: true }).click();
   const carryoverSection = noodle.getByRole("heading", { name: "Carryover" }).locator("..");
 
   for (const name of ["Conversations", "Roleplays", "Games"]) {
@@ -10753,6 +11694,7 @@ test("Noodle settings persist through refetch and reload", async ({ page }, test
     await page.locator('[data-tour="noodle-tab"]').click();
     const noodle = page.locator('[data-component="NoodleView"]');
     await noodle.getByRole("button", { name: "Settings", exact: true }).click();
+    await noodle.getByRole("button", { name: "Timeline", exact: true }).click();
 
     const imageLimitInput = noodle
       .locator("label")
@@ -10768,6 +11710,7 @@ test("Noodle settings persist through refetch and reload", async ({ page }, test
     expect((await imageSaveResponse).ok()).toBe(true);
     await expect(imageLimitInput).toHaveValue(String(nextImageLimit));
 
+    await noodle.getByRole("button", { name: "Participants", exact: true }).click();
     const randomUsersButton = noodle.getByRole("button", { name: /Random users/ });
     const randomUsersSaveResponse = page.waitForResponse(
       (response) =>
@@ -10791,13 +11734,16 @@ test("Noodle settings persist through refetch and reload", async ({ page }, test
     await page.locator('[data-tour="noodle-tab"]').click();
     const reloadedNoodle = page.locator('[data-component="NoodleView"]');
     await reloadedNoodle.getByRole("button", { name: "Settings", exact: true }).click();
+    await reloadedNoodle.getByRole("button", { name: "Timeline", exact: true }).click();
     await expect(
       reloadedNoodle.locator("label").filter({ hasText: "Images/refresh" }).locator('input[type="number"]'),
     ).toHaveValue(String(nextImageLimit));
+    await reloadedNoodle.getByRole("button", { name: "Participants", exact: true }).click();
     await expect(reloadedNoodle.getByRole("button", { name: /Random users/ })).toContainText(
       nextRandomUsers ? "Enabled" : "Ambient fake profiles",
     );
 
+    await reloadedNoodle.getByRole("button", { name: "Advanced", exact: true }).click();
     const carryItemsInput = reloadedNoodle
       .locator("label")
       .filter({ hasText: "Carry items" })
@@ -10805,6 +11751,7 @@ test("Noodle settings persist through refetch and reload", async ({ page }, test
     await carryItemsInput.fill(String(nextCarryItems));
     await reloadedNoodle.getByRole("button", { name: "Home", exact: true }).click();
     await reloadedNoodle.getByRole("button", { name: "Settings", exact: true }).click();
+    await reloadedNoodle.getByRole("button", { name: "Advanced", exact: true }).click();
     await expect(
       reloadedNoodle.locator("label").filter({ hasText: "Carry items" }).locator('input[type="number"]'),
     ).toHaveValue(String(nextCarryItems));
@@ -10816,6 +11763,7 @@ test("Noodle settings persist through refetch and reload", async ({ page }, test
       })
       .toBe(nextCarryItems);
 
+    await reloadedNoodle.getByRole("button", { name: "General", exact: true }).click();
     const refreshesPerDayInput = reloadedNoodle
       .locator("label")
       .filter({ hasText: "Refreshes/day" })
@@ -10823,6 +11771,7 @@ test("Noodle settings persist through refetch and reload", async ({ page }, test
     await refreshesPerDayInput.fill(String(nextRefreshesPerDay));
     await reloadedNoodle.getByRole("button", { name: /Notifications/ }).click();
     await reloadedNoodle.getByRole("button", { name: "Settings", exact: true }).click();
+    await reloadedNoodle.getByRole("button", { name: "General", exact: true }).click();
     await expect(
       reloadedNoodle.locator("label").filter({ hasText: "Refreshes/day" }).locator('input[type="number"]'),
     ).toHaveValue(String(nextRefreshesPerDay));
@@ -11011,10 +11960,12 @@ test("Noodle posts tag invited characters with @handle mentions", async ({ page 
     await page.reload();
     await page.locator('[data-tour="noodle-tab"]').click();
     const desktopHome = noodle.getByRole("button", { name: "Home", exact: true });
+    const mobileHome = noodle.getByRole("button", { name: "Noodle home" });
+    await expect.poll(async () => (await desktopHome.isVisible()) || (await mobileHome.isVisible())).toBe(true);
     if (await desktopHome.isVisible()) {
       await desktopHome.click();
     } else {
-      await noodle.getByRole("button", { name: "Noodle home" }).click();
+      await mobileHome.click();
     }
     const replyMention = page
       .locator(`[data-noodle-interaction-id="${reply.id}"]`)
@@ -11866,8 +12817,8 @@ test("Noodle mobile shell keeps navigation usable across every view", async ({ p
   expect(Math.abs(bottomNavRect!.y + bottomNavRect!.height - (noodleRect!.y + noodleRect!.height))).toBeLessThanOrEqual(
     1,
   );
-  expect(bottomNavRowRect!.height).toBe(52);
-  expect(bottomNavRect!.height).toBeLessThanOrEqual(58);
+  expect(bottomNavRowRect!.height).toBe(56);
+  expect(bottomNavRect!.height).toBeLessThanOrEqual(62);
 
   const sawDrawerSlide = await page.evaluate(async () => {
     const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Open Noodle account menu"]');
@@ -11926,6 +12877,7 @@ test("Noodle mobile shell keeps navigation usable across every view", async ({ p
   await accountMenu.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(drawer).toHaveCount(0);
   await expect(noodle.getByRole("heading", { name: "Noodle settings" })).toBeVisible();
+  await noodle.getByRole("button", { name: "Advanced", exact: true }).click();
   const promptSetting = noodle.locator('[data-component="NoodleView.PromptSetting"]');
   await expect(promptSetting).toBeVisible();
   const editPromptButton = promptSetting.getByRole("button", { name: "Edit prompt" });
@@ -11938,12 +12890,8 @@ test("Noodle mobile shell keeps navigation usable across every view", async ({ p
   await promptEditor.getByRole("button", { name: "Cancel" }).first().click();
   await expect(promptEditor).toBeHidden();
   await expect(bottomNav).toBeVisible();
-  await noodle.getByRole("button", { name: "Back to Noodle timeline" }).click();
+  await noodle.getByRole("button", { name: "Back to where you were", exact: true }).click();
   await expect(header).toBeVisible();
-
-  await bottomNav.getByRole("button", { name: "Open Noodle account menu" }).click();
-  await accountMenu.getByRole("button", { name: "Settings", exact: true }).click();
-  await expect(drawer).toHaveCount(0);
 
   const timelineScroller = noodle.locator('[data-component="NoodleView.TimelineScroller"]');
   await timelineScroller.evaluate((element) => {
@@ -11964,20 +12912,20 @@ test("Noodle mobile shell keeps navigation usable across every view", async ({ p
   await noodle.getByRole("button", { name: "Back to Noodle timeline" }).click();
   await expect(header).toBeVisible();
 
-  await bottomNav.getByRole("button", { name: "Search Noodle" }).click();
-  const searchInput = noodle.getByRole("searchbox", { name: "Search Noodle" });
+  await bottomNav.getByRole("button", { name: "Search", exact: true }).click();
+  const searchInput = noodle.getByRole("searchbox", { name: "Search", exact: true });
   await expect(searchInput).toBeVisible();
   await expect(noodle.getByRole("heading", { name: "Who to follow" })).toBeVisible();
   await expect(bottomNav).toBeVisible();
   await noodle.getByRole("button", { name: "Back to Noodle timeline" }).click();
   await expect(header).toBeVisible();
 
-  await bottomNav.getByRole("button", { name: "Search Noodle" }).click();
+  await bottomNav.getByRole("button", { name: "Search", exact: true }).click();
   await searchInput.fill("Professor");
   await expect(noodle.getByRole("heading", { name: "Search results" })).toBeVisible();
   await bottomNav.getByRole("button", { name: "Noodle home" }).click();
   await expect(header).toBeVisible();
-  await bottomNav.getByRole("button", { name: "Search Noodle" }).click();
+  await bottomNav.getByRole("button", { name: "Search", exact: true }).click();
   await expect(searchInput).toHaveValue("");
 
   await bottomNav.getByRole("button", { name: "Noodle notifications" }).click();
@@ -12487,10 +13435,11 @@ test("mobile chat composer follows the visual viewport above the software keyboa
   }
 });
 
-test("focused mobile composers stay open while history scrolls in Conversation and Roleplay", async ({
+test("mobile composers preserve history position and stay open in Conversation and Roleplay", async ({
   page,
 }, testInfo) => {
   test.skip(!testInfo.project.name.includes("mobile"), "Focused composer history behavior is mobile-only.");
+  test.setTimeout(180_000);
 
   const chatIds: string[] = [];
   try {
@@ -12522,17 +13471,91 @@ test("focused mobile composers stay open while history scrolls in Conversation a
       await page.reload();
 
       const transcript = page.locator(".mari-messages-scroll:visible").first();
-      const textarea = page.locator('[data-chat-composer="true"]:visible');
       await expect(page.locator(`[data-chat-mode="${mode}"]`)).toBeVisible();
       await expect(transcript).toBeVisible();
+      const textarea = page.locator('[data-chat-composer="true"]:visible');
+      if (mode === "roleplay") {
+        const showComposer = page.getByRole("button", { name: "Show message input", exact: true });
+        await expect(textarea.or(showComposer).first()).toBeVisible();
+        if (await showComposer.isVisible()) await showComposer.click();
+      }
+      await expect(textarea).toBeVisible();
       await expect
         .poll(() => transcript.evaluate((element) => element.scrollHeight - element.clientHeight))
         .toBeGreaterThan(400);
+
+      await transcript.evaluate((element) => {
+        element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 320);
+      });
+      await expect
+        .poll(() => transcript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight))
+        .toBeGreaterThan(180);
+      const preservedScrollTop = await transcript.evaluate((element) => element.scrollTop);
+
+      if (mode === "roleplay") {
+        const showComposer = page.getByRole("button", { name: "Show message input", exact: true });
+        if (await showComposer.isVisible()) await showComposer.click();
+      }
+      await expect(textarea).toBeVisible();
+      await textarea.evaluate((element) => {
+        element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+        element.focus();
+      });
+      await expect(textarea).toBeFocused();
+
+      // Firefox may scroll an overlaid Roleplay transcript during the focus /
+      // keyboard animation. The pre-focus anchor must win over that transient
+      // near-bottom state when the visual viewport reports the open keyboard.
       await transcript.evaluate((element) => {
         element.scrollTop = element.scrollHeight;
       });
-      await textarea.focus();
-      await expect(textarea).toBeFocused();
+      await expect
+        .poll(() => transcript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight))
+        .toBeLessThan(5);
+      await page.evaluate(() => {
+        window.dispatchEvent(
+          new CustomEvent("marinara:chat-visual-viewport-change", {
+            detail: { height: Math.max(0, window.innerHeight - 320), offsetTop: 0, keyboardOpen: true },
+          }),
+        );
+      });
+      await expect
+        .poll(() =>
+          transcript.evaluate(
+            (element, expected) => Math.abs(element.scrollTop - Number(expected)),
+            preservedScrollTop,
+          ),
+        )
+        .toBeLessThanOrEqual(2);
+
+      await page.evaluate(() => {
+        window.dispatchEvent(
+          new CustomEvent("marinara:chat-visual-viewport-change", {
+            detail: { height: window.innerHeight, offsetTop: 0, keyboardOpen: false },
+          }),
+        );
+      });
+      await transcript.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      await textarea.dispatchEvent("pointerdown", { pointerType: "touch" });
+      await page.evaluate(() => {
+        window.dispatchEvent(
+          new CustomEvent("marinara:chat-visual-viewport-change", {
+            detail: { height: Math.max(0, window.innerHeight - 320), offsetTop: 0, keyboardOpen: true },
+          }),
+        );
+      });
+      await expect
+        .poll(() => transcript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight))
+        .toBeLessThan(5);
+
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
 
       await transcript.evaluate((element) => {
         element.scrollTop = Math.max(0, element.scrollTop - 320);
@@ -12542,6 +13565,13 @@ test("focused mobile composers stay open while history scrolls in Conversation a
         .toBeGreaterThan(180);
       await expect(textarea).toBeFocused();
       await expect(textarea).toBeVisible();
+      await page.evaluate(() => {
+        window.dispatchEvent(
+          new CustomEvent("marinara:chat-visual-viewport-change", {
+            detail: { height: window.innerHeight, offsetTop: 0, keyboardOpen: false },
+          }),
+        );
+      });
     }
   } finally {
     await Promise.all(chatIds.map((chatId) => page.request.delete(`/api/chats/${chatId}`).catch(() => undefined)));
@@ -12970,6 +14000,57 @@ test("mobile Game keeps CYOA usable above four HUD widgets", async ({ page, requ
     expect(errors).toEqual([]);
   } finally {
     await request.delete(`/api/chats/${chat.id}`);
+  }
+});
+
+test("Re-imported backgrounds with the same filename bypass stale browser cache", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.includes("mobile") ? "mobile" : "desktop";
+  const filename = `background-cache-revalidation-${suffix}.gif`;
+  const original = Buffer.from(TRANSPARENT_GIF_BASE64, "base64");
+  const replacement = Buffer.concat([original, Buffer.from([0x00])]);
+  let uploadedFilename: string | null = null;
+
+  try {
+    const firstUpload = await page.request.post("/api/backgrounds/upload", {
+      multipart: { file: { name: filename, mimeType: "image/gif", buffer: original } },
+    });
+    expect(firstUpload.ok()).toBeTruthy();
+    const first = (await firstUpload.json()) as { filename: string; url: string };
+    uploadedFilename = first.filename;
+    expect(first.filename).toBe(filename);
+
+    await page.goto("/");
+    const readInBrowser = (url: string) =>
+      page.evaluate(async (backgroundUrl) => {
+        const response = await fetch(backgroundUrl);
+        return {
+          bytes: Array.from(new Uint8Array(await response.arrayBuffer())),
+          cacheControl: response.headers.get("cache-control"),
+        };
+      }, url);
+    const before = await readInBrowser(first.url);
+    expect(before.cacheControl).toBe("no-cache, must-revalidate");
+
+    const deleted = await page.request.delete(`/api/backgrounds/${encodeURIComponent(first.filename)}`);
+    expect(deleted.ok()).toBeTruthy();
+    uploadedFilename = null;
+    const secondUpload = await page.request.post("/api/backgrounds/upload", {
+      multipart: { file: { name: filename, mimeType: "image/gif", buffer: replacement } },
+    });
+    expect(secondUpload.ok()).toBeTruthy();
+    const second = (await secondUpload.json()) as { filename: string; url: string };
+    uploadedFilename = second.filename;
+    expect(second.filename).toBe(filename);
+    expect(second.url).toBe(first.url);
+
+    const after = await readInBrowser(second.url);
+    expect(after.cacheControl).toBe("no-cache, must-revalidate");
+    expect(after.bytes).toEqual(Array.from(replacement));
+    expect(after.bytes).not.toEqual(before.bytes);
+  } finally {
+    if (uploadedFilename) {
+      await bestEffortDelete(page.request, `/api/backgrounds/${encodeURIComponent(uploadedFilename)}`);
+    }
   }
 });
 

@@ -7,13 +7,15 @@
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "StrFunc.nsh"
 !include "WinMessages.nsh"
 
 !insertmacro GetParent
+${StrTrimNewLines}
 
 ; ── App metadata ──
 !define APP_NAME "Marinara Engine"
-!define APP_VERSION "2.4.1"
+!define APP_VERSION "2.4.2"
 !define APP_PUBLISHER "Pasta-Devs"
 !define APP_URL "https://github.com/Pasta-Devs/Marinara-Engine"
 !define REPO_URL "https://github.com/Pasta-Devs/Marinara-Engine.git"
@@ -28,7 +30,7 @@
 !define NODE_DOWNLOAD_URL "https://nodejs.org/dist/v24.15.0/node-v24.15.0-x64.msi"
 !define GIT_SHA256 "2b96e7854f0520f0f6b709c21041d9801b1be44d5e1a0d9fa621b2fbc40f1983"
 !define NODE_SHA256 "feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806"
-!define RELEASE_TAG "v2.4.1"
+!define RELEASE_TAG "v2.4.2"
 !ifndef RELEASE_COMMIT
 !define RELEASE_COMMIT ""
 !endif
@@ -110,6 +112,7 @@ Var GIT_OK
 Var NODE_OK
 Var PNPM_OK
 Var PNPM_RUNNER
+Var NPM_PREFIX
 Var CLONE_DIR
 Var CLONE_DIR_CREATED
 Var STAGE_DIR
@@ -376,7 +379,31 @@ Please restart your computer and run this installer again."
     ${EndIf}
   ${EndIf}
   ${If} $PNPM_RUNNER == ""
-    MessageBox MB_OK|MB_ICONSTOP "pnpm ${PNPM_VERSION} could not be started.$\r$\n$\r$\nPlease enable Corepack or install pnpm manually, then run the installer again."
+    DetailPrint "Temporary pnpm unavailable; installing pnpm ${PNPM_VERSION} via npm..."
+    nsExec::ExecToLog 'cmd /c npm install --global pnpm@${PNPM_VERSION}'
+    Pop $0
+    ${If} $0 == 0
+      StrCpy $NPM_PREFIX ""
+      nsExec::ExecToStack 'cmd /d /c npm config get prefix 2>nul'
+      Pop $0
+      Pop $NPM_PREFIX
+      ${If} $0 == 0
+        ${StrTrimNewLines} $NPM_PREFIX "$NPM_PREFIX"
+      ${EndIf}
+      ${If} $NPM_PREFIX != ""
+        ReadEnvStr $1 "PATH"
+        System::Call 'Kernel32::SetEnvironmentVariable(t "PATH", t "$NPM_PREFIX;$1")i'
+        nsExec::ExecToStack 'cmd /c pnpm --version | %SystemRoot%\System32\findstr.exe /x /l /c:${PNPM_VERSION}'
+        Pop $PNPM_OK
+        Pop $1
+        ${If} $PNPM_OK == 0
+          StrCpy $PNPM_RUNNER "pnpm"
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $PNPM_RUNNER == ""
+    MessageBox MB_OK|MB_ICONSTOP "pnpm ${PNPM_VERSION} could not be installed automatically.$\r$\n$\r$\nPlease check your internet connection or run npm install --global pnpm@${PNPM_VERSION}, then run this installer again."
     Abort
   ${EndIf}
   DetailPrint "pnpm ready."

@@ -35,7 +35,8 @@ export interface ConversationMessageActionsProps {
   isHiddenFromAI: boolean;
   canRegenerate: boolean;
   isLastAssistantMessage?: boolean;
-  thinking?: string | null;
+  hasReasoning: boolean;
+  reasoningSummaryUnavailable: boolean;
   thinkingButtonRef: RefObject<HTMLButtonElement | null>;
   generationReplay: MessageExtra["generationReplay"] | null;
   isGuided: boolean;
@@ -67,7 +68,8 @@ export function ConversationMessageActions({
   isHiddenFromAI,
   canRegenerate,
   isLastAssistantMessage,
-  thinking,
+  hasReasoning,
+  reasoningSummaryUnavailable,
   thinkingButtonRef,
   generationReplay,
   regenerateButtonTitle,
@@ -174,11 +176,13 @@ export function ConversationMessageActions({
           tabIndex={tabIdx}
         />
       )}
-      {thinking && !isUser && (
+      {hasReasoning && !isUser && (
         <MsgAction
           icon={<Brain size="0.75rem" />}
           onClick={onShowThinking}
-          title={t("chat.message.thoughts.view")}
+          title={t(
+            reasoningSummaryUnavailable ? "chat.message.thoughts.unavailable.view" : "chat.message.thoughts.view",
+          )}
           tabIndex={tabIdx}
           className="mari-message-thinking-action"
           buttonRef={thinkingButtonRef}

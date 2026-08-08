@@ -84,6 +84,8 @@ export interface SidecarConfig {
   topP: number;
   /** Top-k sampling limit for local inference. */
   topK: number;
+  /** Maximum local agent requests and llama-server slots that may run in parallel. */
+  maxParallelJobs: number;
   /** GPU layers to offload (-1 = try max GPU offload first, then fall back if startup fails). */
   gpuLayers: number;
   /** Start llama.cpp with Jinja chat templates so OpenAI-compatible native tool calls can work. */
@@ -359,6 +361,7 @@ export const SIDECAR_DEFAULT_CONFIG: SidecarConfig = {
   temperature: 0.3,
   topP: 0.95,
   topK: 64,
+  maxParallelJobs: 2,
   gpuLayers: -1,
   enableNativeToolCalls: true,
   embeddingPooling: "none",

@@ -13,8 +13,10 @@ import {
 import {
   resolveSpatialBreadcrumb,
   resolveSpatialDestinations,
+  resolveSpatialRoute,
   spatialContextDefinitionSchema,
   spatialContextSnapshotSchema,
+  pendingSpatialTransitionSchema,
   validateSpatialArchive,
   validateSpatialContextDefinition,
   validateSpatialTransition,
@@ -44,8 +46,15 @@ import { resolveVisibleGameStateAnchor } from "../../packages/server/src/routes/
 import {
   resolveAlreadyAppliedSpatialTurn,
   resolveSpatialGenerationOrigin,
+  shouldSaveHiddenGenerationAnchor,
+  shouldSuppressAssistantSpatialMutation,
   validateSpatialGenerationRequest,
 } from "../../packages/server/src/routes/generate/spatial-transition-request.js";
+import { buildCyoaChoiceSubmissionPayload } from "../../packages/client/src/components/chat/cyoa-choice-submission.js";
+import {
+  shouldKeepPendingSpatialTransition,
+  spatialOwnerTurnRecoveryPath,
+} from "../../packages/client/src/hooks/spatial-owner-turn-recovery.js";
 import { mergeSpatialLocationReferenceImages } from "../../packages/server/src/services/image/spatial-location-reference.js";
 import {
   buildInitialGameMapPatch,
@@ -81,6 +90,36 @@ assert.equal(
   }),
   null,
   "Guided assistant generation does not submit the queued owner move",
+);
+assert.equal(
+  shouldSaveHiddenGenerationAnchor({
+    impersonate: true,
+    parsedCommandCount: 0,
+    parsedRawCommandCount: 0,
+    spatialDirectiveDetected: true,
+  }),
+  true,
+  "A suppressed impersonated spatial directive still saves a hidden anchor",
+);
+assert.equal(
+  shouldSaveHiddenGenerationAnchor({
+    impersonate: false,
+    parsedCommandCount: 0,
+    parsedRawCommandCount: 0,
+    spatialDirectiveDetected: true,
+  }),
+  true,
+  "A suppressed queued-owner spatial directive still saves a hidden anchor",
+);
+assert.equal(
+  shouldSaveHiddenGenerationAnchor({
+    impersonate: true,
+    parsedCommandCount: 1,
+    parsedRawCommandCount: 1,
+    spatialDirectiveDetected: false,
+  }),
+  false,
+  "Impersonated non-spatial command-only output keeps the existing empty-response behavior",
 );
 assert.deepEqual(
   validateSpatialGenerationRequest({
@@ -127,6 +166,28 @@ assert.equal(resolveSpatialGenerationOrigin({ generationGuide: "Continue as the 
 assert.equal(resolveSpatialGenerationOrigin({ generationGuideSource: "narrator" }), "guided");
 assert.equal(resolveSpatialGenerationOrigin({ turnGameBots: true }), "turn_game");
 assert.equal(resolveSpatialGenerationOrigin({ autonomous: true }), "autonomous");
+assert.equal(shouldSuppressAssistantSpatialMutation({}), false);
+assert.equal(shouldSuppressAssistantSpatialMutation({ impersonate: true }), true);
+assert.equal(
+  shouldSuppressAssistantSpatialMutation({ pendingSpatialTransition: impersonatedMove }),
+  true,
+  "Queued owner travel suppresses competing assistant spatial mutations",
+);
+const standardChoiceSubmission = buildCyoaChoiceSubmissionPayload({
+  chatId: "chat-choice",
+  text: "Take the bridge",
+  pendingSpatialTransition: impersonatedMove,
+});
+const impersonatedChoiceSubmission = buildCyoaChoiceSubmissionPayload({
+  chatId: "chat-choice",
+  text: "Take the bridge",
+  pendingSpatialTransition: impersonatedMove,
+  impersonation: { presetId: "preset-1", promptTemplate: "  Stay in character.  " },
+});
+assert.equal(standardChoiceSubmission.pendingSpatialTransition, impersonatedMove);
+assert.equal(impersonatedChoiceSubmission.pendingSpatialTransition, impersonatedMove);
+assert.equal(impersonatedChoiceSubmission.impersonate, true);
+assert.equal(impersonatedChoiceSubmission.impersonatePromptTemplate, "Stay in character.");
 assert.deepEqual(
   resolveVisibleGameStateAnchor([
     { id: "assistant-anchor", role: "assistant", activeSwipeIndex: 2 },
@@ -277,16 +338,46 @@ const snapshotInput = {
 };
 assert.equal(spatialContextSnapshotSchema.safeParse(snapshotInput).success, true);
 assert.equal(spatialContextSnapshotSchema.safeParse({ ...snapshotInput, messageId: "" }).success, false);
+assert.equal(
+  pendingSpatialTransitionSchema.safeParse({
+    destinationId: "market",
+    travelMode: "step_by_step",
+    expectedDefinitionRevision: 4,
+    expectedCurrentLocationId: "tower_library",
+    commandId: "route-schema-1",
+  }).success,
+  true,
+  "Travel mode is accepted as an optional pending-transition field",
+);
 assert.deepEqual(
   resolveAlreadyAppliedSpatialTurn({
     code: "spatial_transition_already_applied",
-    details: { messageId: snapshotInput.messageId, snapshot: snapshotInput },
+    details: {
+      messageId: snapshotInput.messageId,
+      snapshot: snapshotInput,
+      travel: {
+        mode: "step_by_step",
+        fromLocationId: "tower_library",
+        targetLocationId: "market",
+        routeLocationIds: ["tower", "capital", "market"],
+        remainingLocationIds: ["capital", "market"],
+        complete: false,
+      },
+    },
   }),
   {
     messageId: "message-1",
     swipeIndex: 0,
     currentLocationId: null,
     definitionRevision: 0,
+    travel: {
+      mode: "step_by_step",
+      fromLocationId: "tower_library",
+      targetLocationId: "market",
+      routeLocationIds: ["tower", "capital", "market"],
+      remainingLocationIds: ["capital", "market"],
+      complete: false,
+    },
   },
   "Already-applied generated owner turns recover the original persisted message and snapshot",
 );
@@ -294,6 +385,39 @@ assert.equal(
   resolveAlreadyAppliedSpatialTurn({ code: "spatial_transition_stale_location" }),
   null,
   "Rejected spatial transitions must not enter the idempotent success path",
+);
+const recoveryPath = spatialOwnerTurnRecoveryPath("chat/recovery", {
+  ...impersonatedMove,
+  travelMode: "step_by_step",
+});
+const recoveryUrl = new URL(recoveryPath, "http://localhost");
+assert.equal(recoveryUrl.pathname, "/chats/chat%2Frecovery/spatial-context/turn/impersonated-owner-move");
+assert.equal(recoveryUrl.searchParams.get("destinationId"), "harbor");
+assert.equal(recoveryUrl.searchParams.get("travelMode"), "step_by_step");
+assert.equal(recoveryUrl.searchParams.get("expectedDefinitionRevision"), "4");
+assert.equal(recoveryUrl.searchParams.get("expectedCurrentLocationId"), "world");
+assert.equal(
+  shouldKeepPendingSpatialTransition({
+    mode: "step_by_step",
+    fromLocationId: "world",
+    targetLocationId: "harbor",
+    routeLocationIds: ["road", "harbor"],
+    remainingLocationIds: ["harbor"],
+    complete: false,
+  }),
+  true,
+);
+assert.equal(
+  shouldKeepPendingSpatialTransition({
+    mode: "step_by_step",
+    fromLocationId: "road",
+    targetLocationId: "harbor",
+    routeLocationIds: ["harbor"],
+    remainingLocationIds: [],
+    complete: true,
+  }),
+  false,
+  "Completed stepwise recovery clears the pending transition",
 );
 assert.deepEqual(
   extractAssistantSpatialDirective('The lift opens onto Level 1.\n[spatial_move: destination_id="tower_level_1"]'),
@@ -317,6 +441,26 @@ assert.deepEqual(
     },
     matched: true,
   },
+);
+assert.deepEqual(
+  extractAssistantSpatialDirective(
+    '[spatial_discover: name="A one-way bridge" relation="link" direction="outgoing" description="A bridge leading onward."]',
+  ).directive,
+  {
+    type: "discover",
+    name: "A one-way bridge",
+    relation: "link",
+    direction: "outgoing",
+    description: "A bridge leading onward.",
+  },
+  "Direct-link discovery carries explicit direction relative to the current location",
+);
+assert.equal(
+  extractAssistantSpatialDirective(
+    '[spatial_discover: name="An unspecified link" relation="link" description="Direction is required."]',
+  ).directive,
+  null,
+  "Direct-link discovery without direction is rejected",
 );
 const ordinaryImpersonatedContent = "\n[Stage direction]\n\n\nContinue through the door.\n";
 assert.deepEqual(
@@ -365,11 +509,11 @@ const spatialSanitizationStart = generateRouteSource.indexOf(
   "const parsedSpatial = extractAssistantSpatialDirective(fullResponse);",
   inlineThinkingEnd,
 );
-const consolidatedReplacementStart = generateRouteSource.indexOf(
-  "if (contentReplaced) {",
-  spatialSanitizationStart,
+const consolidatedReplacementStart = generateRouteSource.indexOf("if (contentReplaced) {", spatialSanitizationStart);
+assert.ok(
+  inlineThinkingStart >= 0 && inlineThinkingEnd > inlineThinkingStart,
+  "Inline-thinking route block is present",
 );
-assert.ok(inlineThinkingStart >= 0 && inlineThinkingEnd > inlineThinkingStart, "Inline-thinking route block is present");
 assert.doesNotMatch(
   generateRouteSource.slice(inlineThinkingStart, inlineThinkingEnd),
   /type:\s*"content_replace"/u,
@@ -380,10 +524,7 @@ assert.ok(
   "The consolidated content replacement must run after spatial sanitization",
 );
 const textRewriteStart = generateRouteSource.indexOf("// ── Text rewrite/editing agents:");
-const textRewriteEnd = generateRouteSource.indexOf(
-  "if (holdForTextRewrite && !textRewriteApplied",
-  textRewriteStart,
-);
+const textRewriteEnd = generateRouteSource.indexOf("if (holdForTextRewrite && !textRewriteApplied", textRewriteStart);
 assert.ok(textRewriteStart >= 0 && textRewriteEnd > textRewriteStart, "Text-rewrite route block is present");
 const textRewriteSource = generateRouteSource.slice(textRewriteStart, textRewriteEnd);
 assert.match(
@@ -400,6 +541,22 @@ assert.match(
   textRewriteSource,
   /type: "text_rewrite",[\s\S]*?editedText: sanitizedEditedText/u,
   "Text-rewrite events must emit sanitized content",
+);
+const gameSurfaceSource = readFileSync(
+  new URL("../../packages/client/src/components/game/GameSurface.tsx", import.meta.url),
+  "utf8",
+);
+const gameChoiceHandlerStart = gameSurfaceSource.indexOf("const handleChoiceSelect");
+const gameChoiceHandlerEnd = gameSurfaceSource.indexOf("const handleDismissChoices");
+assert.ok(
+  gameChoiceHandlerStart >= 0 && gameChoiceHandlerEnd > gameChoiceHandlerStart,
+  "Game choice handler markers were not found in GameSurface.tsx; update the markers or the assertion",
+);
+const gameChoiceHandler = gameSurfaceSource.slice(gameChoiceHandlerStart, gameChoiceHandlerEnd);
+assert.match(
+  gameChoiceHandler,
+  /pendingSpatialTransitions\.get\(activeChatId\)[\s\S]*?sendMessage\([\s\S]*?pendingSpatialTransition\.transition/u,
+  "Game CYOA choices must submit the ready pending spatial transition",
 );
 
 const validDefinition = definition(
@@ -560,6 +717,121 @@ const acceptedTransition = validateSpatialTransition(validDefinition, "tower_lib
 assert.equal(acceptedTransition.ok, true);
 if (acceptedTransition.ok) {
   assert.equal(acceptedTransition.destination.relation, "link");
+}
+
+assert.deepEqual(
+  resolveSpatialRoute(validDefinition, "tower_library", "market"),
+  ["tower", "capital", "market"],
+  "Routed movement follows the deterministic shortest path over active outgoing edges",
+);
+assert.equal(
+  resolveSpatialRoute(validDefinition, "tower_library", "missing"),
+  null,
+  "Routed movement rejects missing targets without inventing an edge",
+);
+const directedRouteDefinition = definition(
+  [
+    location("route_a", "Route A", {
+      links: [
+        { targetId: "route_b", bidirectional: false, state: "available" },
+        { targetId: "route_hidden", bidirectional: false, state: "hidden" },
+        { targetId: "route_blocked", bidirectional: false, state: "blocked" },
+        { targetId: "route_archived", bidirectional: false, state: "available" },
+      ],
+    }),
+    location("route_b", "Route B"),
+    location("route_hidden", "Hidden Route"),
+    location("route_blocked", "Blocked Route"),
+    location("route_archived", "Archived Route", { status: "archived" }),
+    location("route_isolated", "Isolated Route"),
+  ],
+  { startingLocationId: "route_a" },
+);
+assert.deepEqual(resolveSpatialRoute(directedRouteDefinition, "route_a", "route_b"), ["route_b"]);
+assert.equal(
+  resolveSpatialRoute(directedRouteDefinition, "route_b", "route_a"),
+  null,
+  "A one-way direct link must reject travel in the reverse direction",
+);
+for (const unreachableId of ["route_hidden", "route_blocked", "route_archived", "route_isolated"]) {
+  assert.equal(
+    resolveSpatialRoute(directedRouteDefinition, "route_a", unreachableId),
+    null,
+    `${unreachableId} must not be routable`,
+  );
+}
+const archivedParentRouteDefinition = definition(
+  [
+    location("archived_parent", "Archived Parent", { status: "archived" }),
+    location("active_child_a", "Active Child A", { parentId: "archived_parent" }),
+    location("active_child_b", "Active Child B", { parentId: "archived_parent" }),
+  ],
+  { startingLocationId: "active_child_a" },
+);
+assert.equal(
+  resolveSpatialRoute(archivedParentRouteDefinition, "active_child_a", "active_child_b"),
+  null,
+  "Active children cannot route through an archived parent",
+);
+const adjacentStepTransition = validateSpatialTransition(directedRouteDefinition, "route_a", {
+  destinationId: "route_b",
+  travelMode: "step_by_step",
+  expectedDefinitionRevision: directedRouteDefinition.revision,
+  expectedCurrentLocationId: "route_a",
+  commandId: "route-adjacent-step",
+});
+assert.equal(adjacentStepTransition.ok, true);
+if (adjacentStepTransition.ok) {
+  assert.deepEqual(adjacentStepTransition.travel, {
+    mode: "step_by_step",
+    fromLocationId: "route_a",
+    targetLocationId: "route_b",
+    routeLocationIds: ["route_b"],
+    remainingLocationIds: [],
+    complete: true,
+  });
+}
+const stepwiseTransition = validateSpatialTransition(validDefinition, "tower_library", {
+  destinationId: "market",
+  travelMode: "step_by_step",
+  expectedDefinitionRevision: 4,
+  expectedCurrentLocationId: "tower_library",
+  commandId: "route-step-1",
+});
+assert.deepEqual(
+  stepwiseTransition,
+  {
+    ok: true,
+    destination: libraryDestinations.find((entry) => entry.id === "tower")!,
+    travel: {
+      mode: "step_by_step",
+      fromLocationId: "tower_library",
+      targetLocationId: "market",
+      routeLocationIds: ["tower", "capital", "market"],
+      remainingLocationIds: ["capital", "market"],
+      complete: false,
+    },
+  },
+  "Stepwise travel commits only the first edge and returns the authoritative remainder",
+);
+const travelNowTransition = validateSpatialTransition(validDefinition, "tower_library", {
+  destinationId: "market",
+  travelMode: "travel_now",
+  expectedDefinitionRevision: 4,
+  expectedCurrentLocationId: "tower_library",
+  commandId: "route-now-1",
+});
+assert.equal(travelNowTransition.ok, true);
+if (travelNowTransition.ok) {
+  assert.equal(travelNowTransition.destination.id, "market");
+  assert.deepEqual(travelNowTransition.travel, {
+    mode: "travel_now",
+    fromLocationId: "tower_library",
+    targetLocationId: "market",
+    routeLocationIds: ["tower", "capital", "market"],
+    remainingLocationIds: [],
+    complete: true,
+  });
 }
 
 assert.deepEqual(

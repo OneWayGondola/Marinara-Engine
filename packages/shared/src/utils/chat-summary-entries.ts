@@ -65,9 +65,7 @@ export function estimateChatSummaryTokens(content: string): number {
 }
 
 /** Generate a concise default title from an entry's origin and source metadata. */
-export function generateChatSummaryEntryTitle(
-  entry: Pick<ChatSummaryEntry, "origin">,
-): string {
+export function generateChatSummaryEntryTitle(entry: Pick<ChatSummaryEntry, "origin">): string {
   if (entry.origin === "legacy") return "Legacy summary";
   if (entry.origin === "automated") return "Automated summary";
   return "Manual summary";
@@ -245,6 +243,20 @@ export function compileChatSummaryEntries(entries: ChatSummaryEntry[]): string |
     .trim();
   if (!compiled) return null;
   return compiled;
+}
+
+export function combineChatSummaryEntryHistory(
+  entries: ChatSummaryEntry[],
+  sourceEntryIds: ReadonlySet<string>,
+  combinedEntry: ChatSummaryEntry,
+  now: string,
+): ChatSummaryEntry[] {
+  const firstIndex = entries.findIndex((entry) => sourceEntryIds.has(entry.id));
+  const nextEntries = entries.map((entry) =>
+    sourceEntryIds.has(entry.id) ? { ...entry, enabled: false, updatedAt: now } : entry,
+  );
+  nextEntries.splice(Math.max(0, firstIndex), 0, combinedEntry);
+  return normalizeChatSummaryEntries(nextEntries);
 }
 
 export function appendChatSummaryEntryToMetadata(

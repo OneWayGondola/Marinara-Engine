@@ -146,6 +146,12 @@ export const noodlerReserveState = fileTable("noodler_reserve_state", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const noodlerFanActivityState = fileTable("noodler_fan_activity_state", {
+  id: text("id").primaryKey(),
+  plan: text("plan").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const noodleActivityDigests = fileTable("noodle_activity_digests", {
   id: text("id").primaryKey(),
   accountIds: text("account_ids").notNull().default("[]"),

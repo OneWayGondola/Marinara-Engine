@@ -14,6 +14,39 @@ export const noodleCarryoverTargetSchema = z.enum(["conversation", "roleplay", "
 export const noodleThemeSchema = z.enum(["system", "light", "dark"]);
 export const noodleIdentityDisclosureSchema = z.enum(["open", "hinted", "secret"]);
 export const noodlerOnboardingStateSchema = z.enum(["incomplete", "zero", "completed"]);
+export const noodlerFanArchetypeSchema = z.enum([
+  "ordinary",
+  "eccentric",
+  "crossFandom",
+  "raider",
+  "organicDiscovery",
+  "freeResource",
+]);
+export const NOODLER_FAN_ARCHETYPES = noodlerFanArchetypeSchema.options;
+export const DEFAULT_NOODLER_FAN_ARCHETYPE_WEIGHTS = {
+  ordinary: 6,
+  eccentric: 2,
+  crossFandom: 1,
+  raider: 1,
+  organicDiscovery: 1,
+  freeResource: 1,
+} as const;
+const noodlerFanArchetypeWeightsObjectSchema = z
+  .object({
+    ordinary: z.number().int().min(0).max(100),
+    eccentric: z.number().int().min(0).max(100),
+    crossFandom: z.number().int().min(0).max(100),
+    raider: z.number().int().min(0).max(100),
+    organicDiscovery: z.number().int().min(0).max(100),
+    freeResource: z.number().int().min(0).max(100),
+  })
+  .strict();
+export const noodlerFanArchetypeWeightsSchema = noodlerFanArchetypeWeightsObjectSchema.refine(
+  (weights) => Object.values(weights).some((weight) => weight > 0),
+  {
+    message: "At least one audience archetype must have a positive weight.",
+  },
+);
 export const NOODLER_POST_TITLE_MAX_LENGTH = 200;
 export const NOODLER_POST_CONTENT_MAX_LENGTH = 4000;
 export const NOODLER_REPLY_CONTENT_MAX_LENGTH = 2000;
@@ -73,6 +106,12 @@ export const DEFAULT_NOODLE_SETTINGS = {
   noodlerOnboardingComplete: false,
   noodlerOnboardingState: "incomplete",
   noodlerNightQuiet: true,
+  fanActivityEnabled: false,
+  fanActivityRunsPerDay: 4,
+  fanLikesPerRefresh: 6,
+  fanRepliesPerRefresh: 2,
+  fanRepostsPerRefresh: 1,
+  fanArchetypeWeights: DEFAULT_NOODLER_FAN_ARCHETYPE_WEIGHTS,
 } as const;
 
 export const noodleSettingsSchema = z.object({
@@ -130,9 +169,28 @@ export const noodleSettingsSchema = z.object({
   noodlerOnboardingComplete: z.boolean().default(DEFAULT_NOODLE_SETTINGS.noodlerOnboardingComplete),
   noodlerOnboardingState: noodlerOnboardingStateSchema.default(DEFAULT_NOODLE_SETTINGS.noodlerOnboardingState),
   noodlerNightQuiet: z.boolean().default(DEFAULT_NOODLE_SETTINGS.noodlerNightQuiet),
+  fanActivityEnabled: z.boolean().default(DEFAULT_NOODLE_SETTINGS.fanActivityEnabled),
+  fanActivityRunsPerDay: z.number().int().min(1).max(24).default(DEFAULT_NOODLE_SETTINGS.fanActivityRunsPerDay),
+  fanLikesPerRefresh: z.number().int().min(0).max(24).default(DEFAULT_NOODLE_SETTINGS.fanLikesPerRefresh),
+  fanRepliesPerRefresh: z.number().int().min(0).max(12).default(DEFAULT_NOODLE_SETTINGS.fanRepliesPerRefresh),
+  fanRepostsPerRefresh: z.number().int().min(0).max(12).default(DEFAULT_NOODLE_SETTINGS.fanRepostsPerRefresh),
+  fanArchetypeWeights: noodlerFanArchetypeWeightsSchema.default(DEFAULT_NOODLE_SETTINGS.fanArchetypeWeights),
 });
 
 export const noodleSettingsUpdateSchema = noodleSettingsSchema.partial();
+
+export const noodlerSourceSnapshotSchema = z
+  .object({
+    publicDisplayName: z.string(),
+    publicHandle: z.string(),
+    name: z.string(),
+    description: z.string(),
+    personality: z.string(),
+    scenario: z.string(),
+    appearance: z.string(),
+    backstory: z.string(),
+  })
+  .strict();
 
 export const noodleAccountProfileSettingsSchema = z
   .object({
@@ -142,6 +200,7 @@ export const noodleAccountProfileSettingsSchema = z
     profileGenerated: z.boolean().optional(),
     profileManuallyEdited: z.boolean().optional(),
     noodlerWizardExecutionId: z.string().min(1).max(128).optional(),
+    noodlerSourceSnapshot: noodlerSourceSnapshotSchema.optional(),
   })
   .strict();
 
@@ -162,16 +221,30 @@ export const noodleAutoPostingSettingsSchema = z
   })
   .strict();
 
+export const noodlerFanActivitySettingsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    archetypeWeights: noodlerFanArchetypeWeightsObjectSchema
+      .partial()
+      .refine((weights) => Object.values(weights).some((weight) => weight > 0), {
+        message: "At least one audience archetype must have a positive weight.",
+      })
+      .optional(),
+  })
+  .strict();
+
 /** Full normalized stored shape. */
 export const noodleAccountSchedulerSettingsSchema = z
   .object({
     autoPosting: noodleAutoPostingSettingsSchema.optional(),
+    fanActivity: noodlerFanActivitySettingsSchema.optional(),
   })
   .strict();
 
 export const noodleAccountSchedulerPatchSchema = z
   .object({
     autoPosting: noodleAutoPostingSettingsSchema.pick({ enabled: true, imagesEnabled: true }).partial().optional(),
+    fanActivity: noodlerFanActivitySettingsSchema.nullable().optional(),
   })
   .strict();
 export const noodleAccountAccessSettingsSchema = z
@@ -279,7 +352,13 @@ export const noodlerTargetedRefreshSchema = z
     executionId: z.string().min(1).max(128).optional(),
   })
   .strict();
-export const noodleStageProfileUpdateSchema = z.object(noodleStageProfileShape).strict();
+export const noodleStageProfileUpdateSchema = z
+  .object({
+    ...noodleStageProfileShape,
+    acceptSourceChanges: z.boolean().optional(),
+    sourceSnapshot: noodlerSourceSnapshotSchema.optional(),
+  })
+  .strict();
 
 export const noodleStageProfileDraftRequestSchema = z
   .object({
@@ -295,7 +374,9 @@ export const noodleStageProfileDraftRequestSchema = z
     message: "Choose a source account.",
   });
 
-export const noodleStageProfileDraftResponseSchema = noodleStageProfileSchema;
+export const noodleStageProfileDraftResponseSchema = noodleStageProfileSchema.extend({
+  sourceSnapshot: noodlerSourceSnapshotSchema.optional(),
+});
 
 export const noodleInviteSchema = z.object({
   characterId: z.string().min(1),
@@ -668,6 +749,14 @@ export const noodleGeneratedInteractionSchema = z
     }
   });
 
+export const noodleGeneratedFanActivitySchema = z.object({
+  actorHandle: z.string().min(1),
+  creatorAccountId: z.string().min(1),
+  targetPostId: z.string().min(1),
+  type: z.enum(["like", "reply", "repost"]),
+  content: z.string().trim().max(2000).nullable().optional(),
+});
+
 export const noodleGeneratedFollowSchema = z.object({
   actorHandle: z.string().min(1),
   targetHandle: z.string().min(1),
@@ -704,6 +793,12 @@ export const noodleGeneratedRefreshSchema = z.object({
   follows: z.array(noodleGeneratedFollowSchema).default([]),
   digests: z.array(noodleGeneratedDigestSchema).default([]),
 });
+
+export const noodleGeneratedFanRefreshSchema = z.object({
+  activities: z.array(noodleGeneratedFanActivitySchema).default([]),
+});
+
+export type NoodleGeneratedFanRefresh = z.infer<typeof noodleGeneratedFanRefreshSchema>;
 
 export const noodleGeneratedProfilesSchema = z.object({
   profiles: z.array(noodleGeneratedProfileSchema).default([]),

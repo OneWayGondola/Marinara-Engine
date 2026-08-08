@@ -106,6 +106,13 @@ The **Result Type** tells Marinara how to read your agent's output. Most result 
 
 If a result type is greyed out, you have not turned on its ability yet. Turn on the matching toggle under **Custom Agent Abilities**, then the result type becomes clickable.
 
+### Per-chat controls for image agents
+
+An agent with the **Image generation** ability gets two extra controls on its card in **Chat Settings → Agents → Custom Agents**, alongside the prompt template picker every custom agent has:
+
+- **Image Connection** — overrides which image connection this agent uses in this chat only. Leave it on **Agent default** to keep the connection from the agent's own settings. The chat-level **Image Style** select applies to custom-agent images too, so one agent can render differently per chat without duplicating it.
+- **Camera button** — generates an image with that agent right now, without waiting for its activation keywords. The agent still writes the prompt itself; if its template declines to produce one, you get an error toast instead of an image.
+
 ## Activation Keywords
 
 By default a custom agent runs on its normal cadence. **Activation Keywords** let you skip the agent unless the scene is relevant. This saves tokens and cost. A token is a small chunk of text that the AI counts.

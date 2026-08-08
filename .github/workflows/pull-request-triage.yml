@@ -141,17 +141,12 @@ jobs:
       pull-requests: read
     steps:
       - name: Exempt trusted contributor
-        if: >-
-          github.event.pull_request.author_association == 'MEMBER' ||
-          github.event.pull_request.author_association == 'OWNER' ||
-          github.event.pull_request.author_association == 'COLLABORATOR'
+        if: contains(fromJSON('["MEMBER","OWNER","COLLABORATOR"]'), github.event.pull_request.author_association)
         run: echo "Trusted contributor; pull request template validation is not required."
 
       - name: Check Pull Request body against template
         if: >-
-          github.event.pull_request.author_association != 'MEMBER' &&
-          github.event.pull_request.author_association != 'OWNER' &&
-          github.event.pull_request.author_association != 'COLLABORATOR'
+          !contains(fromJSON('["MEMBER","OWNER","COLLABORATOR"]'), github.event.pull_request.author_association)
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |

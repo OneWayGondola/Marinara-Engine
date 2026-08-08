@@ -15,9 +15,11 @@ async function githubRequest({ token, method = "GET", path, body }) {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "marinara-owner-approval-gate",
     },
+    signal: AbortSignal.timeout(15_000),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
@@ -120,8 +122,13 @@ export async function evaluateOwnerApproval({ env = process.env, request = githu
       description = "Active Pasta-Devs member; owner approval is not required.";
     } else if (state !== "error") {
       const reviews = await listPullRequestReviews(request, githubToken, repositoryPath, pullNumber);
+      const decisiveStates = new Set(["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
       const latestOwnerReview = reviews
-        .filter((review) => review.user?.login?.toLowerCase() === "spicymarinara")
+        .filter(
+          (review) =>
+            review.user?.login?.toLowerCase() === "spicymarinara" &&
+            decisiveStates.has(review.state),
+        )
         .sort((left, right) => left.id - right.id)
         .at(-1);
 
@@ -130,15 +137,26 @@ export async function evaluateOwnerApproval({ env = process.env, request = githu
         description = "Outside contribution approved by SpicyMarinara for the current commit.";
       }
     }
-
-    await publishStatus();
   } catch (error) {
     state = "error";
     description = "Owner approval evaluation failed unexpectedly; failing closed.";
     console.error(
       `Owner approval evaluation failed with status ${error?.status ?? "unknown"}; publishing error status.`,
     );
-    await publishStatus();
+  }
+
+  const maximumPublishAttempts = 3;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await publishStatus();
+      break;
+    } catch (error) {
+      if (attempt >= maximumPublishAttempts) throw error;
+      console.warn(
+        `Owner approval status publish attempt ${attempt} failed with status ${error?.status ?? "unknown"}; retrying.`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+    }
   }
 
   console.info(`${OWNER_APPROVAL_CONTEXT}: ${state} (${description})`);

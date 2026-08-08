@@ -1,10 +1,16 @@
-import type { SpatialContextDefinition, SpatialContextSnapshot } from "@marinara-engine/shared";
+import type { ResolvedSpatialTravel, SpatialContextDefinition, SpatialContextSnapshot } from "@marinara-engine/shared";
 import { getCapabilityService } from "../capability-packages/capability-service-registry.service.js";
 import { isHierarchicalMapsEnabledForChat } from "./activation.js";
 
 export type AssistantSpatialDirective =
   | { type: "move"; destinationId: string }
-  | { type: "discover"; name: string; relation: "enter" | "link"; description?: string };
+  | {
+      type: "discover";
+      name: string;
+      relation: "enter" | "link";
+      direction?: "outgoing" | "incoming" | "both";
+      description?: string;
+    };
 
 export interface ParsedAssistantSpatialDirective {
   cleanContent: string;
@@ -101,11 +107,18 @@ export function extractAssistantSpatialDirective(content: string): ParsedAssista
       const name = (values.get("name") ?? "").trim().slice(0, 200);
       if (!name) continue;
       const relation = values.get("relation")?.trim().toLowerCase() === "link" ? "link" : "enter";
+      const directionValue = values.get("direction")?.trim().toLowerCase();
+      const direction =
+        directionValue === "outgoing" || directionValue === "incoming" || directionValue === "both"
+          ? directionValue
+          : undefined;
+      if (relation === "link" && !direction) continue;
       const description = (values.get("description") ?? "").trim().slice(0, 4_000);
       directive = {
         type: "discover",
         name,
         relation,
+        ...(direction ? { direction } : {}),
         ...(description ? { description } : {}),
       };
     }
@@ -141,6 +154,8 @@ export interface ResolveSpatialStateOptions {
   exactAnchor?: SpatialMessageAnchor;
   throughMessageId?: string;
   beforeMessageId?: string;
+  /** Accepted owner-turn travel facts to include in the next prompt projection. */
+  acceptedTravel?: ResolvedSpatialTravel | null;
 }
 
 interface StateResolutionService {

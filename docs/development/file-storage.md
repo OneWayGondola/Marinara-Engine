@@ -11,12 +11,24 @@ storage/
 ├── manifest.json
 └── tables/
     ├── chats.json
-    ├── messages.json
     ├── characters.json
+    ├── messages/
+    │   ├── <encoded-chat-id>.json
+    │   └── ...
+    ├── message_swipes/
+    │   └── <encoded-chat-id>.json
     └── ...
 ```
 
 `FILE_STORAGE_DIR` can override the `storage` directory. Each table file contains a JSON array. `manifest.json` records the storage format version, save time, backend identifier, and row count for every registered table.
+
+### Sharded tables
+
+Chat-keyed tables on per-turn write paths persist as **one file per chat** instead of a single monolith, because with a monolith every saved row re-serialized and rewrote the full history of every chat. Storage format 3 sharded `messages` and `message_swipes`; format 4 extends the same layout to `memory_chunks`, `chat_images`, `agent_runs`, `agent_memory`, `conversation_call_sessions`, `conversation_call_messages`, `game_state_snapshots`, `game_engine_state`, `game_checkpoints`, `game_turn_storyboards`, `game_scene_videos`, `spatial_context_snapshots`, `ooc_influences`, and `conversation_notes`. The authoritative list is `SHARDED_TABLES` in `file-backed-store.ts` (mirrored by the offline `unshard` command in `scripts/protect-launcher-data.mjs`; a regression pins the pairing). Each sharded table resolves its shard by its own `chatId` column, with two exceptions: `message_swipes` resolves through the parent message, and influences/notes shard by `targetChatId` (the chat whose turns read them). Two chat-adjacent tables deliberately stay monoliths: `lorebooks` (nullable `chatId` — a chat-linked library entity, not per-chat data) and `game_turn_storyboard_keyframes` (no chat column; sharding it needs a denormalized `chatId`, tracked as a follow-up on #4708).
+
+Dirty tracking runs at shard granularity, so a flush touches only the chats that changed; a shard whose row count reaches zero is deleted rather than written as an empty array. Shard filenames are percent-encoded from the chat id (with hash fallbacks for overlong or reserved names) — the encoding is a security boundary, since imported profiles can carry arbitrary ids. Filenames are containers only; rows carry their own keys.
+
+On first boot of a build with newly sharded tables, existing monoliths migrate automatically: rows are grouped per chat and written as shards, then the monolith **and its `.bak`** are renamed to `.pre-shard` — those renamed files are the automatic pre-migration backup and are never deleted by the Engine. A `.migrating` sentinel makes crash recovery decidable (monolith authoritative until the sentinel clears). If an older build later recreates a monolith beside the shards (a downgrade session), the shards win and the conflicting monolith is quarantined with a timestamped `.post-downgrade-` suffix — never merged. Orphaned child rows (a swipe whose message no longer exists, or a row with no usable chat id) land in the `orphaned-rows` shard instead of being dropped. A manifest written by a newer storage format refuses to load.
 
 ## Runtime model
 

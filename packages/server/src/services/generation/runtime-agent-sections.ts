@@ -18,14 +18,14 @@ export interface RuntimeAgentSectionTokens {
 
 const RUNTIME_AGENT_SECTION_TOKEN_PREFIX = "__MARINARA_RUNTIME_AGENT_SECTION__";
 
-export const REVIEWABLE_WRITER_AGENT_TYPES = new Set(
-  BUILT_IN_AGENTS.filter(
-    (agent) =>
-      agent.category === "writer" &&
-      agent.phase === "pre_generation" &&
-      !["director", "knowledge-retrieval", "knowledge-router"].includes(agent.id),
-  ).map((agent) => agent.id),
-);
+const NON_REVIEWABLE_WRITER_AGENT_TYPES = new Set(["director", "knowledge-retrieval", "knowledge-router"]);
+
+export function isReviewableWriterAgentType(agentType: string): boolean {
+  const agent = BUILT_IN_AGENTS.find((entry) => entry.id === agentType);
+  return (
+    agent?.category === "writer" && agent.phase === "pre_generation" && !NON_REVIEWABLE_WRITER_AGENT_TYPES.has(agent.id)
+  );
+}
 
 export function formatAgentInjections(injections: AgentInjection[], wrapFormat: string): string {
   if (injections.length === 1) {

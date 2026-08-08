@@ -1,8 +1,8 @@
 // ──────────────────────────────────────────────
 // Routes: Browser (proxy to character sources)
 // ──────────────────────────────────────────────
-import type { FastifyInstance } from "fastify";
-import { fetchBotBrowserJson } from "../services/bot-browser/fetch-json.js";
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import { fetchBotBrowserJson, type BotBrowserJsonFetchOptions } from "../services/bot-browser/fetch-json.js";
 import { resolveValidatedImage, safeFetch } from "../utils/security.js";
 
 const CHUB_API_BASE = "https://api.chub.ai";
@@ -22,7 +22,12 @@ async function fetchAvatarImage(url: string, signal: AbortSignal) {
   return { buf, mimeType: image.mimeType };
 }
 
-export async function botBrowserRoutes(app: FastifyInstance) {
+export interface BotBrowserRoutesOptions extends FastifyPluginOptions {
+  fetchJson?: (url: string | URL, options: BotBrowserJsonFetchOptions) => Promise<unknown>;
+}
+
+export async function botBrowserRoutes(app: FastifyInstance, options: BotBrowserRoutesOptions) {
+  const fetchJson = options.fetchJson ?? fetchBotBrowserJson;
   // ── Search characters on Chub ──
   app.get<{
     Querystring: {
@@ -68,8 +73,12 @@ export async function botBrowserRoutes(app: FastifyInstance) {
       search: q,
       first: "48",
       page,
+      namespace: "characters",
       nsfw,
       nsfl: nsfw,
+      nsfw_only: "false",
+      chub: "true",
+      count: "true",
       include_forks: "true",
       venus: "false",
       min_tokens,
@@ -113,7 +122,7 @@ export async function botBrowserRoutes(app: FastifyInstance) {
     if (require_expressions === "true") params.set("require_expressions", "true");
     if (require_alternate_greetings === "true") params.set("require_alternate_greetings", "true");
 
-    const data = await fetchBotBrowserJson(`${CHUB_API_BASE}/search?${params}`, {
+    const data = await fetchJson(`${CHUB_API_BASE}/search?${params}`, {
       allowedHosts: ["api.chub.ai"],
       method: "GET",
       headers: { Accept: "application/json" },
@@ -126,7 +135,7 @@ export async function botBrowserRoutes(app: FastifyInstance) {
     const fullPath = (req.params as Record<string, string>)["*"];
     if (!fullPath) throw new Error("Missing character path");
     const nocache = Date.now();
-    const data = await fetchBotBrowserJson(
+    const data = await fetchJson(
       `${CHUB_API_BASE}/api/characters/${encodeURI(fullPath)}?full=true&nocache=${nocache}`,
       {
         allowedHosts: ["api.chub.ai"],
@@ -168,12 +177,18 @@ export async function botBrowserRoutes(app: FastifyInstance) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
-      const primary = await fetchAvatarImage(`${CHUB_AVATARS}/avatars/${encodeURI(fullPath)}/avatar.webp`, controller.signal);
+      const primary = await fetchAvatarImage(
+        `${CHUB_AVATARS}/avatars/${encodeURI(fullPath)}/avatar.webp`,
+        controller.signal,
+      );
       const image =
         primary ??
         (await fetchAvatarImage(`${CHUB_AVATARS}/avatars/${encodeURI(fullPath)}/chara_card_v2.png`, controller.signal));
       if (!image) return reply.status(404).send({ error: "Avatar not found" });
-      return reply.header("Content-Type", image.mimeType).header("Cache-Control", "public, max-age=86400").send(image.buf);
+      return reply
+        .header("Content-Type", image.mimeType)
+        .header("Cache-Control", "public, max-age=86400")
+        .send(image.buf);
     } catch (err) {
       if ((err as Error).message.includes("Unsupported avatar image content")) {
         return reply.status(415).send({ error: "Unsupported avatar content type" });

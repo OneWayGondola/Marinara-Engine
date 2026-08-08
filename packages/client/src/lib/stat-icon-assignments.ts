@@ -22,7 +22,10 @@ export function normalizeStatIconAssignments(value: unknown): TrackerStatIconAss
     if (!Number.isInteger(occurrence) || occurrence < 0) continue;
     const icon = record.icon === null ? null : normalizeStatIcon(record.icon);
     if (record.icon !== null && !icon) continue;
-    const assignment = { name: record.name.trim(), occurrence, icon };
+    // Keep validated extension fields while replacing every known field with its
+    // canonical value. This keeps future/plugin metadata intact without letting
+    // stale aliases for known fields survive an ordinary editor save.
+    const assignment: TrackerStatIconAssignment = { ...record, name: record.name.trim(), occurrence, icon };
     assignments.set(assignmentKey(assignment.name, occurrence), assignment);
   }
 
@@ -36,8 +39,7 @@ export function resolveStatIconAssignment(
 ): SupportedStatIcon | null | undefined {
   return assignments.find(
     (assignment) =>
-      normalizeTextForMatch(assignment.name) === normalizeTextForMatch(name) &&
-      assignment.occurrence === occurrence,
+      normalizeTextForMatch(assignment.name) === normalizeTextForMatch(name) && assignment.occurrence === occurrence,
   )?.icon;
 }
 
@@ -49,18 +51,15 @@ export function setStatIconAssignment(
 ): TrackerStatIconAssignment[] {
   const key = assignmentKey(name, occurrence);
   const next = assignments.filter((assignment) => assignmentKey(assignment.name, assignment.occurrence) !== key);
-  if (icon !== undefined) next.push({ name: name.trim(), occurrence, icon });
+  const existing = assignments.find((assignment) => assignmentKey(assignment.name, assignment.occurrence) === key);
+  if (icon !== undefined) next.push({ ...existing, name: name.trim(), occurrence, icon });
   return next;
 }
 
-export function getStatNameOccurrence(
-  stats: readonly { name: string }[],
-  index: number,
-) {
+export function getStatNameOccurrence(stats: readonly { name: string }[], index: number) {
   const normalizedName = normalizeTextForMatch(stats[index]?.name);
-  return stats
-    .slice(0, Math.max(0, index))
-    .filter((stat) => normalizeTextForMatch(stat.name) === normalizedName).length;
+  return stats.slice(0, Math.max(0, index)).filter((stat) => normalizeTextForMatch(stat.name) === normalizedName)
+    .length;
 }
 
 export function remapStatIconAssignments(
@@ -73,16 +72,16 @@ export function remapStatIconAssignments(
   nextStats.forEach((stat, nextIndex) => {
     const previousIndex = previousIndexForNext(nextIndex);
     if (previousIndex === undefined || !previousStats[previousIndex]) return;
-    const icon = resolveStatIconAssignment(
-      assignments,
-      previousStats[previousIndex]!.name,
-      getStatNameOccurrence(previousStats, previousIndex),
+    const previousAssignment = assignments.find(
+      (assignment) =>
+        assignmentKey(assignment.name, assignment.occurrence) ===
+        assignmentKey(previousStats[previousIndex]!.name, getStatNameOccurrence(previousStats, previousIndex)),
     );
-    if (icon === undefined) return;
+    if (!previousAssignment) return;
     nextAssignments.push({
+      ...previousAssignment,
       name: stat.name.trim(),
       occurrence: getStatNameOccurrence(nextStats, nextIndex),
-      icon,
     });
   });
   return nextAssignments;

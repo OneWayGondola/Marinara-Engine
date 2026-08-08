@@ -2,6 +2,8 @@
 // Routes: Prompts (Presets, Groups, Sections, Choices)
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
+import { mkdir, readFile, unlink, writeFile } from "fs/promises";
+import { extname, join } from "path";
 import {
   createPromptPresetSchema,
   updatePromptPresetSchema,
@@ -24,6 +26,58 @@ import { createCharactersStorage } from "../services/storage/characters.storage.
 import { normalizeTimestampOverrides } from "../services/import/import-timestamps.js";
 import AdmZip from "adm-zip";
 import { resolveActivePersonaCandidate } from "./generate/generate-route-utils.js";
+import { DATA_DIR } from "../utils/data-dir.js";
+import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
+import { logger } from "../lib/logger.js";
+
+const PROMPT_IMAGES_DIR = join(DATA_DIR, "prompts", "images");
+const PROMPT_IMAGE_URL_PREFIX = "/api/prompts/images/file/";
+
+function parseImageUpload(image: string): { buffer: Buffer; hintedExt: string } {
+  let base64 = image;
+  let hintedExt = "png";
+  if (base64.startsWith("data:")) {
+    const match = base64.match(/^data:image\/([\w.+-]+);base64,/i);
+    if (match?.[1]) {
+      hintedExt = match[1].replace("+xml", "");
+      base64 = base64.slice(base64.indexOf(",") + 1);
+    }
+  }
+  return { buffer: Buffer.from(base64, "base64"), hintedExt };
+}
+
+function getSafePromptImagePath(filename: string): string | null {
+  if (!filename || filename.includes("..") || filename.includes("/") || filename.includes("\\")) return null;
+  try {
+    return assertInsideDir(PROMPT_IMAGES_DIR, join(PROMPT_IMAGES_DIR, filename));
+  } catch {
+    return null;
+  }
+}
+
+function getLocalPromptImagePath(imagePath: string | null): string | null {
+  if (!imagePath?.startsWith(PROMPT_IMAGE_URL_PREFIX)) return null;
+  return getSafePromptImagePath(imagePath.slice(PROMPT_IMAGE_URL_PREFIX.length));
+}
+
+async function removePromptImageIfUnreferenced(
+  storage: ReturnType<typeof createPromptsStorage>,
+  imagePath: string | null,
+): Promise<void> {
+  const filepath = getLocalPromptImagePath(imagePath);
+  if (!filepath) return;
+
+  const presets = await storage.list();
+  if (presets.some((preset) => preset.imagePath === imagePath)) return;
+
+  try {
+    await unlink(filepath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn(error, "Could not remove unreferenced preset image %s", filepath);
+    }
+  }
+}
 
 function cardPromptText(value: unknown): string {
   return typeof value === "string" ? stripMacroComments(value).trim() : "";
@@ -43,6 +97,8 @@ function safeAsciiDownloadName(value: string): string {
 async function buildPresetExportEnvelope(storage: ReturnType<typeof createPromptsStorage>, id: string) {
   const preset = await storage.getById(id);
   if (!preset) return null;
+  const exportedPreset = { ...preset } as Record<string, unknown>;
+  delete exportedPreset.parameters;
   const [sections, groups, choiceBlocks] = await Promise.all([
     storage.listSections(id),
     storage.listGroups(id),
@@ -52,7 +108,7 @@ async function buildPresetExportEnvelope(storage: ReturnType<typeof createPrompt
     type: "marinara_preset",
     version: 1,
     exportedAt: new Date().toISOString(),
-    data: { preset, sections, groups, choiceBlocks },
+    data: { preset: exportedPreset, sections, groups, choiceBlocks },
   };
   return { preset, envelope };
 }
@@ -70,6 +126,28 @@ export async function promptsRoutes(app: FastifyInstance) {
 
   app.get("/default", async () => {
     return storage.getDefault();
+  });
+
+  app.get<{ Params: { filename: string } }>("/images/file/:filename", async (req, reply) => {
+    const filepath = getSafePromptImagePath(req.params.filename);
+    if (!filepath) return reply.status(404).send({ error: "Image not found" });
+
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(filepath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return reply.status(404).send({ error: "Image not found" });
+      }
+      throw error;
+    }
+    const imageInfo = isAllowedImageBuffer(buffer, extname(req.params.filename));
+    if (!imageInfo) return reply.status(404).send({ error: "Image not found" });
+
+    return reply
+      .header("Content-Type", imageInfo.mimeType)
+      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .send(buffer);
   });
 
   app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
@@ -107,8 +185,38 @@ export async function promptsRoutes(app: FastifyInstance) {
     return storage.update(req.params.id, input);
   });
 
+  app.post<{ Params: { id: string } }>("/:id/image", async (req, reply) => {
+    const preset = await storage.getById(req.params.id);
+    if (!preset) return reply.status(404).send({ error: "Preset not found" });
+
+    const body = req.body as { image?: string };
+    if (!body.image) return reply.status(400).send({ error: "No image data provided" });
+
+    const { buffer, hintedExt } = parseImageUpload(body.image);
+    const imageInfo = isAllowedImageBuffer(buffer, `.${hintedExt}`);
+    if (!imageInfo) return reply.status(400).send({ error: "Unsupported or invalid preset image" });
+
+    const ext = extensionFromImageMime(imageInfo.mimeType);
+    await mkdir(PROMPT_IMAGES_DIR, { recursive: true });
+    const safeId = req.params.id.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const filename = `preset-${safeId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const filepath = assertInsideDir(PROMPT_IMAGES_DIR, join(PROMPT_IMAGES_DIR, filename));
+    await writeFile(filepath, buffer);
+
+    const nextImagePath = `${PROMPT_IMAGE_URL_PREFIX}${filename}`;
+    const updated = await storage.update(req.params.id, { imagePath: nextImagePath });
+    if (!updated) {
+      await removePromptImageIfUnreferenced(storage, nextImagePath);
+      return reply.status(404).send({ error: "Preset not found" });
+    }
+    await removePromptImageIfUnreferenced(storage, preset.imagePath);
+    return updated;
+  });
+
   app.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    const preset = await storage.getById(req.params.id);
     await storage.remove(req.params.id);
+    await removePromptImageIfUnreferenced(storage, preset?.imagePath ?? null);
     return reply.status(204).send();
   });
 

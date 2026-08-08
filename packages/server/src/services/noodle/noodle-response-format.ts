@@ -141,9 +141,22 @@ const noodlerReplySchema = {
   additionalProperties: false,
 } as const;
 
+const noodlerFanActivitySchema = {
+  type: "object",
+  properties: {
+    actorHandle: { type: "string" },
+    creatorAccountId: { type: "string" },
+    targetPostId: { type: "string" },
+    type: { type: "string", enum: ["like", "reply", "repost"] },
+    content: nullableString,
+  },
+  required: ["actorHandle", "creatorAccountId", "targetPostId", "type", "content"],
+  additionalProperties: false,
+} as const;
+
 export function noodleResponseFormat(
   model: string,
-  kind: "timeline" | "profiles" | "noodler_post" | "noodler_profile" | "noodler_reply",
+  kind: "timeline" | "profiles" | "noodler_post" | "noodler_profile" | "noodler_reply" | "noodler_fan_activity",
 ): { type: string; [key: string]: unknown } {
   if (!isOpenAIGpt56Model(model)) return { type: "json_object" };
   const schema =
@@ -153,9 +166,16 @@ export function noodleResponseFormat(
         ? profilesSchema
         : kind === "noodler_profile"
           ? noodlerProfileSchema
-           : kind === "noodler_reply"
-             ? noodlerReplySchema
-             : noodlerPostSchema;
+          : kind === "noodler_reply"
+            ? noodlerReplySchema
+            : kind === "noodler_fan_activity"
+              ? {
+                  type: "object",
+                  properties: { activities: { type: "array", items: noodlerFanActivitySchema } },
+                  required: ["activities"],
+                  additionalProperties: false,
+                }
+              : noodlerPostSchema;
   return {
     type: "json_schema",
     name:
@@ -165,9 +185,11 @@ export function noodleResponseFormat(
           ? "noodle_profiles"
           : kind === "noodler_profile"
             ? "noodler_profile"
-             : kind === "noodler_reply"
-               ? "noodler_reply"
-               : "noodler_post",
+            : kind === "noodler_reply"
+              ? "noodler_reply"
+              : kind === "noodler_fan_activity"
+                ? "noodler_fan_activity"
+                : "noodler_post",
     schema,
     strict: true,
   };

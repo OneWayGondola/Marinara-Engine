@@ -192,6 +192,7 @@ The overlay is not a substitute for this guide. When instructions conflict, foll
 - Update documentation in the same PR when behavior changes affect installation, updates, release flow, launchers, or platform-specific behavior.
 - Include screenshots or short recordings for UI changes.
 - Call out manual validation clearly, especially for launcher, installer, or Android wrapper changes.
+- Add a concise user-focused entry under the appropriate `CHANGELOG.md` `[Unreleased]` heading for every bug fix, behavior change, or new feature. Purely mechanical changes with no product or contributor-workflow impact may omit one.
 - Avoid version drift. If your PR intentionally bumps a release, update every version-bearing file in one pass.
 
 ## Documentation Rules

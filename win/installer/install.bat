@@ -11,14 +11,14 @@ set "NODE_DOWNLOAD_URL=https://nodejs.org/dist/v24.15.0/node-v24.15.0-x64.msi"
 set "NODE_SHA256=feffb8e5cb5ac47f793666636d496ef3e975be82c84c4da5d20e6aa8fa4eb806"
 set "GIT_DOWNLOAD_URL=https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/Git-2.54.0-64-bit.exe"
 set "GIT_SHA256=2b96e7854f0520f0f6b709c21041d9801b1be44d5e1a0d9fa621b2fbc40f1983"
-set "RELEASE_TAG=v2.4.1"
+set "RELEASE_TAG=v2.4.2"
 if not defined MARINARA_RELEASE_COMMIT set "MARINARA_RELEASE_COMMIT="
 set "RELEASE_COMMIT=%MARINARA_RELEASE_COMMIT%"
 
 echo.
 echo  +==========================================+
 echo  ^|   Marinara Engine - Windows Installer     ^|
-echo  ^|   v2.4.1                                  ^|
+echo  ^|   v2.4.2                                  ^|
 
 echo  +==========================================+
 echo.
@@ -78,16 +78,17 @@ echo.
 echo  [..] Checking prerequisites...
 
 :: -- Node.js --
-where node >nul 2>&1
+node --version >nul 2>&1
 if errorlevel 1 goto :install_node
 for /f "tokens=1 delims=." %%a in ('node -v') do set "NODE_RAW=%%a"
 set "NODE_MAJOR=!NODE_RAW:v=!"
 if not defined NODE_MAJOR goto :install_node
 if !NODE_MAJOR! LSS 24 goto :install_node
+if !NODE_MAJOR! GEQ 27 goto :install_node
 goto :node_ok
 
 :install_node
-echo  [..] Node.js 24 LTS or newer not found - downloading installer...
+echo  [..] Supported Node.js 24-26 not found - downloading Node.js 24 LTS...
 set "NODE_MSI=%TEMP%\node-lts-install.msi"
 powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri ""%NODE_DOWNLOAD_URL%"" -OutFile ""%NODE_MSI%"" -UseBasicParsing } catch { exit 1 }"
 if errorlevel 1 (
@@ -114,9 +115,24 @@ if errorlevel 1 (
 )
 del "%NODE_MSI%" 2>nul
 call :refresh_path
-where node >nul 2>&1
+node --version >nul 2>&1
 if errorlevel 1 (
     set "INSTALL_ERROR=Node.js installed but not found in PATH. Please restart your computer and re-run the installer."
+    goto :fatal
+)
+set "NODE_RAW="
+for /f "tokens=1 delims=." %%a in ('node -v') do set "NODE_RAW=%%a"
+set "NODE_MAJOR=!NODE_RAW:v=!"
+if not defined NODE_MAJOR (
+    set "INSTALL_ERROR=Node.js installed but its version could not be determined. Please restart your computer and re-run the installer."
+    goto :fatal
+)
+if !NODE_MAJOR! LSS 24 (
+    set "INSTALL_ERROR=Node.js installation completed, but PATH still resolves to an unsupported version. Node.js 24 through 26 is required."
+    goto :fatal
+)
+if !NODE_MAJOR! GEQ 27 (
+    set "INSTALL_ERROR=Node.js installation completed, but PATH still resolves to an unsupported version. Node.js 24 through 26 is required."
     goto :fatal
 )
 echo  [OK] Node.js installed successfully
@@ -229,6 +245,20 @@ if errorlevel 1 (
 if /I "!OLD_HEAD!"=="!TARGET_HEAD!" (
     echo  [OK] Repository already up to date
     goto :deps
+)
+
+:: Never check out a release whose storage format predates the data on disk -
+:: it would silently show empty chat history (#4708). Exit code 2 means
+:: "blocked"; exit code 1 can also come from an older checkout whose script
+:: predates the check-target subcommand, and must not break a legitimate
+:: upgrade, so only errorlevel 2 stops the install.
+node scripts\protect-launcher-data.mjs check-target "!TARGET_HEAD!"
+if errorlevel 2 (
+    set "INSTALL_ERROR=Release %RELEASE_TAG% is older than your data's storage format. Install a newer release, or see docs/TROUBLESHOOTING.md (Chats show no messages after switching to an older version)."
+    goto :fatal
+)
+if errorlevel 1 (
+    echo  [WARN] Could not verify the release's storage format; continuing with the install.
 )
 
 set "STASHED=0"

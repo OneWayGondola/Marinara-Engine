@@ -6,19 +6,20 @@ const FONT_AWESOME_D20_SOURCE_URL = "https://github.com/FortAwesome/Font-Awesome
 const CC_BY_4_0_LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/";
 
 const CONTRIBUTORS = [
-  { login: "SpicyMarinara", url: "https://github.com/SpicyMarinara", contributions: 2152 },
+  { login: "SpicyMarinara", url: "https://github.com/SpicyMarinara", contributions: 2312 },
   { login: "cha1latte", url: "https://github.com/cha1latte", contributions: 319 },
-  { login: "thetopham", url: "https://github.com/thetopham", contributions: 260 },
-  { login: "kolacheee", url: "https://github.com/kolacheee", contributions: 258 },
-  { login: "Gunterlie", url: "https://github.com/Gunterlie", contributions: 245 },
+  { login: "thetopham", url: "https://github.com/thetopham", contributions: 302 },
+  { login: "Gunterlie", url: "https://github.com/Gunterlie", contributions: 297 },
+  { login: "kolacheee", url: "https://github.com/kolacheee", contributions: 277 },
   { login: "Romuromylus", url: "https://github.com/Romuromylus", contributions: 202 },
-  { login: "Xelvanis", url: "https://github.com/Xelvanis", contributions: 124 },
+  { login: "Xelvanis", url: "https://github.com/Xelvanis", contributions: 127 },
   { login: "LukaTheHero", url: "https://github.com/LukaTheHero", contributions: 86 },
+  { login: "Promansis", url: "https://github.com/Promansis", contributions: 78 },
   { login: "TheLonelyDevil9", url: "https://github.com/TheLonelyDevil9", contributions: 69 },
-  { login: "Promansis", url: "https://github.com/Promansis", contributions: 69 },
   { login: "coxde", url: "https://github.com/coxde", contributions: 60 },
   { login: "munimunigamer", url: "https://github.com/munimunigamer", contributions: 31 },
   { login: "Minsklatte", url: "https://github.com/Minsklatte", contributions: 16 },
+  { login: "SonaGat3", url: "https://github.com/SonaGat3", contributions: 16 },
   { login: "aeriondyseti", url: "https://github.com/aeriondyseti", contributions: 15 },
   { login: "JorgeLTE", url: "https://github.com/JorgeLTE", contributions: 11 },
   { login: "Sulphuratum", url: "https://github.com/Sulphuratum", contributions: 10 },
@@ -27,26 +28,27 @@ const CONTRIBUTORS = [
   { login: "NeoKazuya", url: "https://github.com/NeoKazuya", contributions: 7 },
   { login: "felorhik", url: "https://github.com/felorhik", contributions: 6 },
   { login: "bignast", url: "https://github.com/bignast", contributions: 6 },
-  { login: "amauragis", url: "https://github.com/amauragis", contributions: 5 },
-  { login: "mm14141", url: "https://github.com/mm14141", contributions: 5 },
-  { login: "JurijPietrowicz", url: "https://github.com/JurijPietrowicz", contributions: 5 },
   { login: "jake9000", url: "https://github.com/jake9000", contributions: 5 },
+  { login: "JurijPietrowicz", url: "https://github.com/JurijPietrowicz", contributions: 5 },
+  { login: "mm14141", url: "https://github.com/mm14141", contributions: 5 },
+  { login: "amauragis", url: "https://github.com/amauragis", contributions: 5 },
   { login: "marysia", url: "https://github.com/marysia", contributions: 4 },
-  { login: "LightD31", url: "https://github.com/LightD31", contributions: 3 },
-  { login: "kh0p", url: "https://github.com/kh0p", contributions: 3 },
-  { login: "mallang0723", url: "https://github.com/mallang0723", contributions: 3 },
   { login: "myaiexp", url: "https://github.com/myaiexp", contributions: 3 },
+  { login: "bobneumann77-hub", url: "https://github.com/bobneumann77-hub", contributions: 3 },
+  { login: "mallang0723", url: "https://github.com/mallang0723", contributions: 3 },
+  { login: "kh0p", url: "https://github.com/kh0p", contributions: 3 },
+  { login: "LightD31", url: "https://github.com/LightD31", contributions: 3 },
   { login: "Lochalan", url: "https://github.com/Lochalan", contributions: 2 },
   { login: "Lamboozled", url: "https://github.com/Lamboozled", contributions: 2 },
   { login: "ailthrim", url: "https://github.com/ailthrim", contributions: 2 },
   { login: "adunato", url: "https://github.com/adunato", contributions: 2 },
   { login: "Trade-Mottoes", url: "https://github.com/Trade-Mottoes", contributions: 2 },
-  { login: "RaynoldVanHeyningen", url: "https://github.com/RaynoldVanHeyningen", contributions: 2 },
-  { login: "OnlyJimmy", url: "https://github.com/OnlyJimmy", contributions: 2 },
-  { login: "MagicGoddess", url: "https://github.com/MagicGoddess", contributions: 2 },
-  { login: "Javedz678", url: "https://github.com/Javedz678", contributions: 2 },
-  { login: "Morgul", url: "https://github.com/Morgul", contributions: 2 },
   { login: "BahamutRU", url: "https://github.com/BahamutRU", contributions: 2 },
+  { login: "Morgul", url: "https://github.com/Morgul", contributions: 2 },
+  { login: "Javedz678", url: "https://github.com/Javedz678", contributions: 2 },
+  { login: "MagicGoddess", url: "https://github.com/MagicGoddess", contributions: 2 },
+  { login: "OnlyJimmy", url: "https://github.com/OnlyJimmy", contributions: 2 },
+  { login: "RaynoldVanHeyningen", url: "https://github.com/RaynoldVanHeyningen", contributions: 2 },
   { login: "smurfboyyessir", url: "https://github.com/smurfboyyessir", contributions: 1 },
   { login: "taiman724", url: "https://github.com/taiman724", contributions: 1 },
   { login: "abhi-0203", url: "https://github.com/abhi-0203", contributions: 1 },
@@ -118,9 +120,7 @@ export function HomeCreditsModal({ open, onClose }: { open: boolean; onClose: ()
             <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
               {t("home.credits.contributors")}
             </h3>
-            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              {t("home.credits.contributorsDescription")}
-            </p>
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">{t("home.credits.contributorsDescription")}</p>
           </div>
           <div className="grid max-h-[18rem] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
             {CONTRIBUTORS.map((contributor) => (

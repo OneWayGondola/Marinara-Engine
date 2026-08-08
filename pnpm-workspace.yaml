@@ -1,9 +1,9 @@
 packages:
   - "packages/*"
 
-# Let plain pnpm fallbacks delegate to the exact repo pin. The pnpm engine floor
-# makes an already-running older launcher fail closed before dependency install;
-# the refreshed launcher then obtains the hash-pinned version on relaunch.
+# Let plain pnpm fallbacks delegate to the exact repo pin. The package engine
+# range also permits the previous 10.33.2 launcher to finish the one-time handoff;
+# refreshed launchers then obtain the hash-pinned version without a manual restart.
 managePackageManagerVersions: true
 
 # Supply-chain guardrails: delay newly published package versions long enough for

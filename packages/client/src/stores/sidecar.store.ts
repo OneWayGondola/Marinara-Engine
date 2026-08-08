@@ -112,6 +112,7 @@ interface SidecarState {
         | "temperature"
         | "topP"
         | "topK"
+        | "maxParallelJobs"
         | "gpuLayers"
         | "enableNativeToolCalls"
         | "embeddingPooling"

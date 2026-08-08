@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Activity,
   Check,
   ChevronLeft,
   Clock3,
@@ -53,6 +54,11 @@ import {
   type PersonalExtensionImportDraft,
 } from "../../../lib/personal-extension-import";
 import { downloadZipFile } from "../../../lib/download-zip";
+import { formatBytes } from "../../../lib/format";
+import {
+  getPersonalExtensionTraffic,
+  subscribePersonalExtensionTraffic,
+} from "../../../lib/personal-extension-traffic";
 import {
   createPersonalExtensionPackageFilename,
   createPersonalExtensionPackageFiles,
@@ -199,6 +205,17 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
   const [editorId, setEditorId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditorDraft>(EMPTY_DRAFT);
   const [importing, setImporting] = useState(false);
+  const [, refreshTraffic] = useState(0);
+
+  useEffect(() => {
+    const refresh = () => refreshTraffic((value) => value + 1);
+    const unsubscribe = subscribePersonalExtensionTraffic(refresh);
+    const intervalId = window.setInterval(refresh, 10_000);
+    return () => {
+      unsubscribe();
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const editingExtension = useMemo(
     () => (editorId ? (extensions.find((extension) => extension.id === editorId) ?? null) : null),
@@ -656,10 +673,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
         >
           <AlertTriangle
             size="0.875rem"
-            className={cn(
-              "mt-0.5 shrink-0",
-              fullPageAccess ? "text-[var(--destructive)]" : "text-[var(--primary)]",
-            )}
+            className={cn("mt-0.5 shrink-0", fullPageAccess ? "text-[var(--destructive)]" : "text-[var(--primary)]")}
           />
           {draft.runtime === "server"
             ? t("settings.personalExtensions.sandbox.server")
@@ -905,6 +919,8 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
             <div className="flex flex-col gap-1.5">
               {extensions.map((extension) => {
                 const approved = extension.approvedHash === extension.contentHash;
+                const hasFullPageAccess = extension.capabilities.includes(PERSONAL_EXTENSION_FULL_PAGE_CAPABILITY);
+                const traffic = getPersonalExtensionTraffic(extension.id);
                 const status = extension.enabled
                   ? extension.runtime === "server"
                     ? extension.serverStatus === "error"
@@ -955,7 +971,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                               ? localizeUi("ui.panels.extensionsettings.server")
                               : localizeUi("settings.notifications.browser")}
                           </span>
-                          {extension.capabilities.includes(PERSONAL_EXTENSION_FULL_PAGE_CAPABILITY) && (
+                          {hasFullPageAccess && (
                             <span className="rounded bg-[var(--destructive)]/10 px-1.5 py-0.5 text-[0.5625rem] font-semibold text-[var(--destructive)] ring-1 ring-[var(--destructive)]/30">
                               {t("settings.personalExtensions.capabilities.full_page_access.label")}
                             </span>
@@ -979,6 +995,21 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                         <span className="mt-0.5 block font-mono text-[0.5625rem] text-[var(--muted-foreground)]">
                           {shortHash(extension.contentHash)}
                         </span>
+                        {hasFullPageAccess && traffic.requests > 0 && (
+                          <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.5625rem] text-[var(--muted-foreground)]">
+                            <Activity size="0.625rem" aria-hidden="true" />
+                            {t("settings.personalExtensions.traffic.summary", {
+                              requests: traffic.requests,
+                              bytes: formatBytes(traffic.bytes),
+                              rate: traffic.requestsLastMinute,
+                            })}
+                            {traffic.sustainedHighRate && (
+                              <span className="rounded bg-[var(--destructive)]/10 px-1 py-0.5 font-semibold text-[var(--destructive)] ring-1 ring-[var(--destructive)]/25">
+                                {t("settings.personalExtensions.traffic.highRate")}
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </span>
                     </button>
                     <div className="absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">

@@ -5,6 +5,15 @@ const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const MAX_PROTOCOL_FILE_BYTES = 64 * 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 2_000;
+// #4706: adaptive polling — hot only while traffic is flowing, idle cadence
+// otherwise, and heartbeats at 5s instead of a flash write every second.
+// These values MUST stay in sync with services/extensions/sandbox-protocol.ts
+// (the runner is a standalone sandbox asset and cannot import server modules);
+// scripts/regressions/extension-ipc.regression.ts pins the pairing.
+const HOT_POLL_MS = 25;
+const IDLE_POLL_MS = 250;
+const HOT_WINDOW_MS = 3_000;
+const HEARTBEAT_INTERVAL_MS = 5_000;
 const [inputPath, outputPath, heartbeatPath] = process.argv.slice(2);
 if (!inputPath || !outputPath || !heartbeatPath) process.exit(64);
 const callbacks = new Set();
@@ -17,11 +26,18 @@ let writeQueue = Promise.resolve();
 let inputOffset = 0;
 let inputBuffer = Buffer.alloc(0);
 let readingInput = false;
+let lastActivityAt = Date.now();
+let inputTimer = null;
+let inputChainStopped = false;
 
 function send(message) {
   const serialized = JSON.stringify(message);
   if (Buffer.byteLength(serialized, "utf8") > MAX_MESSAGE_BYTES) return;
   writeQueue = writeQueue.then(() => appendFile(outputPath, `${serialized}\n`, "utf8"));
+  // Runner->host traffic predicts a reply (storage-result) on the input file;
+  // flip the adaptive input poll back to the hot cadence (#4706).
+  lastActivityAt = Date.now();
+  scheduleInputPoll(HOT_POLL_MS);
   return writeQueue;
 }
 
@@ -92,7 +108,8 @@ async function stop() {
       send({ type: "log", level: "warn", args: [`Cleanup failed: ${error instanceof Error ? error.message : String(error)}`] });
     }
   }
-  clearInterval(inputPoller);
+  inputChainStopped = true;
+  if (inputTimer) clearTimeout(inputTimer);
   await send({ type: "stopped" });
   await writeQueue;
   await inputHandle.close();
@@ -209,12 +226,21 @@ const pollInput = async () => {
     const chunk = Buffer.alloc(available);
     const { bytesRead } = await inputHandle.read(chunk, 0, available, inputOffset);
     inputOffset += bytesRead;
+    if (bytesRead > 0) lastActivityAt = Date.now();
     inputBuffer = Buffer.concat([inputBuffer, chunk.subarray(0, bytesRead)]);
     while (inputBuffer.includes(0x0a)) {
       const newline = inputBuffer.indexOf(0x0a);
       const line = inputBuffer.subarray(0, newline).toString("utf8");
       inputBuffer = inputBuffer.subarray(newline + 1);
       if (line) handleMessage(line);
+    }
+    // Cap the residual (incomplete message) too — the same per-message
+    // semantic the host applies. A newline-less message must not grow the
+    // buffer unbounded between polls.
+    if (inputBuffer.byteLength > MAX_MESSAGE_BYTES) {
+      send({ type: "fatal", message: "Extension message exceeded the size limit" });
+      void stop();
+      return;
     }
   } catch (error) {
     send({ type: "fatal", message: error instanceof Error ? error.message : String(error) });
@@ -223,11 +249,22 @@ const pollInput = async () => {
     readingInput = false;
   }
 };
-const inputPoller = setInterval(() => void pollInput(), 25);
-void pollInput();
+// #4706: self-scheduling chain — 25ms while the start handshake is pending or
+// traffic moved within the hot window, 250ms at idle. The handle is
+// REASSIGNED every tick; the heartbeat interval anchors process liveness.
+function scheduleInputPoll(delayMs) {
+  if (inputChainStopped) return;
+  if (inputTimer) clearTimeout(inputTimer);
+  const delay =
+    delayMs ?? (!extension || Date.now() - lastActivityAt <= HOT_WINDOW_MS ? HOT_POLL_MS : IDLE_POLL_MS);
+  inputTimer = setTimeout(() => {
+    void pollInput().finally(() => scheduleInputPoll());
+  }, delay);
+}
+void pollInput().finally(() => scheduleInputPoll());
 heartbeat = setInterval(() => {
   void writeFile(heartbeatPath, String(Date.now()), "utf8");
-}, 1_000);
+}, HEARTBEAT_INTERVAL_MS);
 
 process.on("SIGTERM", () => void stop());
 process.on("SIGINT", () => void stop());

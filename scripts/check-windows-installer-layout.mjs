@@ -44,6 +44,38 @@ try {
         "The shared workspace build must not invoke nested pnpm; Windows Corepack-only launchers do not put a global pnpm executable on PATH.",
     });
   }
+  const npmFallbackStart = code.indexOf('DetailPrint "Temporary pnpm unavailable;');
+  const npmFallbackEnd = code.indexOf(
+    'MessageBox MB_OK|MB_ICONSTOP "pnpm ${PNPM_VERSION} could not be',
+    npmFallbackStart,
+  );
+  const npmFallback =
+    npmFallbackStart >= 0 && npmFallbackEnd > npmFallbackStart ? code.slice(npmFallbackStart, npmFallbackEnd) : "";
+  const npmFallbackSequence = [
+    "npm install --global pnpm@${PNPM_VERSION}",
+    "npm config get prefix",
+    '${StrTrimNewLines} $NPM_PREFIX "$NPM_PREFIX"',
+    't "$NPM_PREFIX;$1"',
+    "cmd /c pnpm --version",
+  ];
+  let previousFallbackStep = -1;
+  const npmFallbackIsOrdered = npmFallbackSequence.every((step) => {
+    const position = npmFallback.indexOf(step);
+    if (position <= previousFallbackStep) return false;
+    previousFallbackStep = position;
+    return true;
+  });
+  if (!npmFallbackIsOrdered) {
+    failures.push({
+      message:
+        "The Windows installer must install pinned pnpm, resolve and trim npm's prefix, update PATH, then verify pnpm in order.",
+    });
+  }
+  if (npmFallback.includes('t "$APPDATA\\npm;$1"')) {
+    failures.push({
+      message: "The Windows installer must not assume the default npm prefix; custom global prefixes must work.",
+    });
+  }
 
   const uninstallStart = code.indexOf('Section "Uninstall"');
   const packageRemoval = code.indexOf('RMDir /r "$INSTDIR\\packages"', uninstallStart);

@@ -24,7 +24,10 @@ assert.equal(
   "Larger scan depths must retain the preceding user message",
 );
 
-const generateRouteSource = readFileSync(join(repositoryRoot, "packages/server/src/routes/generate.routes.ts"), "utf8");
+const generateRouteSource = readFileSync(
+  join(repositoryRoot, "packages/server/src/routes/generate.routes.ts"),
+  "utf8",
+).replace(/\r\n/gu, "\n");
 assert.match(
   generateRouteSource,
   /if \(agent\.phase !== "post_processing"\)[\s\S]{0,240}matchCustomAgentActivation\(agent\.settings, chatMessages\)/u,
@@ -44,7 +47,11 @@ const postGenerationSource = generateRouteSource.slice(
   generateRouteSource.indexOf("if (hasPostWork && completedResponse"),
   generateRouteSource.indexOf("// ── Text rewrite/editing agents"),
 );
-assert.match(postGenerationSource, /content: completedResponse,/u, "Lorebook triggers must receive the completed response");
+assert.match(
+  postGenerationSource,
+  /content: completedResponse,/u,
+  "Lorebook triggers must receive the completed response",
+);
 assert.match(
   postGenerationSource,
   /const postAgentContext:[\s\S]{0,220}mainResponse: completedResponse/u,
@@ -62,7 +69,7 @@ assert.match(
 );
 assert.match(
   generateRouteSource,
-  /const hasPostWork = hasPostProcessingAgents \|\| parallelResults\.length > 0 \|\| holdForTextRewrite;/u,
+  /const hasPostWork =\s*!recoveredAlreadyAppliedOwnerTurn\s*&&\s*\(hasPostProcessingAgents \|\| parallelResults\.length > 0 \|\| holdForTextRewrite\);/u,
   "Held responses must keep the outer post-work path reachable when every custom rewrite agent is inactive",
 );
 assert.match(

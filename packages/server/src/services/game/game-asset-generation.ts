@@ -905,6 +905,8 @@ export interface SceneIllustrationGenRequest {
   reason?: string;
   characters?: string[];
   characterDescriptions?: string[];
+  /** Ensure requested appearance notes survive a selected formatter that omits the appearance variable. */
+  ensureCharacterAppearance?: boolean;
   slug?: string;
   genre?: string;
   setting?: string;
@@ -1160,10 +1162,16 @@ async function buildSceneIllustrationRawPrompt(req: SceneIllustrationGenRequest)
       : req.promptOverridesStorage
         ? await loadPrompt(req.promptOverridesStorage, GAME_SCENE_ILLUSTRATION, sceneIllustrationVars)
         : GAME_SCENE_ILLUSTRATION.defaultBuilder(sceneIllustrationVars);
-  const finalPrompt =
-    imagePromptInstructionsLine && !rawIllustrationPrompt.includes(imagePromptInstructionsLine)
-      ? `${rawIllustrationPrompt}\n${imagePromptInstructionsLine}`
+  const rawPromptWithRequiredAppearance =
+    req.ensureCharacterAppearance &&
+    sceneIllustrationVars.appearanceNotesBlock &&
+    !rawIllustrationPrompt.includes(sceneIllustrationVars.appearanceNotesBlock)
+      ? `${rawIllustrationPrompt}\n${sceneIllustrationVars.appearanceNotesBlock}`
       : rawIllustrationPrompt;
+  const finalPrompt =
+    imagePromptInstructionsLine && !rawPromptWithRequiredAppearance.includes(imagePromptInstructionsLine)
+      ? `${rawPromptWithRequiredAppearance}\n${imagePromptInstructionsLine}`
+      : rawPromptWithRequiredAppearance;
   return finalPrompt;
 }
 

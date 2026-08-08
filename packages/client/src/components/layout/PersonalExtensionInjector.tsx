@@ -18,6 +18,7 @@ import {
   removePersonalExtensionContributions,
   setPersonalExtensionContributionDispatcher,
 } from "../../lib/personal-extension-contributions";
+import { fetchForPersonalExtension } from "../../lib/personal-extension-traffic";
 import { useChatStore } from "../../stores/chat.store";
 
 type ActiveClientExtension = {
@@ -41,6 +42,7 @@ type FullPageExtensionApi = {
     patch: (value: Record<string, unknown>) => Promise<Record<string, unknown>>;
     clear: () => Promise<void>;
   }>;
+  fetch: typeof window.fetch;
   setTimeout: (callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => number;
   clearTimeout: (timerId: number) => void;
   setInterval: (callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => number;
@@ -296,6 +298,7 @@ function createFullPageExtensionApi(active: ActiveFullPageExtension): FullPageEx
       error: console.error.bind(console, `[Personal Extension ${active.extension.name}]`),
     }),
     storage,
+    fetch: (input, init) => fetchForPersonalExtension(active.extension.id, input, init),
     setTimeout(callback, delay, ...args) {
       const timerId = window.setTimeout(() => {
         active.timeoutIds.delete(timerId);

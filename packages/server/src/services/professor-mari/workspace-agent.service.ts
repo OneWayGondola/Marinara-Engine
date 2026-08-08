@@ -6,7 +6,6 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
-import { jsonrepair } from "jsonrepair";
 import type {
   BaseLLMProvider,
   ChatCompletionResult,
@@ -34,6 +33,7 @@ import { apiConnections } from "../../db/schema/index.js";
 import { decryptApiKey } from "../../utils/crypto.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { logger } from "../../lib/logger.js";
+import { tryParseJsonRecord } from "../../lib/json-repair.js";
 import { PROFESSOR_MARI_AGENT_CATALOG_KNOWLEDGE } from "./official-agent-knowledge.js";
 import {
   formatDocumentationRead,
@@ -170,6 +170,52 @@ const SKIPPED_DIRS = new Set([
   "coverage",
   ".gradle",
 ]);
+
+export const PROFESSOR_MARI_APP_DATA_ACTIONS = [
+  "character.list",
+  "character.get",
+  "character.search",
+  "character.create",
+  "character.update",
+  "character.folder.list",
+  "character.moveToFolder",
+  "persona.list",
+  "persona.active",
+  "persona.get",
+  "persona.search",
+  "persona.create",
+  "persona.update",
+  "lorebook.list",
+  "lorebook.get",
+  "lorebook.entries",
+  "lorebook.getEntry",
+  "lorebook.search",
+  "lorebook.create",
+  "lorebook.update",
+  "lorebook.addEntry",
+  "lorebook.updateEntry",
+  "theme.list",
+  "theme.active",
+  "theme.get",
+  "theme.create",
+  "theme.update",
+  "theme.setActive",
+  "personal_extension.list",
+  "personal_extension.get",
+  "personal_extension.search",
+  "personal_extension.create",
+  "personal_extension.update",
+  "agent.list",
+  "agent.get",
+  "agent.search",
+  "agent.create",
+  "agent.update",
+  "preset.list",
+  "preset.get",
+  "preset.search",
+  "preset.create",
+  "preset.update",
+] as const;
 
 const WORKSPACE_TOOL_DEFINITIONS: WorkspaceToolDefinition[] = [
   {
@@ -311,56 +357,13 @@ const WORKSPACE_TOOL_DEFINITIONS: WorkspaceToolDefinition[] = [
   {
     name: "app_data",
     description:
-      "Read or change live app data through structured actions, without shell commands. Use this for characters, character folders, personas, lorebooks, lorebook entries, themes, Personal Extension drafts, agents, and prompt presets.",
+      "Read or change live app data through structured actions, without shell commands. Use this for characters, character folders, personas, lorebooks, lorebook entries, themes, Personal Extension drafts, agents, and prompt presets. lorebook.entries returns entry summaries; call lorebook.getEntry with entryId to read one complete entry body.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: [
-            "character.list",
-            "character.get",
-            "character.search",
-            "character.create",
-            "character.update",
-            "character.folder.list",
-            "character.moveToFolder",
-            "persona.list",
-            "persona.active",
-            "persona.get",
-            "persona.search",
-            "persona.create",
-            "persona.update",
-            "lorebook.list",
-            "lorebook.get",
-            "lorebook.entries",
-            "lorebook.search",
-            "lorebook.create",
-            "lorebook.update",
-            "lorebook.addEntry",
-            "lorebook.updateEntry",
-            "theme.list",
-            "theme.active",
-            "theme.get",
-            "theme.create",
-            "theme.update",
-            "theme.setActive",
-            "personal_extension.list",
-            "personal_extension.get",
-            "personal_extension.search",
-            "personal_extension.create",
-            "personal_extension.update",
-            "agent.list",
-            "agent.get",
-            "agent.search",
-            "agent.create",
-            "agent.update",
-            "preset.list",
-            "preset.get",
-            "preset.search",
-            "preset.create",
-            "preset.update",
-          ],
+          enum: PROFESSOR_MARI_APP_DATA_ACTIONS,
         },
         id: { type: "string" },
         characterId: { type: "string" },
@@ -490,10 +493,10 @@ Command families:
 - \`mari db\`: generic live app data and storage-backed rows, including customization tables such as \`agent_configs\` and \`custom_tools\` when no narrower helper exists.
 - \`mari themes\`: synced custom themes and active theme state.
 - \`mari images\`: image-generation connections, HITL image prompt previews, generated/edited preview assets, and assignment/deletion for avatars, personas, lorebooks, sprites, backgrounds, and galleries.
-- \`mari wiki\`: read-only Fandom/MediaWiki discovery and page reads.
+- \`mari wiki\`: read-only Fandom and Wikipedia/MediaWiki discovery and page reads. Use it for trusted Wikipedia links instead of raw shell networking.
 - \`mari characters\`: list, get, search, create, update, delete. Prefer this helper for character edits, including backstory, appearance, and About Me changes. Use \`app_data\` \`character.folder.list\` and \`character.moveToFolder\` for character folders.
 - \`mari personas\`: list, active, get, search, create, update, delete. Prefer this helper for persona edits.
-- \`mari lorebooks\`: list, get, entries <lorebook-id>, search, create, update <lorebook-id>, add-entry <lorebook-id>, update-entry <entry-id>, delete-entry <entry-id>, link-character, unlink-character, delete.
+- \`mari lorebooks\`: list, get, entries <lorebook-id>, get-entry <entry-id>, search, create, update <lorebook-id>, add-entry <lorebook-id>, update-entry <entry-id>, delete-entry <entry-id>, link-character, unlink-character, delete.
 - \`mari presets\`: no dedicated shell helper — use \`app_data\` \`preset.*\` for preset reads/writes. \`preset.create\` and \`preset.update\` can include \`groups\`, \`sections\`, and \`choiceBlocks\` for preset variables. Use \`mari db\` only for advanced raw-table repairs after inspecting schemas.
 - \`mari chats\`: read-only list/get/messages/search.
 - When the user limits chat evidence, preserve that boundary in every retrieval call. For "the last N messages", use \`mari chats messages <chat-id> --last N\`. For "after post #N", use \`mari chats messages <chat-id> --after-post N\`; post numbers are 1-indexed and match the numbers shown in chat. For a large requested range, page only inside it with \`--limit <page-size> --offset <already-read>\`. Never replace a requested recent/post-number range with an unbounded chat read.
@@ -554,7 +557,7 @@ Field rules:
 ${MARI_GUIDED_SEQUENCES}
 
 \`app_data\` quick reference:
-- Reads: \`character.list|get|search|folder.list\`, \`persona.list|active|get|search\`, \`lorebook.list|get|entries|search\`, \`theme.list|active|get\`, \`personal_extension.list|get|search\`, \`agent.list|get|search\`, \`preset.list|get|search\`.
+- Reads: \`character.list|get|search|folder.list\`, \`persona.list|active|get|search\`, \`lorebook.list|get|entries|getEntry|search\`, \`theme.list|active|get\`, \`personal_extension.list|get|search\`, \`agent.list|get|search\`, \`preset.list|get|search\`.
 - Writes: \`character.create|update|moveToFolder\`, \`persona.create|update\`, \`lorebook.create|update|addEntry|updateEntry\`, \`theme.create|update|setActive\`, \`personal_extension.create|update\`, \`agent.create|update\`, \`preset.create|update\`.
 - Character folders: call \`character.folder.list\` to resolve the destination, then \`character.moveToFolder\` with \`characterId\` and either \`folderId\` or \`folderName\`. A move removes the character from its previous folder. When the user explicitly asks for the move, set \`apply:true\`, then verify with \`character.folder.list\`.
 - Put write fields in \`data\` for creates and \`patch\` for updates. Use \`entryId\` for \`lorebook.updateEntry\`; use \`lorebookId\` only for a lorebook or for \`lorebook.addEntry\`.
@@ -562,6 +565,7 @@ ${MARI_GUIDED_SEQUENCES}
 - Character generation: put the full card in \`data\`; do not create a name-only placeholder. \`firstMes\` and \`firstMessage\` both map to the opening message.
 - About Me writing: read the target character or persona first, write the bio in their own voice, then put it in \`patch.aboutMe\` on the matching update action with \`apply:true\`.
 - Lorebook generation: put the complete \`entries\` array inside \`data\` on \`lorebook.create\`. Marinara saves the lorebook and its entries together, so do not create an empty lorebook and promise to fill it later.
+- Lorebook reading: \`lorebook.entries\` is a compact index with entry IDs and content previews. Call \`lorebook.getEntry\` with each relevant \`entryId\` before reviewing or rewriting its full content.
 - For \`preset.create\`, put prompt sections in \`data.sections\` and preset variables in \`data.choiceBlocks\`. Each choice block needs \`variableName\`, \`question\`, and \`options\` with \`label\`/\`value\` pairs.
 - Custom image agents are supported by the live runtime. Use \`data.resultType: "image_prompt"\`, enable \`settings.customCapabilities.trigger_image_generation\`, and have the agent return \`shouldGenerate\` plus \`prompt\`. Marker-triggered agents should also set \`activationKeywords\`. Do not claim that only Illustrator can generate image prompts.
 - Existing-data changes: use \`apply:true\` for requested \`*.update\`, \`lorebook.updateEntry\`, and \`theme.setActive\`. Marinara will save first and show the user an in-chat Keep/Restore review card for reversible changes.
@@ -572,6 +576,7 @@ ${MARI_GUIDED_SEQUENCES}
 Examples:
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"lorebook.list","limit":50}}],"stop":false}
 {"say":"I found the lorebook. I'll read its entries now.","commands":[{"name":"app_data","arguments":{"action":"lorebook.entries","lorebookId":"lorebook-id","limit":100}}],"stop":false}
+{"say":"I found the relevant entry. I'll read its complete body now.","commands":[{"name":"app_data","arguments":{"action":"lorebook.getEntry","entryId":"entry-id"}}],"stop":false}
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"persona.create","data":{"name":"Dr. Marisia Voss","description":"A successful alternate version of Mari.","personality":"Confident, witty, organized, still warmly sarcastic."},"reason":"User requested a test persona","apply":true}}],"stop":false}
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"character.create","data":{"name":"Dr. Voss","description":"A brilliant field researcher.","personality":"Exacting, curious, dryly funny.","firstMes":"You are late. Sit down.","appearance":"Silver hair and a white laboratory coat."},"reason":"User requested a character","apply":true}}],"stop":false}
 Verified lorebook creation sequence (three turns):
@@ -866,6 +871,7 @@ function connectionSummary(connection: WorkspaceConnection | null): MariWorkspac
     name: connection.name,
     provider: connection.provider,
     model: connection.model,
+    maxContext: connection.maxContext,
   };
 }
 
@@ -887,7 +893,7 @@ function createProviderForConnection(connection: WorkspaceConnection): BaseLLMPr
 
 function parseToolArgumentsValue(value: unknown): Record<string, unknown> {
   if (isRecord(value)) return value;
-  if (typeof value === "string") return tryParseJsonPayload(value) ?? {};
+  if (typeof value === "string") return tryParseJsonRecord(value) ?? {};
   return {};
 }
 
@@ -906,65 +912,12 @@ function hasActionPayload(payload: Record<string, unknown>): boolean {
   );
 }
 
-function closeOpenJsonContainers(raw: string): string | null {
-  const stack: string[] = [];
-  let inString = false;
-  let escaped = false;
-  for (const char of raw) {
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === "{" || char === "[") {
-      stack.push(char);
-      continue;
-    }
-    if (char !== "}" && char !== "]") continue;
-    const expected = char === "}" ? "{" : "[";
-    if (stack.pop() !== expected) return null;
-  }
-  if (inString) return null;
-  return (
-    raw +
-    stack
-      .reverse()
-      .map((opening) => (opening === "{" ? "}" : "]"))
-      .join("")
-  );
-}
-
-function tryParseJsonPayload(raw: string): Record<string, unknown> | null {
-  let repaired: string | null = null;
-  try {
-    repaired = jsonrepair(raw);
-  } catch {
-    // Fall through to the conservative container-closing recovery.
-  }
-  const candidates = [raw, repaired, closeOpenJsonContainers(raw), repaired && closeOpenJsonContainers(repaired)];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      return isRecord(parsed) ? parsed : null;
-    } catch {
-      // Try the next conservative repair candidate.
-    }
-  }
-  return null;
-}
-
 function findJsonPayloadMatch(content: string): JsonPayloadMatch | null {
   const fencedRe = /```(?:json)?\s*([\s\S]*?)```/gi;
   for (const match of content.matchAll(fencedRe)) {
     const rawJson = match[1]?.trim();
     if (!rawJson) continue;
-    const payload = tryParseJsonPayload(rawJson);
+    const payload = tryParseJsonRecord(rawJson);
     if (!payload || !hasActionPayload(payload)) continue;
     const start = match.index ?? 0;
     return { payload, raw: match[0], start, end: start + match[0].length };
@@ -993,7 +946,7 @@ function findJsonPayloadMatch(content: string): JsonPayloadMatch | null {
         depth -= 1;
         if (depth !== 0) continue;
         const raw = content.slice(start, index + 1);
-        const payload = tryParseJsonPayload(raw);
+        const payload = tryParseJsonRecord(raw);
         if (payload && hasActionPayload(payload)) return { payload, raw, start, end: index + 1 };
         closedWithoutAction = true;
         break;
@@ -1001,7 +954,7 @@ function findJsonPayloadMatch(content: string): JsonPayloadMatch | null {
     }
     if (closedWithoutAction) continue;
     const incompleteRaw = content.slice(start).trim();
-    const incompletePayload = tryParseJsonPayload(incompleteRaw);
+    const incompletePayload = tryParseJsonRecord(incompleteRaw);
     if (incompletePayload && hasActionPayload(incompletePayload)) {
       return { payload: incompletePayload, raw: incompleteRaw, start, end: content.length };
     }
@@ -1097,7 +1050,7 @@ function parseXmlCommandCalls(content: string): WorkspaceCommandCall[] {
     const name = match[1];
     if (!name || !isWorkspaceToolName(name)) continue;
     const rawBody = match[2]?.trim() ?? "{}";
-    let args = tryParseJsonPayload(rawBody) ?? {};
+    let args = tryParseJsonRecord(rawBody) ?? {};
     if (name === "bash" && !args.command && rawBody && !rawBody.startsWith("{")) args = { command: rawBody };
     calls.push({ id: newToolCallId(name, index), name, arguments: args, raw: match[0] });
   }
@@ -1165,7 +1118,7 @@ function assistantHistoryContentForAction(
 
 function assistantHistoryContentFromVisibleText(content: string): string {
   const trimmed = content.trim();
-  const payload = tryParseJsonPayload(trimmed);
+  const payload = tryParseJsonRecord(trimmed);
   if (payload && hasActionPayload(payload)) return trimmed;
   return assistantHistoryContentForAction({ visibleText: trimmed, commands: [], stop: true });
 }
@@ -1443,7 +1396,7 @@ function appDataActionLooksReadOnly(action: unknown): boolean {
     .trim()
     .toLowerCase()
     .replace(/[-_\s]+/g, "");
-  return /\.(list|get|search|active|entries)$/.test(normalized);
+  return /\.(list|get|getentry|search|active|entries)$/.test(normalized);
 }
 
 function visibleTextRequestsUserApproval(text: string): boolean {
@@ -1516,9 +1469,10 @@ export function workspaceTextClaimsMutationCompletion(text: string): boolean {
   const completedMutation =
     "created|updated|changed|deleted|removed|renamed|wrote|written|fixed|implemented|built|installed|imported|exported|saved|enabled|disabled|assigned|linked|unlinked|generated|moved|copied|replaced|verified";
   return (
-    new RegExp(`\\b(?:i(?:'ve| have)?|we(?:'ve| have)?|it(?:'s| is)?|that(?:'s| is)?)\\s+(?:successfully\\s+)?(?:${completedMutation})\\b`, "iu").test(
-      normalized,
-    ) ||
+    new RegExp(
+      `\\b(?:i(?:'ve| have)?|we(?:'ve| have)?|it(?:'s| is)?|that(?:'s| is)?)\\s+(?:successfully\\s+)?(?:${completedMutation})\\b`,
+      "iu",
+    ).test(normalized) ||
     new RegExp(`\\b(?:is|was|has been)\\s+(?:successfully\\s+)?(?:${completedMutation})\\b`, "iu").test(normalized)
   );
 }
@@ -1757,9 +1711,7 @@ export class ProfessorMariWorkspaceService {
     if (!connection) throw new Error("Set up a language connection before using Professor Mari workspace mode.");
 
     const attachments = normalizeProfessorMariAttachments(args.attachments);
-    let userMessage = args.existingUserMessageId
-      ? await chatStorage.getMessage(args.existingUserMessageId)
-      : null;
+    let userMessage = args.existingUserMessageId ? await chatStorage.getMessage(args.existingUserMessageId) : null;
     if (args.existingUserMessageId) {
       if (!userMessage || userMessage.chatId !== args.chatId || userMessage.role !== "user") {
         throw new Error("Existing Professor Mari user message was not found in this chat.");
@@ -1793,6 +1745,8 @@ export class ProfessorMariWorkspaceService {
     let assistantText = "";
     let thinkingText = "";
     let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let latestUsage: LLMUsage | undefined;
+    let latestFinishReason: string | null = null;
     const commandResultsForContinuity: WorkspaceCommandResult[] = [];
     let assistantMessagePersisted = false;
 
@@ -1819,7 +1773,16 @@ export class ProfessorMariWorkspaceService {
         commandResults: commandResultsForContinuity,
       });
       if (continuity) extraUpdate.mariWorkspaceContinuity = continuity;
-      extraUpdate.generationInfo = { provider: connection.provider, model: connection.model, usage: totalUsage };
+      extraUpdate.generationInfo = {
+        provider: connection.provider,
+        model: connection.model,
+        temperature: null,
+        tokensPrompt: latestUsage?.promptTokens ?? null,
+        tokensCompletion: latestUsage?.completionTokens ?? null,
+        durationMs: null,
+        finishReason: latestFinishReason,
+        usage: totalUsage,
+      };
       await chatStorage.updateMessageExtra(message.id, extraUpdate);
       await chatStorage.updateSwipeExtra(message.id, 0, extraUpdate);
       return message;
@@ -1841,6 +1804,8 @@ export class ProfessorMariWorkspaceService {
       for (let round = 0; round < MAX_COMMAND_ROUNDS; round += 1) {
         if (controller.signal.aborted) throw new Error("aborted");
         const result = await this.chatCompleteWorkspace(provider, messages, baseOptions, () => {});
+        latestUsage = result.usage;
+        latestFinishReason = result.finishReason ?? null;
         const usage = mapUsage(result.usage);
         totalUsage = {
           promptTokens: totalUsage.promptTokens + usage.promptTokens,
@@ -1955,12 +1920,14 @@ export class ProfessorMariWorkspaceService {
 
         messages.push({ role: "assistant", content: action.assistantHistoryContent });
 
+        if (isLengthFinishReason(result.finishReason)) {
+          const content = "Mari hit the model output limit. Ask her to continue and she can pick up from here.";
+          appendTraceStatus(workspaceTrace, content);
+          args.onEvent({ type: "status", data: { content, kind: "output_limit", level: "warning" } });
+          break;
+        }
+
         if (action.commands.length === 0) {
-          if (isLengthFinishReason(result.finishReason)) {
-            const content = "Mari hit the model output limit. Ask her to continue and she can pick up from here.";
-            appendTraceStatus(workspaceTrace, content);
-            args.onEvent({ type: "status", data: { content, kind: "output_limit", level: "warning" } });
-          }
           break;
         }
 
@@ -2002,6 +1969,8 @@ export class ProfessorMariWorkspaceService {
               "You reached the workspace command round limit. Do not issue more commands. Summarize what you learned or what remains blocked.",
           });
           const finalResult = await this.chatCompleteWorkspace(provider, messages, baseOptions, () => {});
+          latestUsage = finalResult.usage;
+          latestFinishReason = finalResult.finishReason ?? null;
           const finalUsage = mapUsage(finalResult.usage);
           totalUsage = {
             promptTokens: totalUsage.promptTokens + finalUsage.promptTokens,

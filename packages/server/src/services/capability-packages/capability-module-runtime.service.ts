@@ -24,7 +24,10 @@ import {
 } from "./capability-command-registry.service.js";
 import { registerCapabilityService } from "./capability-service-registry.service.js";
 import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
-import { createCapabilityEmbeddingHost } from "./capability-embedding.service.js";
+import {
+  createCapabilityEmbeddingHost,
+  createConfiguredCapabilityEmbeddingHost,
+} from "./capability-embedding.service.js";
 import { createCapabilityPersistenceHost } from "./capability-persistence.service.js";
 import { createCapabilityResourceHost } from "./capability-resources.service.js";
 import { registerCapabilityPrivilegedRoutes } from "./capability-route-registration.service.js";
@@ -45,18 +48,24 @@ type CapabilityActivationContext = {
     registerService<T>(key: string, service: T): Cleanup;
     /** Contribute text to each turn's system prompt. Requires the `prompt-context` permission. */
     registerPromptContext(contributor: CapabilityPromptContextContributor): Cleanup;
-    registerPrivilegedRoutes(routes: import("fastify").FastifyPluginAsync, options: { prefix: string }): Promise<Cleanup>;
+    registerPrivilegedRoutes(
+      routes: import("fastify").FastifyPluginAsync,
+      options: { prefix: string },
+    ): Promise<Cleanup>;
   };
 };
 
-function createCapabilityRuntimeHost(app: FastifyInstance, packageId: string): CapabilityRuntimeHost {
+async function createCapabilityRuntimeHost(app: FastifyInstance, packageId: string): Promise<CapabilityRuntimeHost> {
+  const agents = app.db ? createAgentsStorage(app.db) : null;
+  const config = await agents?.getByType(packageId);
+  const embeddings = app.db
+    ? await createConfiguredCapabilityEmbeddingHost(app.db, config?.connectionId)
+    : createCapabilityEmbeddingHost();
   return Object.freeze({
-    embeddings: createCapabilityEmbeddingHost(),
+    embeddings,
     async getAgentConfig() {
-      const config = await createAgentsStorage(app.db).getByType(packageId);
-      return config
-        ? { connectionId: config.connectionId, settings: parseAgentSettingsRecord(config.settings) }
-        : null;
+      const config = await agents?.getByType(packageId);
+      return config ? { connectionId: config.connectionId, settings: parseAgentSettingsRecord(config.settings) } : null;
     },
     isDebugAgentsEnabled,
     json: Object.freeze({ parseJsonish: parseGameJsonish }),
@@ -163,7 +172,7 @@ class CapabilityModuleRuntime {
         dataDir: DATA_DIR,
         package: installed,
         api: {
-          runtime: createCapabilityRuntimeHost(app, installed.id),
+          runtime: await createCapabilityRuntimeHost(app, installed.id),
           registerTurnGameEngine: (engine) => trackCleanup(registerTurnGameEngine(engine)),
           registerConversationCommand: (registration) =>
             trackCleanup(registerCapabilityConversationCommand(registration)),

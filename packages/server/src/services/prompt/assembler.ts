@@ -87,10 +87,15 @@ export function resolveChoiceVariableValue(input: {
   // Pick selection is necessarily multi-valued even if its companion flag was
   // normalized incorrectly during an older migration.
   const isMulti = readChoiceFlag(input.multiSelect) || (isRandom && Array.isArray(input.selected));
+
+  // An explicit empty selection is the user's OFF value. Only a missing value
+  // should fall back to the first option for legacy presets.
+  if (input.selected === "" || (Array.isArray(input.selected) && input.selected.length === 0)) return "";
+
   const selected = sanitizeChoiceSelection(input.selected, input.options, isMulti);
 
   if (isMulti && Array.isArray(selected)) {
-    if (selected.length === 0) return input.options[0]?.value ?? "";
+    if (selected.length === 0) return "";
     if (isRandom) {
       const random = input.random ?? Math.random;
       const roll = random();

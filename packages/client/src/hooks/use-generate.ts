@@ -17,6 +17,7 @@ import {
 import { chatBackgroundMetadataToUrl, chatBackgroundUrlToMetadata } from "../lib/backgrounds";
 import { hasVisibleUserMessagePayload } from "../lib/chat-message-visibility";
 import { formatGenerationParameterError } from "../lib/generation-parameter-errors";
+import { createLeadingTrailingCoalescer } from "../lib/message-page-cache";
 import { sanitizeAppCss } from "../lib/theme-css";
 import {
   getRoleplayTypewriterRevealCharsPerSecond,
@@ -33,6 +34,11 @@ import { waitForPendingChatMetadataSaves } from "../lib/chat-metadata-save-barri
 import { agentKeys } from "./use-agents";
 import { discardPendingGameStatePatch } from "./use-game-state-patcher";
 import { spatialContextKeys } from "./use-spatial-context";
+import {
+  shouldKeepPendingSpatialTransition,
+  spatialOwnerTurnRecoveryPath,
+  type RecoveredSpatialOwnerTurnResponse,
+} from "./spatial-owner-turn-recovery";
 import type { PendingAgentWriteApproval, PendingCardUpdate } from "../stores/agent.store";
 import type { DelayedCharacterInfo } from "../stores/chat.store";
 import {
@@ -50,7 +56,8 @@ import {
   type MariGuidedPlanStep,
   type MariSuggestionChip,
   type PendingSpatialTransition,
-  type SpatialContextResponse,
+  type Persona,
+  type ResolvedSpatialTravel,
   type ThinkingTagPair,
 } from "@marinara-engine/shared";
 
@@ -65,6 +72,8 @@ type RetryAgentsOptions = {
     negativePrompt?: string;
   };
   illustratorRetryTargets?: IllustratorRetryTarget[];
+  /** Force image generation for the retried custom image agents' results (snapshot button, #4682). */
+  forceImageGeneration?: boolean;
 };
 
 type RetryAgentsFn = (chatId: string, agentTypes: string[], options?: RetryAgentsOptions) => Promise<boolean>;
@@ -345,6 +354,22 @@ function latestNewMessageByRole(
   );
 }
 
+function latestDurableSubmittedUserMessage(
+  messages: Message[],
+  submissionId: string,
+  submittedContent: string,
+): Message | null {
+  return latestMessage(
+    messages.filter(
+      (message) =>
+        message.role === "user" &&
+        !message.id.startsWith("__optimistic_") &&
+        message.content === submittedContent &&
+        parseMessageExtraRecord(message.extra).submissionId === submissionId,
+    ),
+  );
+}
+
 function latestChangedAssistantMessage(qc: QueryClient, chatId: string, snapshot: MessageSnapshot): Message | null {
   if (!snapshot.cacheWasLoaded) return null;
   return latestAssistantMessage(
@@ -541,6 +566,13 @@ function createPendingAgentWriteApproval(proposal: AgentWriteApprovalProposal): 
     timestamp: Date.now(),
   };
 }
+
+function createGenerationSubmissionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 import { useChatStore } from "../stores/chat.store";
 import { useAgentStore } from "../stores/agent.store";
 import { useGameModeStore } from "../stores/game-mode.store";
@@ -610,13 +642,33 @@ export function upsertPersistedMessages(qc: QueryClient, chatId: string, incomin
     }
 
     const persistedById = new Map(sortedIncoming.map((msg) => [msg.id, msg]));
+    // A just-sent user row starts with a temporary ID. Match its submission ID
+    // once the server returns the durable row so edits cannot target the temporary ID.
+    const persistedUserBySubmissionId = new Map(
+      sortedIncoming.flatMap((msg) => {
+        const submissionId = parseMessageExtraRecord(msg.extra).submissionId;
+        return msg.role === "user" &&
+          !msg.id.startsWith("__optimistic_") &&
+          typeof submissionId === "string" &&
+          submissionId
+          ? [[submissionId, msg] as const]
+          : [];
+      }),
+    );
     const existingIds = new Set<string>();
 
     const pages = old.pages.map((page) =>
-      page.map((msg) => {
-        existingIds.add(msg.id);
-        const persisted = persistedById.get(msg.id);
-        return persisted ? mergeCachedGeneratedMessage(msg, persisted) : msg;
+      page.flatMap((msg) => {
+        const submissionId = parseMessageExtraRecord(msg.extra).submissionId;
+        const persisted =
+          persistedById.get(msg.id) ??
+          (msg.id.startsWith("__optimistic_") && typeof submissionId === "string"
+            ? persistedUserBySubmissionId.get(submissionId)
+            : undefined);
+        const nextMessage = persisted ? mergeCachedGeneratedMessage(msg, persisted) : msg;
+        if (existingIds.has(nextMessage.id)) return [];
+        existingIds.add(nextMessage.id);
+        return [nextMessage];
       }),
     );
 
@@ -669,33 +721,68 @@ function preserveRecentMessageContentEditsInCache(qc: QueryClient, chatId: strin
   );
 }
 
+// #4703: an authoritative refresh re-drains every loaded page of the chat, and
+// refetchQueries defaults cancelRefetch:true — so overlapping refreshes for one
+// chat (group turns, agent batches finishing together) would each abort a
+// partially-completed drain and restart it from page 0. Folding them
+// leading+trailing keeps at most two drains per burst while still guaranteeing
+// every caller a refetch that started after its own rows were persisted.
+const coalesceMessageRefresh = createLeadingTrailingCoalescer<boolean>();
+
 async function refreshMessagesAuthoritatively(
   qc: QueryClient,
   chatId: string,
   persistedMessages: Iterable<Message> = [],
+  options: { fetchEvenIfInactive?: boolean } = {},
 ) {
   const msgKey = chatKeys.messages(chatId);
   const persisted = [...persistedMessages];
-  let refetchSucceeded = false;
+  const fetchEvenIfInactive = options.fetchEvenIfInactive === true;
 
   // Also refresh the total message count used for absolute numbering
   qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
   qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
+  // Peek windows (sidebar hover, secret-plot panel) cache the same rows under
+  // their own limit-keyed queries; a mounted panel must not keep serving a
+  // pre-generation snapshot (#4721).
+  qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
 
-  await qc.cancelQueries({ queryKey: msgKey, exact: true });
-
-  try {
-    await qc.refetchQueries({ queryKey: msgKey, exact: true, type: "all" }, { throwOnError: true });
-    refetchSucceeded = true;
-  } catch {
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await qc.refetchQueries({ queryKey: msgKey, exact: true, type: "all" }, { throwOnError: true });
-      refetchSucceeded = true;
-    } catch {
-      /* best-effort — keep any persisted messages we already have */
+  // Forced refreshes run in their own coalescing lane so a rare recovery
+  // caller is never folded into a routine run that would skip the fetch.
+  const coalesceKey = fetchEvenIfInactive ? `${chatId}:forced` : chatId;
+  const refetchSucceeded = await coalesceMessageRefresh(coalesceKey, async () => {
+    const query = qc.getQueryCache().find({ queryKey: msgKey, exact: true });
+    if (!fetchEvenIfInactive && !query?.isActive()) {
+      // #4703: nothing is rendering this chat — spend no bytes re-draining its
+      // pages now. The stale-mark set at the end of this function makes the
+      // next mount refetch authoritatively instead.
+      return false;
     }
-  }
+    await qc.cancelQueries({ queryKey: msgKey, exact: true });
+    const refetchType = fetchEvenIfInactive ? "all" : "active";
+    // The chat can unmount across any await above/below: refetchQueries with
+    // type 'active' then matches nothing and resolves as a false success,
+    // which would skip the stale-mark this function sets for skipped runs.
+    // Re-check right before each fetch attempt; a refetch that STARTED against
+    // an active query completes into the cache even if the observer leaves
+    // mid-fetch, so a post-fetch re-check would misreport real successes.
+    const stillFetchable = () =>
+      fetchEvenIfInactive || qc.getQueryCache().find({ queryKey: msgKey, exact: true })?.isActive() === true;
+    if (!stillFetchable()) return false;
+    try {
+      await qc.refetchQueries({ queryKey: msgKey, exact: true, type: refetchType }, { throwOnError: true });
+      return true;
+    } catch {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (!stillFetchable()) return false;
+        await qc.refetchQueries({ queryKey: msgKey, exact: true, type: refetchType }, { throwOnError: true });
+        return true;
+      } catch {
+        return false; /* best-effort — keep any persisted messages we already have */
+      }
+    }
+  });
 
   if (persisted.length > 0) {
     if (refetchSucceeded) {
@@ -704,10 +791,20 @@ async function refreshMessagesAuthoritatively(
       // because later agent work can add attachments or extra fields.
       appendMissingPersistedMessages(qc, chatId, persisted);
     } else {
+      // No fresh server snapshot arrived (refetch failed or the chat is not on
+      // screen) — merge the persisted rows so the cache still converges.
       upsertPersistedMessages(qc, chatId, persisted);
     }
   }
   preserveRecentMessageContentEditsInCache(qc, chatId);
+  if (!refetchSucceeded) {
+    // Set the stale-mark LAST. Every setQueryData above dispatches a 'success'
+    // state transition that clears isInvalidated and restamps dataUpdatedAt —
+    // a mark set any earlier in this function is silently erased, and the 30s
+    // global staleTime would then suppress the next-mount refetch this path
+    // depends on to deliver server-side rows and post-save agent extras.
+    qc.invalidateQueries({ queryKey: msgKey, exact: true, refetchType: "none" });
+  }
   return refetchSucceeded;
 }
 
@@ -1167,7 +1264,21 @@ export function useGenerate() {
 
       // Create an AbortController so the stop button can cancel this generation.
       const abortController = new AbortController();
-      const submittedUserTurn = params.userMessage !== undefined;
+      const pendingAttachments = params.attachments ?? [];
+      const submittedUserTurn = hasVisibleUserMessagePayload(params.userMessage, pendingAttachments);
+      const submissionId = submittedUserTurn && !params.impersonate ? createGenerationSubmissionId() : null;
+      const confirmDurableSubmittedUserTurn = async () => {
+        if (!submittedUserTurn || !submissionId || params.impersonate) return false;
+        try {
+          const messages = await api.get<Message[]>(`/chats/${params.chatId}/messages?limit=20`);
+          upsertPersistedMessages(qc, params.chatId, messages);
+          qc.invalidateQueries({ queryKey: chatKeys.messageCount(params.chatId) });
+          qc.invalidateQueries({ queryKey: lorebookKeys.active(params.chatId) });
+          return !!latestDurableSubmittedUserMessage(messages, submissionId, params.userMessage ?? "");
+        } catch {
+          return false;
+        }
+      };
       try {
         useChatStore.getState().setAbortController(params.chatId, abortController);
         useChatStore.getState().setBackgroundIllustration(params.chatId, false);
@@ -1211,28 +1322,11 @@ export function useGenerate() {
         { queryKey: chatKeys.messages(params.chatId), exact: true },
         { silent: true, revert: false },
       );
-      const pendingAttachments = params.attachments ?? [];
 
       // Optimistically show the user message in the chat immediately
       if (hasVisibleUserMessagePayload(params.userMessage, pendingAttachments) && !params.impersonate) {
         // Build persona snapshot for per-message persona tracking
-        const cachedPersonas = qc.getQueryData<
-          Array<{
-            id: string;
-            isActive: string | boolean;
-            name: string;
-            description?: string;
-            personality?: string;
-            scenario?: string;
-            backstory?: string;
-            appearance?: string;
-            avatarPath?: string | null;
-            avatarCrop?: string;
-            nameColor?: string;
-            dialogueColor?: string;
-            boxColor?: string;
-          }>
-        >(characterKeys.personas);
+        const cachedPersonas = qc.getQueryData<Persona[]>(characterKeys.personas);
         const activeChat =
           qc.getQueryData<any>(chatKeys.detail(params.chatId)) ??
           (qc.getQueryData<any[]>(chatKeys.list()) ?? []).find((c: any) => c.id === params.chatId);
@@ -1252,7 +1346,7 @@ export function useGenerate() {
               backstory: snapshotPersona.backstory || "",
               appearance: snapshotPersona.appearance || "",
               avatarUrl: snapshotPersona.avatarPath || null,
-              avatarCrop: snapshotPersona.avatarCrop || null,
+              avatarCrop: snapshotPersona.avatarCrop ? JSON.stringify(snapshotPersona.avatarCrop) : null,
               nameColor: snapshotPersona.nameColor || null,
               dialogueColor: snapshotPersona.dialogueColor || null,
               boxColor: snapshotPersona.boxColor || null,
@@ -1272,6 +1366,7 @@ export function useGenerate() {
             tokenCount: null,
             generationInfo: null,
             personaSnapshot,
+            ...(submissionId ? { submissionId } : {}),
             ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
           },
           createdAt: new Date().toISOString(),
@@ -1329,6 +1424,7 @@ export function useGenerate() {
       let illustrationSettled = false;
       let passiveStreamRecovered = false;
       let spatialTransitionCommitted = false;
+      let committedSpatialTravel: ResolvedSpatialTravel | undefined;
       let spatialCapabilityRefreshDispatched = false;
       let passiveStreamSettled = false;
       let passiveRecoveryDurableMessage: Message | null = null;
@@ -1344,6 +1440,35 @@ export function useGenerate() {
       let heldTextRewriteMessage: Message | null = null;
       let holdingTextRewrite = false;
       let gameStatePatchAnchor: { messageId: string; swipeIndex: number } | null = null;
+      const recoverSpatialTransitionByCommand = async (): Promise<RecoveredSpatialOwnerTurnResponse | null> => {
+        const transition = params.pendingSpatialTransition;
+        if (!transition) return null;
+        try {
+          const recovered = await api.get<RecoveredSpatialOwnerTurnResponse>(
+            spatialOwnerTurnRecoveryPath(params.chatId, transition),
+          );
+          spatialTransitionCommitted = recovered.applied;
+          committedSpatialTravel = recovered.travel;
+          spatialCapabilityRefreshDispatched = true;
+          dispatchCapabilityClientEvent({
+            packageId: "hierarchical-maps",
+            type: "spatial_transition_committed",
+            chatId: params.chatId,
+            data: {
+              chatId: params.chatId,
+              commandId: transition.commandId,
+              currentLocationId: recovered.currentLocationId,
+              definitionRevision: recovered.definitionRevision,
+              ...(recovered.travel ? { travel: recovered.travel } : {}),
+            },
+          });
+          void qc.invalidateQueries({ queryKey: spatialContextKeys.detail(params.chatId) });
+          void qc.invalidateQueries({ queryKey: chatKeys.detail(params.chatId) });
+          return recovered;
+        } catch {
+          return null;
+        }
+      };
       const normalizeLineBreakSpacing = (text: string) =>
         chatModeForGeneration === "roleplay" ? text.replace(/[ \t]+(\r?\n)/g, "$1") : text;
       const rememberContinuedMessageContent = (message: Message) => {
@@ -1398,7 +1523,10 @@ export function useGenerate() {
         typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
       const getCharsPerSecond = () => {
         const speed = useUIStore.getState().streamingSpeed;
-        return getStreamingCharsPerSecond(speed, reducedMotionMedia?.matches === true);
+        return getStreamingCharsPerSecond(
+          speed,
+          reducedMotionMedia?.matches === true || useUIStore.getState().reduceAmbientEffects,
+        );
       };
 
       const TYPEWRITER_MAX_FRAME_MS = 120;
@@ -1591,6 +1719,7 @@ export function useGenerate() {
           "/generate",
           {
             ...params,
+            submissionId,
             ...(currentBackground !== undefined ? { currentBackground } : {}),
             userStatus,
             userActivity,
@@ -1611,12 +1740,22 @@ export function useGenerate() {
           switch (event.type) {
             case "spatial_transition_committed": {
               const transitionData = event.data as
-                | { chatId?: string; commandId?: string; currentLocationId?: string; definitionRevision?: number }
+                | {
+                    chatId?: string;
+                    commandId?: string;
+                    currentLocationId?: string;
+                    definitionRevision?: number;
+                    travel?: ResolvedSpatialTravel;
+                  }
                 | undefined;
               if (transitionData?.chatId === params.chatId && transitionData.commandId) {
                 spatialTransitionCommitted = true;
+                committedSpatialTravel = transitionData.travel;
                 spatialCapabilityRefreshDispatched = true;
-                useChatStore.getState().clearPendingSpatialTransition(params.chatId, transitionData.commandId);
+                const stepwiseRouteRemainsQueued = shouldKeepPendingSpatialTransition(transitionData.travel);
+                if (!stepwiseRouteRemainsQueued) {
+                  useChatStore.getState().clearPendingSpatialTransition(params.chatId, transitionData.commandId);
+                }
                 dispatchCapabilityClientEvent({
                   packageId: "hierarchical-maps",
                   type: event.type,
@@ -2743,17 +2882,35 @@ export function useGenerate() {
         flushLeadingSpeakerPrefix();
         flushTypewriterBuffer();
         // Abort is intentional — don't log or toast
-        if (isAbortError(error)) return submittedUserTurn || receivedContent || spatialTransitionCommitted;
+        if (isAbortError(error)) {
+          const recovered = await recoverSpatialTransitionByCommand();
+          if (recovered) {
+            const stepwiseRouteRemainsQueued = shouldKeepPendingSpatialTransition(recovered.travel);
+            if (!stepwiseRouteRemainsQueued && params.pendingSpatialTransition) {
+              useChatStore
+                .getState()
+                .clearPendingSpatialTransition(params.chatId, params.pendingSpatialTransition.commandId);
+            }
+          }
+          return submittedUserTurn || receivedContent || spatialTransitionCommitted;
+        }
         if (isPassiveStreamDisconnect(error, pageWasHiddenDuringStream, abortController.signal)) {
           passiveStreamRecovered = true;
           if (isActiveChat()) useChatStore.getState().setGenerationPhase("Finishing in background...");
           const settled = await waitForServerGenerationToSettle(params.chatId, abortController.signal);
           passiveStreamSettled = settled;
           if (!abortController.signal.aborted) {
+            // Force the fetch even when the chat is off screen: this is the one
+            // caller that reads the result as a discovery signal (the durable
+            // row feeds the partial-message guard, the unread badge, and the
+            // reply notification), and the stream that died is the same one
+            // that would have delivered message_saved. Rare, and the inactive
+            // trim caps the drain for backgrounded chats.
             const recoveryRefetchSucceeded = await refreshMessagesAuthoritatively(
               qc,
               params.chatId,
               persistedMessages.values(),
+              { fetchEvenIfInactive: true },
             );
             if (recoveryRefetchSucceeded) {
               passiveRecoveryDurableMessage = latestNewMessageByRole(
@@ -2783,20 +2940,17 @@ export function useGenerate() {
               : null;
           const spatialErrorCode = typeof payload?.code === "string" ? payload.code : null;
           if (spatialErrorCode === "spatial_transition_already_applied") {
-            spatialTransitionCommitted = true;
+            await recoverSpatialTransitionByCommand();
           } else if (!spatialErrorCode?.startsWith("spatial_")) {
-            try {
-              const current = await api.get<SpatialContextResponse>(`/chats/${params.chatId}/spatial-context`);
-              qc.setQueryData(spatialContextKeys.detail(params.chatId), current);
-              spatialTransitionCommitted = current.currentLocationId === params.pendingSpatialTransition.destinationId;
-            } catch {
-              /* Preserve the pending command when current state cannot be confirmed. */
-            }
+            await recoverSpatialTransitionByCommand();
           }
           if (spatialTransitionCommitted) {
-            useChatStore
-              .getState()
-              .clearPendingSpatialTransition(params.chatId, params.pendingSpatialTransition.commandId);
+            const stepwiseRouteRemainsQueued = shouldKeepPendingSpatialTransition(committedSpatialTravel);
+            if (!stepwiseRouteRemainsQueued) {
+              useChatStore
+                .getState()
+                .clearPendingSpatialTransition(params.chatId, params.pendingSpatialTransition.commandId);
+            }
             void qc.invalidateQueries({ queryKey: chatKeys.detail(params.chatId) });
             return true;
           }
@@ -2807,7 +2961,7 @@ export function useGenerate() {
         const msg = error instanceof Error ? error.message : "Generation failed";
         showError(msg);
         window.dispatchEvent(new CustomEvent("marinara:generation-error", { detail: { chatId: params.chatId } }));
-        return false;
+        return await confirmDurableSubmittedUserTurn();
       } finally {
         // Stream has terminated (done, error, abort, or unexpected throw) —
         // guarantee the Mari indicator clears even if the end SSE never arrived.
@@ -3134,7 +3288,8 @@ export function useGenerate() {
           }
         }
       }
-      return receivedContent || passiveStreamRecovered || spatialTransitionCommitted;
+      if (receivedContent || passiveStreamRecovered || spatialTransitionCommitted) return true;
+      return await confirmDurableSubmittedUserTurn();
     },
     [
       qc,
@@ -3232,6 +3387,7 @@ export function useGenerate() {
               ? { illustratorPromptReviewOverride: options.illustratorPromptReviewOverride }
               : {}),
             ...(options?.illustratorRetryTargets ? { illustratorRetryTargets: options.illustratorRetryTargets } : {}),
+            ...(options?.forceImageGeneration ? { forceImageGeneration: true } : {}),
             musicPlayerEnabled: useUIStore.getState().musicPlayerEnabled,
             musicPlayerSource: useUIStore.getState().musicPlayerSource,
             lorebookKeeperBackfill: options?.lorebookKeeperBackfill === true,

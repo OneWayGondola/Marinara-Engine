@@ -987,11 +987,25 @@ export function CharactersPanel() {
                   )}
                 </div>
                 {folderMemberIds.length > 0 && (
-                  <span className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)]">
+                  <span
+                    data-folder-item-count="inline"
+                    className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)] max-md:hidden [@media(pointer:coarse)]:hidden"
+                  >
                     {folderMemberIds.length}
                   </span>
                 )}
-                <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                <div
+                  data-folder-actions
+                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                >
+                  {folderMemberIds.length > 0 && (
+                    <span
+                      data-folder-item-count="actions"
+                      className="hidden px-1 text-[0.5625rem] text-[var(--muted-foreground)] max-md:inline [@media(pointer:coarse)]:inline"
+                    >
+                      {folderMemberIds.length}
+                    </span>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1220,11 +1234,13 @@ export function CharactersPanel() {
                       {!selectionMode && (
                         <div
                           data-character-row-actions
-                          className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:static max-md:translate-y-0 max-md:opacity-100 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                          className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:static max-md:translate-y-0 max-md:opacity-100 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
                         >
                           <ChatResourceActionButton
                             payload={{ version: 1, kind: "character", ids: [memberId], label: memberName }}
-                            className="flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0"
+                            size="row"
+                            className="flex h-5 min-h-5 w-5 items-center justify-center rounded-md p-0 active:scale-90"
+                            iconClassName="h-2.5 w-2.5 shrink-0"
                           />
                           <button
                             type="button"
@@ -1487,7 +1503,7 @@ export function CharactersPanel() {
 
               {/* Info */}
               <div
-                className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-20 [@media(pointer:coarse)]:pr-24")}
+                className={cn("min-w-0 flex-1", !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32")}
               >
                 <div
                   data-character-row-name
@@ -1553,11 +1569,13 @@ export function CharactersPanel() {
               {!selectionMode && (
                 <div
                   data-character-row-actions
-                  className="pointer-events-none absolute right-2 top-1/2 grid w-24 -translate-y-1/2 grid-cols-3 gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:w-20 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                  className="pointer-events-none absolute right-2 top-1/2 z-10 flex w-auto -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-1 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
                 >
                   <ChatResourceActionButton
                     payload={{ version: 1, kind: "character", ids: [char.id], label: charName }}
-                    className="mari-character-row-action flex w-full items-center justify-center"
+                    size="row"
+                    className="mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
+                    iconClassName="h-4 w-4 shrink-0 max-md:h-3.5 max-md:w-3.5"
                   />
                   <button
                     type="button"
@@ -1573,7 +1591,7 @@ export function CharactersPanel() {
                         },
                       });
                     }}
-                    className="mari-chrome-control mari-character-row-action flex w-full items-center justify-center"
+                    className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
                     title={localizeUi("ui.presets.sectionstab.duplicate")}
                     aria-label={localizeUi("ui.presets.sectionstab.duplicate")}
                   >
@@ -1597,7 +1615,7 @@ export function CharactersPanel() {
                       }
                       deleteCharacter.mutate(char.id);
                     }}
-                    className="mari-chrome-control mari-character-row-action flex w-full items-center justify-center"
+                    className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center max-md:w-6"
                     title={localizeUi("lorebook.editor.batch.delete")}
                     aria-label={localizeUi("lorebook.editor.batch.delete")}
                   >
@@ -1612,7 +1630,7 @@ export function CharactersPanel() {
                         characterName: charName,
                       });
                     }}
-                    className="mari-chrome-control mari-character-row-action col-span-3 flex w-full items-center justify-center gap-1 border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[0.625rem] font-semibold text-[var(--marinara-chat-chrome-button-text-active)] max-md:text-[0.5625rem]"
+                    className="mari-chrome-control mari-character-row-action flex w-7 items-center justify-center border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)] max-md:w-6"
                     title={localizeUi("ui.panels.characterspanel.startNewChatWithValue1", {
                       value1: charName,
                     })}
@@ -1621,7 +1639,6 @@ export function CharactersPanel() {
                     })}
                   >
                     <MessageCircle className="h-3.5 w-3.5 shrink-0 max-md:h-3 max-md:w-3" />
-                    {localizeUi("ui.panels.characterspanel.chat")}
                   </button>
                 </div>
               )}

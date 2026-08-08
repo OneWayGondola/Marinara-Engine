@@ -39,6 +39,11 @@ import {
 } from "../../packages/server/src/services/noodle/noodle-participant-selection.js";
 import { noodleAccountsNeedingProfiles } from "../../packages/server/src/services/noodle/noodle-profile-selection.js";
 import {
+  buildNoodlerStageProfileDraftMessages,
+  parseNoodlerStageProfileDraft,
+} from "../../packages/server/src/services/noodle/noodle-stage-profile-draft.service.js";
+import { compareNoodlerSourceSnapshots } from "../../packages/server/src/services/noodle/noodle-noodler-source.js";
+import {
   buildNoodleCarryoverBlock,
   NOODLE_CARRYOVER_TOKEN_BUDGET,
 } from "../../packages/server/src/services/noodle/noodle-context.js";
@@ -489,6 +494,72 @@ assert.equal(
   }).success,
   false,
 );
+const initialHintedDraftMessages = buildNoodlerStageProfileDraftMessages({
+  request: { disclosureMode: "hinted", guidance: "" },
+  publicAccount: {
+    displayName: "Known Public Name",
+    handle: "known_public",
+    bio: "A marine biologist who maps bioluminescent tide pools.",
+  },
+  source: { data: { name: "Known Public Name", personality: "Patient and intensely curious." } },
+});
+const initialHintedDraftPrompt = initialHintedDraftMessages.map((message) => message.content).join("\n");
+assert.match(initialHintedDraftPrompt, /Patient and intensely curious\./u);
+assert.doesNotMatch(initialHintedDraftPrompt, /# Current draft|After Hours|afterhours/u);
+assert.doesNotMatch(
+  initialHintedDraftPrompt,
+  /A marine biologist who maps bioluminescent tide pools\.|a public persona/u,
+);
+const rewrittenHintedDraftPrompt = buildNoodlerStageProfileDraftMessages({
+  request: {
+    disclosureMode: "hinted",
+    guidance: "Make it warmer.",
+    currentDraft: {
+      displayName: "Tidewatch",
+      handle: "tidewatch",
+      bio: "Night walks and luminous water.",
+      stagePersonality: "Warm, observant, and playful.",
+      disclosureMode: "hinted",
+    },
+  },
+  publicAccount: {
+    displayName: "Known Public Name",
+    handle: "known_public",
+    bio: "A marine biologist who maps bioluminescent tide pools.",
+  },
+  source: { data: { name: "Known Public Name", personality: "Patient and intensely curious." } },
+})
+  .map((message) => message.content)
+  .join("\n");
+assert.match(rewrittenHintedDraftPrompt, /# Current draft[\s\S]*Tidewatch[\s\S]*tidewatch/u);
+const sloppyStageProfileDraft = {
+  displayName: "Taro",
+  handle: "@Taro_One",
+  bio: "Night walks and luminous water.",
+  stagePersonality: "Warm and observant.",
+  disclosureMode: "Always",
+  reasoning: "extra model output",
+};
+const sloppyDraftResponse = parseNoodlerStageProfileDraft(JSON.stringify([sloppyStageProfileDraft]));
+assert.equal(sloppyDraftResponse.handle, "Taro_One");
+assert.deepEqual(Object.keys(sloppyDraftResponse).sort(), ["bio", "displayName", "handle", "stagePersonality"]);
+assert.throws(() => parseNoodlerStageProfileDraft(JSON.stringify([sloppyStageProfileDraft, sloppyStageProfileDraft])));
+assert.throws(() => parseNoodlerStageProfileDraft(JSON.stringify({ ...sloppyStageProfileDraft, handle: "@" })));
+const sourceBaseline = {
+  publicDisplayName: "Known Public Name",
+  publicHandle: "known_public",
+  name: "Known Public Name",
+  description: "Marine biologist",
+  personality: "Patient",
+  scenario: "At the coast",
+  appearance: "Blue coat",
+  backstory: "Maps tide pools",
+};
+assert.deepEqual(compareNoodlerSourceSnapshots(sourceBaseline, sourceBaseline), { state: "current" });
+assert.deepEqual(compareNoodlerSourceSnapshots(sourceBaseline, { ...sourceBaseline, appearance: "Red coat" }), {
+  state: "changed",
+  changes: [{ field: "appearance", previous: "Blue coat", current: "Red coat" }],
+});
 const identitySample = "Known Public Name (@known_public) shares a late-night portrait.";
 assert.equal(protectNoodlerGeneratedIdentity(identitySample, "open", knownPublicIdentity), identitySample);
 assert.equal(
@@ -854,9 +925,7 @@ assert.equal(normalizeNoodleImagePrompt('{"content":"do not send this JSON to an
 // shared block's framing is covered by this test and not only the Noodle-side template.
 const noodleImageReferences = await resolveIllustratorCharacterReferences({
   charactersStore: { list: async () => [] },
-  chatCharacters: [
-    { id: "dottore", name: "Dottore", avatarPath: null, appearance: "blue hair and a white mask" },
-  ],
+  chatCharacters: [{ id: "dottore", name: "Dottore", avatarPath: null, appearance: "blue hair and a white mask" }],
   persona: null,
   requestedNames: ["Dottore"],
   promptText: "Dottore",

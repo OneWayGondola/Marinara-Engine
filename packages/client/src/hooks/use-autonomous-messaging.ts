@@ -14,7 +14,6 @@ import { useChatStore } from "../stores/chat.store";
 import { useUIStore, type UserStatus } from "../stores/ui.store";
 import { useGenerate } from "./use-generate";
 import { chatKeys } from "./use-chats";
-import { characterKeys } from "./use-characters";
 
 interface AutonomousCheckResult {
   shouldTrigger: boolean;
@@ -100,7 +99,10 @@ export function useAutonomousMessaging(
     async (userStatus: UserStatus) => {
       if (!chatId) return;
       try {
-        await api.post("/conversation/activity/presence", { chatId, userStatus: toAutonomousPresenceStatus(userStatus) });
+        await api.post("/conversation/activity/presence", {
+          chatId,
+          userStatus: toAutonomousPresenceStatus(userStatus),
+        });
       } catch {
         // non-critical
       }
@@ -141,8 +143,15 @@ export function useAutonomousMessaging(
           userStatus: toAutonomousPresenceStatus(userStatus),
         });
 
-        // Refresh character data so sidebar status dots update
-        qc.invalidateQueries({ queryKey: characterKeys.list() });
+        // No per-tick character-list invalidation here (#4704): it refetched
+        // the full character list every 30s but never served its stated
+        // purpose — the sidebar status dots read ["characters","summaries"],
+        // which this key doesn't match. Dot freshness actually comes from
+        // chat-metadata status snapshots/overrides plus the summaries query's
+        // staleTime and focus refetches (ConversationPresenceCard's signature
+        // invalidation targets the same mismatched list() key, so it doesn't
+        // refresh the dots either); generation completions invalidate the
+        // character list independently.
 
         if (result.shouldTrigger && result.characterIds.length > 0) {
           const characterId = result.characterIds[0]!;

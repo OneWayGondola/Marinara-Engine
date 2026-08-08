@@ -167,9 +167,8 @@ async function executeGroup(
   onResult?: AgentResultCallback,
 ): Promise<AgentResult[]> {
   const groupContext = buildAgentContext(group.agents[0]!, context);
-  // Separate tool-using agents (can't be batched) from regular agents.
-  // Spotify post-processing is intentionally batched as JSON intent first; playback
-  // is applied after parsing the grouped response so it cannot fire early mid-agent.
+  // Separate tool-using agents (can't be batched) from regular agents. Spotify always
+  // returns one JSON intent; deterministic host-side playback runs after parsing.
   const toolAgents = group.agents.filter((a) => shouldUseToolsDuringAgentExecution(a));
   const batchAgents = group.agents.filter((a) => !shouldUseToolsDuringAgentExecution(a));
 
@@ -208,10 +207,12 @@ async function executeGroup(
     toolAgents,
     AGENT_GROUP_MAX_CONCURRENT_TOOL_CALLS,
     (agent) =>
-      executeAgent(agent, buildAgentContext(agent, context), agent.provider, agent.model, agent.toolContext).then((result) => {
-        safeOnResult(result);
-        return result;
-      }),
+      executeAgent(agent, buildAgentContext(agent, context), agent.provider, agent.model, agent.toolContext).then(
+        (result) => {
+          safeOnResult(result);
+          return result;
+        },
+      ),
   ).then((settled) =>
     settled.map((entry, index) => {
       if (entry.status === "fulfilled") return entry.value;
@@ -237,9 +238,9 @@ async function executeGroup(
   return [...batchResults, ...toolResults];
 }
 
-function shouldUseToolsDuringAgentExecution(agent: ResolvedAgent): boolean {
+export function shouldUseToolsDuringAgentExecution(agent: ResolvedAgent): boolean {
   if (!agent.toolContext?.tools.length) return false;
-  return !(agent.phase === "post_processing" && agent.type === "spotify");
+  return agent.type !== "spotify";
 }
 
 /**
@@ -273,10 +274,8 @@ async function executePhase(
     );
   }
 
-  const settled = await settleAgentJobsWithConcurrencyLimit(
-    groups,
-    AGENT_PHASE_MAX_CONCURRENT_GROUPS,
-    (group) => executeGroup(group, context, onResult),
+  const settled = await settleAgentJobsWithConcurrencyLimit(groups, AGENT_PHASE_MAX_CONCURRENT_GROUPS, (group) =>
+    executeGroup(group, context, onResult),
   );
 
   const results: AgentResult[] = [];

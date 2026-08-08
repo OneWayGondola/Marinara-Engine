@@ -7,6 +7,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  TriangleAlert,
   Volume2,
   VolumeX,
   X,
@@ -127,6 +128,21 @@ export function GameStoryboardInlineViewer({
             </span>
           </div>
 
+          {storyboard?.error ? (
+            <div
+              className="flex items-start gap-2 border-b border-amber-200/20 bg-amber-300/12 px-3 py-2 text-amber-50"
+              role="status"
+            >
+              <TriangleAlert size={14} className="mt-0.5 shrink-0 text-amber-200" />
+              <div className="min-w-0">
+                <p className="text-[0.6875rem] font-semibold">
+                  {localizeUi("ui.game.gamesurfacecomponent.storyboardDegradedResult")}
+                </p>
+                <p className="line-clamp-3 text-[0.625rem] leading-4 text-amber-50/75">{storyboard.error}</p>
+              </div>
+            </div>
+          ) : null}
+
           {frame?.video ? (
             <video
               ref={videoRef}
@@ -223,10 +239,7 @@ export function GameStoryboardInlineViewer({
               </div>
             </div>
             <p className="line-clamp-2 text-[0.6875rem] leading-4 text-white/58">
-              {frame?.anchorQuote ||
-                frame?.narrationBeat ||
-                storyboard?.error ||
-                localizeUi("game.storyboard.generatingKeyframes")}
+              {frame?.anchorQuote || frame?.narrationBeat || localizeUi("game.storyboard.generatingKeyframes")}
             </p>
             {storyboard?.keyframes.length ? (
               <div className="flex gap-1">

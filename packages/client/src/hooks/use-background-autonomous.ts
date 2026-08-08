@@ -9,7 +9,7 @@ import { useEffect, useRef } from "react";
 import { normalizeAvatarCrop, type AvatarCrop, type Chat, type Message } from "@marinara-engine/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api } from "../lib/api-client";
+import { api, ApiError } from "../lib/api-client";
 import { shouldSuppressAutonomousMessages, toAutonomousPresenceStatus } from "../lib/user-status";
 import { useChatStore } from "../stores/chat.store";
 import { useUIStore } from "../stores/ui.store";
@@ -57,6 +57,49 @@ function parseMeta(chat: RawChat): Record<string, unknown> {
 }
 
 /**
+ * Fetch the ids of chats eligible for background autonomous messaging.
+ *
+ * Prefers the lightweight server-filtered endpoint (#4704). Falls back to the
+ * legacy full-list fetch with local filtering when the endpoint is missing or
+ * returns an unexpected shape (an older server routes the path to GET /:id),
+ * so a new client against an old server keeps working instead of going
+ * silently dead. A definitive 404 latches the fallback for the session so we
+ * don't pay a guaranteed-404 round-trip on every tick; transient errors keep
+ * retrying, and a page reload after a server upgrade resets the latch.
+ */
+let candidatesEndpointUnavailable = false;
+
+async function fetchAutonomousCandidates(): Promise<Array<{ id: string }>> {
+  if (!candidatesEndpointUnavailable) {
+    try {
+      const candidates = await api.get<Array<{ id: string }>>("/chats/autonomous-candidates");
+      if (Array.isArray(candidates) && candidates.every((entry) => entry && typeof entry.id === "string")) {
+        return candidates;
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        candidatesEndpointUnavailable = true;
+        console.debug(
+          "[background-autonomous] Server predates /chats/autonomous-candidates; using legacy chat-list polling",
+        );
+      }
+      // Fall through to the legacy path either way.
+    }
+  }
+  const allChats = await api.get<RawChat[]>("/chats");
+  return allChats.filter((chat) => {
+    if (chat.mode !== "conversation") return false;
+    try {
+      const meta = parseMeta(chat);
+      if (meta.internalAssistant === "professor-mari") return false;
+      return !!meta.autonomousMessages;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * Background polling for autonomous messages on inactive conversation chats.
  * Fetches the chat list on each tick so the effect doesn't depend on
  * external React state (which would reset the timer on every re-render).
@@ -84,29 +127,25 @@ export function useBackgroundAutonomousPolling() {
 
       const activeChatId = useChatStore.getState().activeChatId;
 
-      // Fetch the current chat list directly from the API each tick.
-      // This avoids the effect depending on useChats() data which would
-      // cause frequent timer restarts.
-      let allChats: RawChat[];
+      // Fetch only the autonomous-candidate chat ids (server-filtered, #4704) —
+      // the previous full /chats fetch materialized and serialized every chat
+      // (plus ran the DM-cleanup scans) every 30 seconds. Fetching directly
+      // rather than via useChats() also keeps the effect free of data deps
+      // that would restart the timer.
+      let candidateChats: Array<{ id: string }>;
       try {
-        allChats = await api.get<RawChat[]>("/chats");
+        candidateChats = await fetchAutonomousCandidates();
       } catch {
         schedulePoll();
         return;
       }
 
-      // Find conversation chats with autonomous messaging enabled, excluding active chat
-      const backgroundChats = allChats.filter((chat) => {
+      // Client-side exclusions the server can't know: the open chat and
+      // chats we're already generating for.
+      const backgroundChats = candidateChats.filter((chat) => {
         if (chat.id === activeChatId) return false;
         if (generatingForRef.current.has(chat.id)) return false;
-        if (chat.mode !== "conversation") return false;
-        try {
-          const meta = parseMeta(chat);
-          if (meta.internalAssistant === "professor-mari") return false;
-          return !!meta.autonomousMessages;
-        } catch {
-          return false;
-        }
+        return true;
       });
 
       const userStatus = useUIStore.getState().userStatus;

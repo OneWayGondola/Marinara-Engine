@@ -454,6 +454,7 @@ class SidecarProcessService {
       enableNativeToolCalls: config.enableNativeToolCalls,
       embeddingPooling: config.embeddingPooling,
       embeddingBatchSize: config.embeddingBatchSize,
+      maxParallelJobs: config.maxParallelJobs,
     });
   }
 
@@ -553,6 +554,7 @@ class SidecarProcessService {
           serverPath: this.getLlamaServerPath(runtime),
           modelRef,
           contextSize: config.contextSize,
+          maxParallelJobs: config.maxParallelJobs,
           gpuLayers: config.gpuLayers,
           enableNativeToolCalls: config.enableNativeToolCalls,
           embeddingPooling: config.embeddingPooling,

@@ -799,7 +799,8 @@ listed so the ideas are not lost, deliberately not specified in depth — a slic
 never ship should not carry a design that must be maintained. Reassess after 8g is real.
 If one is picked up, it gets its own detail document then.
 
-**9a — quiet synthetic fan engagement.** Creator-scoped synthetic fans leave access-valid
+**9a — quiet synthetic fan engagement.** [See the Slice 9a detail contract](./noodler-fan-engagement.md).
+Creator-scoped synthetic fans leave access-valid
 likes/replies/reposts on posts they may actually view. One LLM call may propose engagement;
 deterministic quotas, target validation, deduplication and anti-spam apply afterward.
 Access is gated before target selection and again transactionally before persistence. A

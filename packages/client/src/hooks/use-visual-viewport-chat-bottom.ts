@@ -32,9 +32,10 @@ export function useChatKeyboardOpen(): boolean {
   return keyboardOpen;
 }
 
-function focusedElementAcceptsText(): boolean {
+function focusedChatComposerAcceptsText(): boolean {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return false;
+  if (!active.matches("[data-chat-composer]")) return false;
   if (active instanceof HTMLTextAreaElement) return true;
   if (active instanceof HTMLInputElement) {
     return !["button", "checkbox", "color", "file", "hidden", "radio", "range", "reset", "submit"].includes(
@@ -78,23 +79,94 @@ export function useChatComposerFocused(): boolean {
  */
 export function useKeepLatestChatMessageVisible(
   scrollRef: RefObject<HTMLElement | null>,
-  isNearBottomRef: RefObject<boolean>,
   scrollToBottom: (behavior?: ScrollBehavior) => void,
 ): void {
   useEffect(() => {
+    let keyboardOpen = false;
+    let restoreFrame = 0;
+    let settleFrame = 0;
+    let pendingAnchor: { scrollTop: number; pinnedToBottom: boolean } | null = null;
+
+    const captureAnchor = () => {
+      const scrollElement = scrollRef.current;
+      if (!scrollElement) return null;
+      const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
+      return {
+        scrollTop: scrollElement.scrollTop,
+        pinnedToBottom: distanceFromBottom < 150,
+      };
+    };
+
+    const handleComposerPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest("[data-chat-composer]")) return;
+      pendingAnchor = captureAnchor();
+    };
+
+    const handleComposerFocus = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.matches("[data-chat-composer]")) return;
+      pendingAnchor ??= captureAnchor();
+    };
+
+    const handleComposerBlur = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.matches("[data-chat-composer]")) return;
+      if (!keyboardOpen) pendingAnchor = null;
+    };
+
     const handleViewportChange = (event: Event) => {
       const detail = (event as CustomEvent<ChatVisualViewportChangeDetail>).detail;
-      if (!detail?.keyboardOpen || !focusedElementAcceptsText() || !isNearBottomRef.current) return;
+      if (!detail?.keyboardOpen) {
+        const wasKeyboardOpen = keyboardOpen;
+        keyboardOpen = false;
+        if (wasKeyboardOpen || !focusedChatComposerAcceptsText()) pendingAnchor = null;
+        if (restoreFrame) cancelAnimationFrame(restoreFrame);
+        if (settleFrame) cancelAnimationFrame(settleFrame);
+        restoreFrame = 0;
+        settleFrame = 0;
+        return;
+      }
+      if (keyboardOpen || !focusedChatComposerAcceptsText()) return;
+      keyboardOpen = true;
 
-      requestAnimationFrame(() => {
+      const anchor = pendingAnchor ?? captureAnchor();
+      if (!anchor) return;
+      pendingAnchor = null;
+
+      const restore = () => {
+        if (!keyboardOpen) return;
         const scrollElement = scrollRef.current;
-        if (!scrollElement || !isNearBottomRef.current) return;
-        scrollToBottom("auto");
-        requestAnimationFrame(() => scrollToBottom("auto"));
+        if (!scrollElement) return;
+        if (anchor.pinnedToBottom) {
+          scrollToBottom("auto");
+          return;
+        }
+        const maxScrollTop = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
+        scrollElement.scrollTo({ top: Math.min(anchor.scrollTop, maxScrollTop), behavior: "auto" });
+      };
+
+      restoreFrame = requestAnimationFrame(() => {
+        restoreFrame = 0;
+        restore();
+        settleFrame = requestAnimationFrame(() => {
+          settleFrame = 0;
+          restore();
+        });
       });
     };
 
+    document.addEventListener("pointerdown", handleComposerPointerDown, true);
+    document.addEventListener("focusin", handleComposerFocus, true);
+    document.addEventListener("focusout", handleComposerBlur, true);
     window.addEventListener(CHAT_VISUAL_VIEWPORT_CHANGE_EVENT, handleViewportChange);
-    return () => window.removeEventListener(CHAT_VISUAL_VIEWPORT_CHANGE_EVENT, handleViewportChange);
-  }, [isNearBottomRef, scrollRef, scrollToBottom]);
+    return () => {
+      if (restoreFrame) cancelAnimationFrame(restoreFrame);
+      if (settleFrame) cancelAnimationFrame(settleFrame);
+      document.removeEventListener("pointerdown", handleComposerPointerDown, true);
+      document.removeEventListener("focusin", handleComposerFocus, true);
+      document.removeEventListener("focusout", handleComposerBlur, true);
+      window.removeEventListener(CHAT_VISUAL_VIEWPORT_CHANGE_EVENT, handleViewportChange);
+    };
+  }, [scrollRef, scrollToBottom]);
 }

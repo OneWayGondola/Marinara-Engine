@@ -11,8 +11,8 @@ export function EditorAvatarTileActions({ generationAvailable, onGenerate }: Edi
 
   return (
     <>
-      <div className="absolute inset-0 flex items-end justify-start bg-black/40 p-1 opacity-0 transition-opacity group-hover:opacity-100">
-        <Camera size="0.875rem" className="text-white" />
+      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+        <Camera size="0.75rem" className="text-white" />
       </div>
       {generationAvailable && (
         <button
@@ -21,7 +21,7 @@ export function EditorAvatarTileActions({ generationAvailable, onGenerate }: Edi
             event.stopPropagation();
             onGenerate();
           }}
-          className="absolute right-0 top-0 inline-flex h-3 w-3 items-center justify-center rounded-full bg-[var(--card)]/95 text-[var(--primary)] shadow-md ring-1 ring-[var(--border)] transition-colors before:absolute before:-inset-2 hover:bg-[var(--accent)]"
+          className="absolute right-0.5 top-0.5 inline-flex h-2 w-2 items-center justify-center rounded-full bg-[var(--card)]/95 text-[var(--primary)] shadow-md ring-1 ring-[var(--border)] transition-colors before:absolute before:-inset-2 hover:bg-[var(--accent)] max-md:right-px max-md:top-px"
           title={t("editor.avatar.generate.label")}
           aria-label={t("editor.avatar.generate.label")}
         >

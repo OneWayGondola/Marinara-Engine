@@ -55,7 +55,13 @@ import {
 } from "../../packages/server/src/services/generation/fallback-notification.js";
 import { resolveStoredChatOptions } from "../../packages/server/src/services/generation/generation-parameters.js";
 import { resolveMainGenerationToolChoice } from "../../packages/server/src/services/generation/tool-resolution-runtime.js";
-import { generateImage, imageAdmissionKey } from "../../packages/server/src/services/image/image-generation.js";
+import {
+  generateImage,
+  imageAdmissionKey,
+  resolveNovelAiStyleReferenceSecondaryStrength,
+} from "../../packages/server/src/services/image/image-generation.js";
+import { resolveImageCaptioningRuntime } from "../../packages/server/src/services/generation/image-captioning-runtime.js";
+import { resolveImageConnectionFallback } from "../../packages/server/src/services/generation/media-connection-fallback.js";
 import {
   BACKGROUND_CONNECTION_IDLE_MS,
   ConnectionAttemptRejectedError,
@@ -114,6 +120,10 @@ const gatewaySseBody = [
   'data: {"choices":[{"message":{"content":"recovered final message"},"finish_reason":"stop"}]}',
   "data: [DONE]",
 ].join("\n");
+
+assert.equal(resolveNovelAiStyleReferenceSecondaryStrength(1), 0);
+assert.equal(resolveNovelAiStyleReferenceSecondaryStrength(0.75), 0.25);
+assert.equal(resolveNovelAiStyleReferenceSecondaryStrength(0), 1);
 const gatewayServer = createServer((_request, response) => {
   response.writeHead(200, { "content-type": "text/event-stream" });
   response.end(gatewaySseBody);
@@ -139,8 +149,44 @@ try {
     "recovered final message",
   );
 } finally {
+  await new Promise<void>((resolve, reject) => gatewayServer.close((error) => (error ? reject(error) : resolve())));
+}
+
+const openRouterCachingRequestBodies: Array<Record<string, unknown>> = [];
+const openRouterCachingServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  openRouterCachingRequestBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify({ choices: [{ message: { content: "cached" }, finish_reason: "stop" }] }));
+});
+await new Promise<void>((resolve) => openRouterCachingServer.listen(0, "127.0.0.1", resolve));
+try {
+  const address = openRouterCachingServer.address();
+  assert.ok(address && typeof address === "object");
+  const provider = new OpenAIProvider(
+    `http://127.0.0.1:${address.port}/openrouter.ai/v1`,
+    "test",
+    undefined,
+    undefined,
+    undefined,
+    "openrouter",
+  );
+  await provider.chatComplete([{ role: "user", content: "cache Gemini" }], {
+    model: "google/gemini-3-pro-preview",
+    stream: false,
+    enableCaching: true,
+  });
+  await provider.chatComplete([{ role: "user", content: "do not cache" }], {
+    model: "google/gemini-3-pro-preview",
+    stream: false,
+    enableCaching: false,
+  });
+  assert.deepEqual(openRouterCachingRequestBodies[0]?.cache_control, { type: "ephemeral" });
+  assert.equal("cache_control" in (openRouterCachingRequestBodies[1] ?? {}), false);
+} finally {
   await new Promise<void>((resolve, reject) =>
-    gatewayServer.close((error) => (error ? reject(error) : resolve())),
+    openRouterCachingServer.close((error) => (error ? reject(error) : resolve())),
   );
 }
 
@@ -358,6 +404,13 @@ assert.equal(opus5?.maxOutput, 128_000);
 const subscriptionOpus5 = findKnownModel("claude_subscription", "claude-opus-5");
 assert.equal(subscriptionOpus5?.context, 1_000_000);
 assert.equal(subscriptionOpus5?.maxOutput, 128_000);
+assert.equal(findKnownModel("nanogpt", "deepseek-v4-pro")?.maxOutput, 384_000);
+assert.equal(findKnownModel("openrouter", "deepseek/deepseek-v4-flash")?.maxOutput, 384_000);
+assert.equal(findKnownModel("openrouter", "xiaomi/mimo-v2.5-pro")?.maxOutput, 128_000);
+assert.equal(findKnownModel("custom", "mimo-v2.5-pro")?.context, 1_000_000);
+assert.equal(findKnownModel("nanogpt", "glm-5.1")?.maxOutput, 128_000);
+assert.equal(findKnownModel("openrouter", "moonshotai/kimi-k2.6")?.maxOutput, 32_768);
+assert.equal(findKnownModel("nanogpt", "kimi-k3")?.maxOutput, 131_072);
 assert.equal(
   resolveProviderReasoningEffort({
     provider: "anthropic",
@@ -497,9 +550,7 @@ assert.equal(
     assert.equal("top_k" in disabledBody, false);
     assert.equal("top_p" in disabledBody, false);
   } finally {
-    await new Promise<void>((resolve, reject) =>
-      anthropicServer.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => anthropicServer.close((error) => (error ? reject(error) : resolve())));
   }
 }
 
@@ -620,9 +671,7 @@ try {
     "known reasoning-mandatory OpenRouter models must keep their provider default",
   );
 } finally {
-  await new Promise<void>((resolve, reject) =>
-    openRouterServer.close((error) => (error ? reject(error) : resolve())),
-  );
+  await new Promise<void>((resolve, reject) => openRouterServer.close((error) => (error ? reject(error) : resolve())));
 }
 
 function assertStrictObjects(value: unknown): void {
@@ -783,7 +832,10 @@ class HeldProvider extends BaseLLMProvider {
     this.started = resolve;
   });
 
-  constructor(private readonly held: Promise<void>, private readonly failure?: Error) {
+  constructor(
+    private readonly held: Promise<void>,
+    private readonly failure?: Error,
+  ) {
     super("", "");
   }
 
@@ -1065,15 +1117,86 @@ assert.equal(
 );
 // An image fallback is the same logical attempt on another endpoint, so a successful fallback
 // must be recorded completed rather than leaving the primary's failure as the attempt's result.
-const onePixelPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+let arliRequest:
+  | { url: string; authorization: string | undefined; contentType: string | undefined; body: Record<string, unknown> }
+  | undefined;
+const arliImageServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  arliRequest = {
+    url: request.url ?? "",
+    authorization: request.headers.authorization,
+    contentType: request.headers["content-type"],
+    body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+  };
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify({ images: [onePixelPng] }));
+});
+await new Promise<void>((resolve) => arliImageServer.listen(0, "127.0.0.1", resolve));
+try {
+  const address = arliImageServer.address();
+  assert.ok(address && typeof address === "object");
+  const imageResult = await generateImage("arli", `http://127.0.0.1:${address.port}/v1`, "arli-secret", "arli", {
+    prompt: "a red laboratory",
+    negativePrompt: "blurry",
+    model: "Arli/FluxModel",
+    width: 768,
+    height: 512,
+    allowLocalUrls: true,
+  });
+  assert.equal(imageResult.base64, onePixelPng);
+  assert.equal(arliRequest?.url, "/v1/txt2img");
+  assert.equal(arliRequest?.authorization, "Bearer arli-secret");
+  assert.equal(arliRequest?.contentType, "application/json");
+  assert.equal(arliRequest?.body.sd_model_checkpoint, "Arli/FluxModel");
+  assert.equal(arliRequest?.body.prompt, "a red laboratory");
+  assert.equal(arliRequest?.body.negative_prompt, "blurry");
+  assert.equal(arliRequest?.body.width, 768);
+  assert.equal(arliRequest?.body.height, 512);
+
+  const imageEditResult = await generateImage("arli", `http://127.0.0.1:${address.port}/v1`, "arli-secret", "arli", {
+    prompt: "add blue light",
+    model: "Arli/FluxModel",
+    referenceImage: `data:image/png;base64,${onePixelPng}`,
+    allowLocalUrls: true,
+  });
+  assert.equal(imageEditResult.base64, onePixelPng);
+  assert.equal(arliRequest?.url, "/v1/img2img");
+  assert.deepEqual(arliRequest?.body.init_images, [onePixelPng]);
+} finally {
+  await new Promise<void>((resolve, reject) => arliImageServer.close((error) => (error ? reject(error) : resolve())));
+}
+
 const failingImageServer = createServer((_request, response) => {
   response.writeHead(500, { "content-type": "application/json" });
   response.end(JSON.stringify({ error: "primary image backend down" }));
 });
-const succeedingImageServer = createServer((_request, response) => {
+const resolvedProviderFallback = await resolveImageConnectionFallback(
+  {
+    getFallbackForImageGeneration: async () => ({
+      id: "novelai-fallback",
+      name: "NovelAI fallback",
+      provider: "novelai",
+      model: "nai-diffusion-4-5-full",
+      baseUrl: "https://image.novelai.net",
+      imageGenerationSource: "novelai",
+      imageService: "novelai",
+    }),
+  },
+  "primary-image-connection",
+);
+assert.equal(resolvedProviderFallback?.imageGenerationSource, "novelai");
+assert.equal(resolvedProviderFallback?.imageService, "novelai");
+assert.equal(resolvedProviderFallback?.model, "nai-diffusion-4-5-full");
+assert.equal(resolvedProviderFallback?.baseUrl, "https://image.novelai.net");
+let fallbackImageRequest: Record<string, unknown> | undefined;
+const succeedingImageServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  fallbackImageRequest = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ data: [{ b64_json: onePixelPng }] }));
+  response.end(JSON.stringify({ images: [onePixelPng] }));
 });
 await new Promise<void>((resolve) => failingImageServer.listen(0, "127.0.0.1", resolve));
 await new Promise<void>((resolve) => succeedingImageServer.listen(0, "127.0.0.1", resolve));
@@ -1107,17 +1230,25 @@ try {
       fallback: {
         connectionId: "image-fallback-connection",
         connectionName: "Image Fallback",
-        provider: "openai",
-        source: "openai",
+        provider: "arli",
+        source: "arli",
         baseUrl: `http://127.0.0.1:${succeedingAddress.port}/v1`,
         apiKey: "fallback-key",
-        serviceHint: "openai",
-        model: "fallback-image-model",
+        serviceHint: "arli",
+        model: "Arli/FallbackModel",
+        prompt: "a provider-specific fallback laboratory",
+        negativePrompt: "fallback blur",
       },
     },
   );
   assert.equal(imageResult.base64, onePixelPng, "the image fallback must supply the returned image");
   assert.equal(imageResult.effectiveConnection?.connectionId, "image-fallback-connection");
+  assert.equal(imageResult.effectiveConnection?.provider, "arli");
+  assert.equal(imageResult.effectivePrompt, "a provider-specific fallback laboratory");
+  assert.equal(imageResult.effectiveNegativePrompt, "fallback blur");
+  assert.equal(fallbackImageRequest?.prompt, "a provider-specific fallback laboratory");
+  assert.equal(fallbackImageRequest?.negative_prompt, "fallback blur");
+  assert.equal(fallbackImageRequest?.sd_model_checkpoint, "Arli/FallbackModel");
   assert.equal(imageBookings, 1, "the image attempt must be booked exactly once across the chain");
   assert.deepEqual(imageOutcomes, ["completed"], "a successful image fallback must be recorded completed");
 } finally {
@@ -1188,7 +1319,10 @@ const rejectedAttempt = withConnectionAdmissionProvider(new RegressionProvider([
 });
 await assert.rejects(
   rejectedAttempt.chatComplete([{ role: "user", content: "test" }], { model: "model" }),
-  (error) => error instanceof ConnectionAttemptRejectedError && error.cause instanceof Error && /budget exhausted/.test(error.cause.message),
+  (error) =>
+    error instanceof ConnectionAttemptRejectedError &&
+    error.cause instanceof Error &&
+    /budget exhausted/.test(error.cause.message),
 );
 // A rejected admission attempt is not a provider failure, so both fallback catch sites must
 // rethrow it untouched instead of retrying the same logical attempt on another connection.
@@ -1315,15 +1449,12 @@ const callbackPrimary = new TokenCallbackFailureProvider();
 const callbackFallback = new RegressionProvider(["must not replace visible callback output"]);
 let callbackOutput = "";
 await assert.rejects(
-  collectProviderOutput(
-    new ConnectionFallbackProvider(callbackPrimary, callbackFallback, fallbackConnection, "main"),
-    {
-      model: "primary-model",
-      onToken: (chunk) => {
-        callbackOutput += chunk;
-      },
+  collectProviderOutput(new ConnectionFallbackProvider(callbackPrimary, callbackFallback, fallbackConnection, "main"), {
+    model: "primary-model",
+    onToken: (chunk) => {
+      callbackOutput += chunk;
     },
-  ),
+  }),
   /stream interrupted after callback output/,
 );
 assert.equal(callbackOutput, "visible callback output");
@@ -1367,26 +1498,26 @@ assert.equal(abortedFallback.calls, 0, "user cancellation must not trigger a fal
 {
   let responsesToolRequestBody: Record<string, unknown> | null = null;
   const responsesToolSse = [
-    'event: response.output_item.added',
+    "event: response.output_item.added",
     'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"web_search","arguments":""}}',
-    '',
-    'event: response.function_call_arguments.delta',
+    "",
+    "event: response.function_call_arguments.delta",
     'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\\"query\\":\\"latest "}',
-    '',
-    'event: response.function_call_arguments.delta',
+    "",
+    "event: response.function_call_arguments.delta",
     'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"marinara news\\"}"}',
-    '',
-    'event: response.function_call_arguments.done',
+    "",
+    "event: response.function_call_arguments.done",
     'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\\"query\\":\\"latest marinara news\\"}"}',
-    '',
-    'event: response.output_item.done',
+    "",
+    "event: response.output_item.done",
     'data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"web_search"}}',
-    '',
-    'event: response.completed',
+    "",
+    "event: response.completed",
     'data: {"type":"response.completed","response":{"status":"completed"}}',
-    '',
-    'data: [DONE]',
-    '',
+    "",
+    "data: [DONE]",
+    "",
   ].join("\n");
   const responsesServer = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -1416,7 +1547,11 @@ assert.equal(abortedFallback.calls, 0, "user cancellation must not trigger a fal
       tools: [
         {
           type: "function",
-          function: { name: "web_search", description: "Search the web", parameters: { type: "object", properties: { query: { type: "string" } } } },
+          function: {
+            name: "web_search",
+            description: "Search the web",
+            parameters: { type: "object", properties: { query: { type: "string" } } },
+          },
         },
       ],
     });
@@ -1529,6 +1664,88 @@ assert.equal(abortedFallback.calls, 0, "user cancellation must not trigger a fal
     await new Promise<void>((resolve, reject) =>
       responsesReasoningServer.close((error) => (error ? reject(error) : resolve())),
     );
+  }
+}
+
+// A background refresh captions its prompt images on the same connection it then generates with.
+// Booking that captioning call as foreground stamps the connection foreground-active, and the
+// refresh's own generation is refused for the whole idle window — every scheduled run, forever,
+// while manual (foreground) refreshes keep working. Issue #4642.
+{
+  const captionServer = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ choices: [{ message: { content: "a caption" }, finish_reason: "stop" }] }));
+  });
+  await new Promise<void>((resolve) => captionServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = captionServer.address();
+    assert.ok(address && typeof address === "object");
+    const captionConnection = {
+      id: "noodle-generation-connection",
+      provider: "custom",
+      apiKey: "test",
+      model: "caption-model",
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    };
+    // A captioning connection the caller never admitted is separate background work and must
+    // stay accounted; only the caller's own connection is exempt.
+    const separateCaptionConnection = { ...captionConnection, id: "separate-caption-connection" };
+    const connectionsStub = {
+      listRandomPool: async () => [],
+      getWithKey: async (id: string) =>
+        id === captionConnection.id
+          ? captionConnection
+          : id === separateCaptionConnection.id
+            ? separateCaptionConnection
+            : null,
+      getFallbackForAgents: async () => null,
+    };
+
+    for (const [mode, expectedAdmission] of [
+      [{ kind: "background" } as ConnectionAdmissionMode, true],
+      [{ kind: "foreground" } as ConnectionAdmissionMode, false],
+    ] as const) {
+      resetConnectionAdmissionForTests();
+      const runtime = await resolveImageCaptioningRuntime({
+        chatMeta: { imageCaptioningEnabled: true, imageCaptioningConnectionId: captionConnection.id },
+        fallbackConnectionId: captionConnection.id,
+        connections: connectionsStub,
+        admissionMode: mode,
+      });
+      assert.ok(runtime.provider, "captioning runtime must resolve a provider");
+      await runtime.provider.chatComplete([{ role: "user", content: "describe" }], { model: "caption-model" });
+      assert.equal(
+        tryBackgroundConnection(captionConnection.id, new Date()).acquired,
+        expectedAdmission,
+        `captioning under ${mode.kind} admission must ${expectedAdmission ? "leave" : "block"} the connection's background slot`,
+      );
+    }
+
+    resetConnectionAdmissionForTests();
+    const separateRuntime = await resolveImageCaptioningRuntime({
+      chatMeta: { imageCaptioningEnabled: true, imageCaptioningConnectionId: separateCaptionConnection.id },
+      fallbackConnectionId: captionConnection.id,
+      connections: connectionsStub,
+      admissionMode: { kind: "background" },
+    });
+    assert.ok(separateRuntime.provider, "captioning runtime must resolve a provider");
+    const separateCaption = separateRuntime.provider.chatComplete([{ role: "user", content: "describe" }], {
+      model: "caption-model",
+    });
+    assert.equal(
+      tryBackgroundConnection(separateCaptionConnection.id, new Date()).acquired,
+      false,
+      "captioning on a connection the caller never admitted must still hold its own background slot",
+    );
+    await separateCaption;
+    assert.equal(
+      tryBackgroundConnection(captionConnection.id, new Date()).acquired,
+      true,
+      "captioning elsewhere must not consume the caller's generation connection",
+    );
+  } finally {
+    resetConnectionAdmissionForTests();
+    await new Promise<void>((resolve, reject) => captionServer.close((error) => (error ? reject(error) : resolve())));
   }
 }
 

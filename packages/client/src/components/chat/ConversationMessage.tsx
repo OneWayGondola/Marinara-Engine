@@ -41,6 +41,7 @@ import { MessageReactions } from "./MessageReactions";
 import { MessageThinkingModal } from "./MessageThinkingModal";
 import { useChatStore } from "../../stores/chat.store";
 import { parseChatMetadata } from "../../lib/chat-display";
+import { resolveMessageReasoningDisplay } from "../../lib/message-reasoning";
 import {
   findRetargetableUserReaction,
   reactionTargetOf,
@@ -217,12 +218,15 @@ export const ConversationMessage = memo(function ConversationMessage({
       : null;
   const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
   const canRegenerate = !isUser || generationReplay !== null;
-  const thinking =
-    typeof extra?.thinking === "string" && extra.thinking.trim().length > 0 ? (extra.thinking as string) : null;
+  const {
+    summary: thinking,
+    summaryUnavailable: reasoningSummaryUnavailable,
+    hasReasoning,
+  } = resolveMessageReasoningDisplay(extra);
 
   useEffect(() => {
-    if (!thinking) setShowThinking(false);
-  }, [thinking]);
+    if (!hasReasoning) setShowThinking(false);
+  }, [hasReasoning]);
 
   const reactions = useMemo<MessageReaction[]>(
     () => (Array.isArray(extra.reactions) ? extra.reactions : []),
@@ -442,7 +446,9 @@ export const ConversationMessage = memo(function ConversationMessage({
         await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, { attachments: updated });
       } catch (err) {
         qc.setQueryData(msgKey, previous);
-        toast.error(err instanceof Error ? err.message :localizeUi("ui.chat.conversationmessage.failedToRemoveAttachment"));
+        toast.error(
+          err instanceof Error ? err.message : localizeUi("ui.chat.conversationmessage.failedToRemoveAttachment"),
+        );
       } finally {
         await qc.invalidateQueries({ queryKey: msgKey });
       }
@@ -474,7 +480,9 @@ export const ConversationMessage = memo(function ConversationMessage({
         await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, { reactions: next });
       } catch (err) {
         qc.setQueryData(msgKey, previous);
-        toast.error(err instanceof Error ? err.message :localizeUi("ui.chat.conversationmessage.failedToUpdateReaction"));
+        toast.error(
+          err instanceof Error ? err.message : localizeUi("ui.chat.conversationmessage.failedToUpdateReaction"),
+        );
       } finally {
         await qc.invalidateQueries({ queryKey: msgKey });
       }
@@ -851,7 +859,8 @@ export const ConversationMessage = memo(function ConversationMessage({
     isGuided,
     regenerateButtonTitle,
     regenerateGuidedClass,
-    thinking,
+    hasReasoning,
+    reasoningSummaryUnavailable,
     thinkingButtonRef,
     generationReplay,
     canRegenerate,
@@ -923,9 +932,10 @@ export const ConversationMessage = memo(function ConversationMessage({
   // ── Shared modals (portals, rendered outside the layout) ──
   const modals = (
     <>
-      {showThinking && thinking && (
+      {showThinking && hasReasoning && (
         <MessageThinkingModal
           thinking={thinking}
+          summaryUnavailable={reasoningSummaryUnavailable}
           onClose={() => setShowThinking(false)}
           restoreFocusRef={thinkingButtonRef}
         />
@@ -1080,7 +1090,7 @@ export const ConversationMessage = memo(function ConversationMessage({
           isConversationStart && cn("rounded-lg ring-1", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
           isHiddenFromAI && cn("rounded-lg ring-1 saturate-75", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
           multiSelectMode && isSelected && MESSAGE_SELECTION_SURFACE_CLASS,
-          hideActions && thinking && !isUser && "max-sm:pb-8",
+          hideActions && hasReasoning && !isUser && "max-sm:pb-8",
         )}
         data-message-id={message.id}
         data-message-role={message.role}
@@ -1090,19 +1100,20 @@ export const ConversationMessage = memo(function ConversationMessage({
       >
         {isBubbleStyle ? <ConversationMessageBubble ctx={ctx} /> : <ConversationMessageLine ctx={ctx} />}
 
-        {(!hideActions || (!!thinking && !isUser)) && (
+        {(!hideActions || (hasReasoning && !isUser)) && (
           <ConversationMessageActions
             isBubbleStyle={isBubbleStyle}
             isUser={isUser}
             showActions={showActions}
-            forceShowActions={hideActions && !!thinking ? true : forceShowActions}
-            thinkingOnly={hideActions && !!thinking}
+            forceShowActions={hideActions && hasReasoning ? true : forceShowActions}
+            thinkingOnly={hideActions && hasReasoning}
             copied={copied}
             translatedText={translatedText}
             isHiddenFromAI={isHiddenFromAI}
             canRegenerate={canRegenerate}
             isLastAssistantMessage={isLastAssistantMessage}
-            thinking={thinking}
+            hasReasoning={hasReasoning}
+            reasoningSummaryUnavailable={reasoningSummaryUnavailable}
             thinkingButtonRef={thinkingButtonRef}
             generationReplay={generationReplay}
             isGuided={isGuided}

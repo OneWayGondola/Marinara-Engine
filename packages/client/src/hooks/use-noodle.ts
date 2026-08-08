@@ -31,6 +31,7 @@ import type {
   NoodleSettings,
   NoodleSettingsUpdateInput,
   NoodleStageProfileInput,
+  NoodlerSourceSnapshot,
   NoodlerGenerationRequest,
   NoodleStageProfileDraftRequest,
   NoodlerManagedPost,
@@ -42,9 +43,14 @@ import type {
   NoodlerCreateInteractionInput,
   NoodlerCreatorReplyResult,
   NoodlerReserveStatus,
+  NoodlerFanActivitySettings,
   NoodlerRemoveInteractionInput,
 } from "@marinara-engine/shared";
-import { countNoodlePostsSince, countNoodlerPostsSince, mergeNoodlePollVoteInteractions } from "@marinara-engine/shared";
+import {
+  countNoodlePostsSince,
+  countNoodlerPostsSince,
+  mergeNoodlePollVoteInteractions,
+} from "@marinara-engine/shared";
 import type { ImagePromptOverride, ImagePromptReviewItem } from "../components/ui/ImagePromptReviewModal";
 
 export type NoodleRefreshResult = {
@@ -65,6 +71,7 @@ export const noodleKeys = {
   noodlerViewers: () => [...noodleKeys.noodlerRoot(), "viewers"] as const,
   viewer: (personaId: string) => [...noodleKeys.noodlerViewers(), personaId] as const,
   noodlerReserveStatus: () => [...noodleKeys.noodlerRoot(), "reserve-status"] as const,
+  noodlerFanStatus: () => [...noodleKeys.noodlerRoot(), "fan-status"] as const,
 };
 
 function preservePollVotes(current: NoodleBootstrap | undefined, next: NoodleBootstrap): NoodleBootstrap {
@@ -208,14 +215,49 @@ export function useBulkCreateNoodlerStageProfiles() {
 export function useUpdateNoodlerStageProfile() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ accountId, ...input }: { accountId: string } & NoodleStageProfileInput) =>
-      api.put<NoodlerStageProfile>(`/noodle/noodler/accounts/${encodeURIComponent(accountId)}/stage-profile`, input),
+    mutationFn: ({
+      accountId,
+      sourceSnapshot,
+      ...input
+    }: {
+      accountId: string;
+      acceptSourceChanges?: boolean;
+      sourceSnapshot?: NoodlerSourceSnapshot;
+    } & NoodleStageProfileInput) =>
+      api.put<NoodlerStageProfile>(`/noodle/noodler/accounts/${encodeURIComponent(accountId)}/stage-profile`, {
+        ...input,
+        ...(sourceSnapshot ? { sourceSnapshot } : {}),
+      }),
     onSuccess: () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: noodleKeys.noodlerAccounts() }),
         qc.invalidateQueries({ queryKey: noodleKeys.noodlerViewers() }),
       ]),
   });
+}
+
+function useNoodlerSourceAction(action: "dismiss" | "adopt-identity") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) =>
+      api.post<NoodlerManagedStageProfile>(
+        `/noodle/noodler/accounts/${encodeURIComponent(accountId)}/source/${action}`,
+        {},
+      ),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.noodlerAccounts() }),
+        qc.invalidateQueries({ queryKey: noodleKeys.noodlerViewers() }),
+      ]),
+  });
+}
+
+export function useDismissNoodlerSourceChanges() {
+  return useNoodlerSourceAction("dismiss");
+}
+
+export function useAdoptNoodlerSourceIdentity() {
+  return useNoodlerSourceAction("adopt-identity");
 }
 
 export function useDeleteNoodlerStageProfile() {
@@ -241,9 +283,13 @@ export function useGenerateNoodlerStageProfileDraft() {
       // ponytail: fixed 60s ceiling, no per-provider tuning — raise if real drafts routinely take longer
       const timer = setTimeout(() => controller.abort(), 60_000);
       return api
-        .post<NoodleStageProfileInput>("/noodle/noodler/stage-profile-draft", input, {
-          signal: controller.signal,
-        })
+        .post<NoodleStageProfileInput & { sourceSnapshot?: NoodlerSourceSnapshot }>(
+          "/noodle/noodler/stage-profile-draft",
+          input,
+          {
+            signal: controller.signal,
+          },
+        )
         .finally(() => clearTimeout(timer));
     },
   });
@@ -580,6 +626,18 @@ export function useUpdateNoodlerAutoPosting() {
   });
 }
 
+export function useUpdateNoodlerFanActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ accountId, fanActivity }: { accountId: string; fanActivity: NoodlerFanActivitySettings | null }) =>
+      api.patch<NoodleAccount>(`/noodle/accounts/${encodeURIComponent(accountId)}/settings`, {
+        subtree: "scheduler",
+        patch: { fanActivity },
+      } satisfies NoodleAccountSettingsPatchInput),
+    onSuccess: () => qc.invalidateQueries({ queryKey: noodleKeys.noodlerAccounts() }),
+  });
+}
+
 export function useNoodlerReserveStatus(enabled = true) {
   return useQuery({
     queryKey: noodleKeys.noodlerReserveStatus(),
@@ -630,6 +688,37 @@ export function useRefreshTargetedNoodlerCreatorsNow() {
         qc.invalidateQueries({ queryKey: [...noodleKeys.noodlerRoot(), "posts"] }),
         qc.invalidateQueries({ queryKey: noodleKeys.noodlerViewers() }),
       ]),
+  });
+}
+
+export function useRefreshNoodlerFanActivityNow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ status: string; created: number }>("/noodle/noodler/fan-activity/refresh-now", {
+        debugMode: useUIStore.getState().debugMode,
+      }),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: [...noodleKeys.noodlerRoot(), "posts"] }),
+        qc.invalidateQueries({ queryKey: noodleKeys.noodlerViewers() }),
+        qc.invalidateQueries({ queryKey: noodleKeys.noodlerFanStatus() }),
+      ]),
+  });
+}
+
+export function useNoodlerFanActivityStatus(enabled = true) {
+  return useQuery({
+    queryKey: noodleKeys.noodlerFanStatus(),
+    queryFn: () =>
+      api.get<{
+        localDate: string;
+        usedRuns: number;
+        runLimit: number;
+        lastRun: { status: string; finishedAt: string | null } | null;
+      }>("/noodle/noodler/fan-activity/status"),
+    enabled,
+    refetchInterval: 30_000,
   });
 }
 

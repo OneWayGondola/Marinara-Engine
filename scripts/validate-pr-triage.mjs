@@ -32,15 +32,15 @@ export function validatePullRequestTriage() {
   const triageWorkflow = readFileSync(
     new URL("../.github/workflows/pull-request-triage.yml", import.meta.url),
     "utf8",
-  );
+  ).replace(/\r\n/gu, "\n");
   const reviewSignal = readFileSync(
     new URL("../.github/workflows/owner-approval-review-signal.yml", import.meta.url),
     "utf8",
-  );
+  ).replace(/\r\n/gu, "\n");
   const reviewEvaluator = readFileSync(
     new URL("../.github/workflows/owner-approval-review.yml", import.meta.url),
     "utf8",
-  );
+  ).replace(/\r\n/gu, "\n");
   const approvalEvaluator = readFileSync(new URL("./evaluate-owner-approval.mjs", import.meta.url), "utf8");
   const codeOwners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
   const triggersSectionStart = triageWorkflow.indexOf("\non:\n");
@@ -50,9 +50,10 @@ export function validatePullRequestTriage() {
   assert.notEqual(triggersSectionStart, -1, "Missing workflow trigger section");
   assert.notEqual(triggersSectionEnd, -1, "Missing end of workflow trigger section");
   assert.notEqual(jobsSectionStart, -1, "Missing workflow jobs section");
-  assert.equal(
-    triageWorkflow.slice(triggersSectionStart + 1, triggersSectionEnd),
-    "on:\n  pull_request_target:\n    types: [opened, reopened, edited, synchronize, ready_for_review]\n    branches: [staging, main]\n",
+  const triggersSection = triageWorkflow.slice(triggersSectionStart + 1, triggersSectionEnd);
+  assert.match(
+    triggersSection,
+    /on:\s*\n\s*pull_request_target:\s*\n\s*types:\s*\[opened,\s*reopened,\s*edited,\s*synchronize,\s*ready_for_review\]\s*\n\s*branches:\s*\[staging,\s*main\]/u,
   );
 
   const jobIds = [
@@ -109,12 +110,15 @@ export function validatePullRequestTriage() {
     exemptionStep,
     [
       "      - name: Exempt trusted contributor",
-      "        if: >-",
-      "          github.event.pull_request.author_association == 'MEMBER' ||",
-      "          github.event.pull_request.author_association == 'OWNER' ||",
-      "          github.event.pull_request.author_association == 'COLLABORATOR'",
+      "        if: contains(fromJSON('[\"MEMBER\",\"OWNER\",\"COLLABORATOR\"]'), github.event.pull_request.author_association)",
       '        run: echo "Trusted contributor; pull request template validation is not required."',
     ].join("\n"),
+  );
+
+  const templateStep = extractNamedStep(triageWorkflow, "Check Pull Request body against template");
+  assert.match(
+    templateStep,
+    /if: >-\n\s*!contains\(fromJSON\('\["MEMBER","OWNER","COLLABORATOR"\]'\), github\.event\.pull_request\.author_association\)/u,
   );
 
   assert.match(codeOwners, /^\* @SpicyMarinara$/mu);

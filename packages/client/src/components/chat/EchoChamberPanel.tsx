@@ -294,9 +294,12 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
   // Auto-scroll when a new message becomes visible
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: streamingChatId === activeChatId ? "auto" : "smooth",
+      });
     }
-  }, [visibleCount]);
+  }, [activeChatId, streamingChatId, visibleCount]);
 
   // Name → color map
   const nameColorMap = useMemo(() => {
@@ -405,6 +408,15 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
     },
     [clampPanelSize],
   );
+
+  const handleResizeLostCapture = useCallback(() => {
+    if (!resizeRef.current) return;
+    const pendingSize = pendingPanelSizeRef.current;
+    const rect = panelRef.current?.getBoundingClientRect();
+    resizeRef.current = null;
+    if (pendingSize) commitPanelSize(pendingSize.width, pendingSize.height);
+    else if (rect) commitPanelSize(rect.width, rect.height);
+  }, [commitPanelSize]);
 
   const handleResizeKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -681,6 +693,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeCancel}
+        onLostPointerCapture={handleResizeLostCapture}
         onKeyDown={handleResizeKeyDown}
       >
         <span

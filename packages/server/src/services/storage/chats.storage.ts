@@ -1040,7 +1040,25 @@ export function createChatsStorage(db: DB) {
     async updateMessageContent(id: string, content: string) {
       return withPatchQueue(messageExtraPatchQueues, id, async () => {
         const existing = await this.getMessage(id);
-        await db.update(messages).set({ content }).where(eq(messages.id, id));
+
+        // Conversation-mode prompt history prefers `conversationCommandContent` (the raw
+        // reply before command stripping) over `content`, so a rewrite of the visible text
+        // must also drop the stale raw copy or the edit never reaches the model. Command-only
+        // anchors keep theirs: their `content` is empty by design and the raw copy is the
+        // message's only text. Written directly rather than via updateMessageExtra, which
+        // shares this queue key and would deadlock.
+        const existingExtra = parseExtraRecord(existing?.extra);
+        const clearCommandContent =
+          typeof existingExtra.conversationCommandContent === "string" &&
+          existingExtra.conversationCommandContent.trim() !== "" &&
+          existingExtra.commandOnly !== true &&
+          content !== (existing?.content ?? "");
+
+        const messagePatch: Record<string, unknown> = { content };
+        if (clearCommandContent) {
+          messagePatch.extra = JSON.stringify({ ...existingExtra, conversationCommandContent: null });
+        }
+        await db.update(messages).set(messagePatch).where(eq(messages.id, id));
         if (existing) {
           await invalidateMemoryChunksFrom(db, existing.chatId, existing.createdAt);
         }
@@ -1050,7 +1068,20 @@ export function createChatsStorage(db: DB) {
           const swipes = await this.getSwipes(id);
           const activeSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
           if (activeSwipe) {
-            await db.update(messageSwipes).set({ content }).where(eq(messageSwipes.id, activeSwipe.id));
+            const swipePatch: Record<string, unknown> = { content };
+            if (clearCommandContent) {
+              const swipeExtra = parseExtraRecord(activeSwipe.extra);
+              // Clear only a raw copy this swipe itself carries, and never a
+              // command-only carrier's.
+              if (
+                typeof swipeExtra.conversationCommandContent === "string" &&
+                swipeExtra.conversationCommandContent.trim() !== "" &&
+                swipeExtra.commandOnly !== true
+              ) {
+                swipePatch.extra = JSON.stringify({ ...swipeExtra, conversationCommandContent: null });
+              }
+            }
+            await db.update(messageSwipes).set(swipePatch).where(eq(messageSwipes.id, activeSwipe.id));
           }
         }
         return msg;

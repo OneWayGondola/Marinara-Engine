@@ -84,7 +84,8 @@ function logAgentDebugToBrowserConsole(entry: AgentDebugEntry) {
   const round = call.round != null ? ` round ${call.round}` : "";
   const usage = usageParts.length > 0 ? ` | ${usageParts.join(", ")} tokens` : "";
   const duration = call.durationMs != null ? ` | ${call.durationMs}ms` : "";
-  const label = `[Marinara Agent Debug] ${call.stage}${round}: ${call.agentName} (${call.agentType}) | ${call.model}${usage}${duration}`;
+  const elapsed = call.elapsedMs != null ? ` | ${call.elapsedMs}ms total` : "";
+  const label = `[Marinara Agent Debug] ${call.stage}${round}: ${call.agentName} (${call.agentType}) | ${call.model}${usage}${duration}${elapsed}`;
 
   console.groupCollapsed(label);
   console.debug("Event", call);

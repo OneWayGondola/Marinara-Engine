@@ -12,6 +12,7 @@ import {
   takeTypewriterCharacters,
 } from "../../packages/client/src/lib/generation-stream-policy.js";
 import { resolveMessageRewriteVersions } from "../../packages/client/src/lib/message-rewrite-versions.js";
+import { resolveMessageReasoningDisplay } from "../../packages/client/src/lib/message-reasoning.js";
 import { shouldFormatTextareaQuotes } from "../../packages/client/src/lib/textarea-quotes.js";
 import {
   findLatestTTSAutoplayMessage,
@@ -63,6 +64,22 @@ function extractCssBlock(source: string, prelude: string): string {
   assert.fail(`Unclosed CSS block for: ${prelude}`);
 }
 
+assert.deepEqual(resolveMessageReasoningDisplay({ thinking: "Visible summary" }), {
+  summary: "Visible summary",
+  summaryUnavailable: false,
+  hasReasoning: true,
+});
+assert.deepEqual(resolveMessageReasoningDisplay({ generationInfo: { tokensReasoning: 1034 } }), {
+  summary: null,
+  summaryUnavailable: true,
+  hasReasoning: true,
+});
+assert.deepEqual(resolveMessageReasoningDisplay({ generationInfo: { tokensReasoning: 0 } }), {
+  summary: null,
+  summaryUnavailable: false,
+  hasReasoning: false,
+});
+
 const retryAgentRouteSource = readFileSync(
   new URL("../../packages/server/src/routes/generate/retry-agents-route.ts", import.meta.url),
   "utf8",
@@ -71,6 +88,31 @@ const generateRouteSource = readFileSync(
   new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
   "utf8",
 );
+const useGenerateSource = readFileSync(
+  new URL("../../packages/client/src/hooks/use-generate.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  generateRouteSource,
+  /\.\.\.\(input\.submissionId \? \{ submissionId: input\.submissionId \} : \{\}\)/u,
+  "The durable user row must retain its client submission ID even when generation fails",
+);
+const upsertPersistedMessagesSource =
+  /export function upsertPersistedMessages\([\s\S]*?\n\}\n\nfunction appendMissingPersistedMessages/u.exec(
+    useGenerateSource,
+  )?.[0];
+assert.ok(upsertPersistedMessagesSource, "The durable-message cache replacement helper must remain available");
+assert.match(upsertPersistedMessagesSource, /const persistedUserBySubmissionId = new Map/u);
+assert.match(
+  upsertPersistedMessagesSource,
+  /msg\.id\.startsWith\("__optimistic_"\)[\s\S]*persistedUserBySubmissionId\.get\(submissionId\)/u,
+  "Durable-message reconciliation must replace the matching optimistic prompt inside the cache helper",
+);
+const confirmDurableSubmittedUserTurnSource =
+  /const confirmDurableSubmittedUserTurn = async \(\) => \{[\s\S]*?\n      \};/u.exec(useGenerateSource)?.[0];
+assert.ok(confirmDurableSubmittedUserTurnSource, "The failed-generation recovery helper must remain available");
+assert.match(confirmDurableSubmittedUserTurnSource, /upsertPersistedMessages\(qc, params\.chatId, messages\)/u);
+assert.match(useGenerateSource, /return await confirmDurableSubmittedUserTurn\(\)/u);
 const chatInputSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatInput.tsx", import.meta.url),
   "utf8",
@@ -91,6 +133,7 @@ const appShellSource = readFileSync(
   new URL("../../packages/client/src/components/layout/AppShell.tsx", import.meta.url),
   "utf8",
 );
+const appSource = readFileSync(new URL("../../packages/client/src/App.tsx", import.meta.url), "utf8");
 const peekPromptModalSource = readFileSync(
   new URL("../../packages/client/src/components/chat/PeekPromptModal.tsx", import.meta.url),
   "utf8",
@@ -119,10 +162,7 @@ const echoChamberPanelSource = readFileSync(
   new URL("../../packages/client/src/components/chat/EchoChamberPanel.tsx", import.meta.url),
   "utf8",
 );
-const uiStoreSource = readFileSync(
-  new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url),
-  "utf8",
-);
+const uiStoreSource = readFileSync(new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url), "utf8");
 const globalStylesSource = readFileSync(
   new URL("../../packages/client/src/styles/globals.css", import.meta.url),
   "utf8",
@@ -136,14 +176,7 @@ const presetEditorSource = readFileSync(
   new URL("../../packages/client/src/components/presets/PresetEditor.tsx", import.meta.url),
   "utf8",
 );
-const useGenerateSource = readFileSync(
-  new URL("../../packages/client/src/hooks/use-generate.ts", import.meta.url),
-  "utf8",
-);
-const useChatsSource = readFileSync(
-  new URL("../../packages/client/src/hooks/use-chats.ts", import.meta.url),
-  "utf8",
-);
+const useChatsSource = readFileSync(new URL("../../packages/client/src/hooks/use-chats.ts", import.meta.url), "utf8");
 const gameInputSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameInput.tsx", import.meta.url),
   "utf8",
@@ -156,10 +189,74 @@ const summaryPopoverSource = readFileSync(
   new URL("../../packages/client/src/components/chat/SummaryPopover.tsx", import.meta.url),
   "utf8",
 );
+const professorMariHomeSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/HomeProfessorMariChat.tsx", import.meta.url),
+  "utf8",
+);
+const personalExtensionsHookSource = readFileSync(
+  new URL("../../packages/client/src/hooks/use-personal-extensions.ts", import.meta.url),
+  "utf8",
+);
+const chatSettingsDrawerSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatSettingsDrawer.tsx", import.meta.url),
+  "utf8",
+);
+const reducedAmbientEffectsHookSource = readFileSync(
+  new URL("../../packages/client/src/hooks/use-reduced-ambient-effects.ts", import.meta.url),
+  "utf8",
+);
+const professorMariTokenBranch =
+  professorMariHomeSource.match(/if \(event\.type === "token"[\s\S]*?continue;/u)?.[0] ?? "";
+const roleplayTrackerSettingsBranch =
+  chatSettingsDrawerSource.match(
+    /activeInCat\.map\(\(agent\) => \{[\s\S]*?\{\/\* Available agents to add \*\//u,
+  )?.[0] ?? "";
+assert.match(professorMariHomeSource, /rafThrottle<void>\(appendPendingWorkspaceText\)/u);
+assert.doesNotMatch(professorMariTokenBranch, /setWorkspaceTimeline/u);
+assert.match(professorMariHomeSource, /void refreshAfterWorkspaceRun\(chat\.id, runId\)/u);
+assert.match(professorMariHomeSource, /WORKSPACE_SETTLE_REQUEST_TIMEOUT_MS/u);
+assert.doesNotMatch(personalExtensionsHookSource, /refetchInterval/u);
+assert.match(chatSettingsDrawerSource, /active && agent\.id !== "illustrator"[\s\S]*?<AgentPromptTemplateSelect/u);
 assert.match(
-  chatRoleplaySurfaceSource,
-  /function RoleplayLiveStreamText[\s\S]*?textContent = next[\s\S]*?requestAnimationFrame\(apply\)/u,
-  "Roleplay live text should update one text node at animation-frame cadence",
+  roleplayTrackerSettingsBranch,
+  /cat\.key === "tracker"[\s\S]*?<AgentPromptTemplateSelect/u,
+  "active Roleplay tracker agents should expose their saved prompt templates",
+);
+assert.match(reducedAmbientEffectsHookSource, /manualPreference \|\| systemPreference/u);
+assert.match(uiStoreSource, /version: 90/u);
+assert.match(globalStylesSource, /data-marinara-reduced-effects/u);
+const accentTransitionStyles =
+  globalStylesSource.match(
+    /\[data-marinara-accent-animation\][\s\S]*?:where\([\s\S]*?\.mari-topbar-button[\s\S]*?\)\s*\{([\s\S]*?)\}/u,
+  )?.[1] ?? "";
+assert.match(accentTransitionStyles, /opacity 180ms linear/u);
+assert.match(accentTransitionStyles, /transform 180ms linear/u);
+assert.doesNotMatch(
+  accentTransitionStyles,
+  /background-color|border-color|\bcolor\s+180ms|\bstroke\s+180ms/u,
+  "root accent ticks must not start color transitions throughout the mounted UI",
+);
+assert.doesNotMatch(
+  appSource,
+  /applyCursorAccent\(liveAccent/u,
+  "animated accent ticks must not force synchronous custom-cursor color resolution",
+);
+const roleplayLiveStreamSource =
+  chatRoleplaySurfaceSource.match(/function RoleplayLiveStreamText[\s\S]*?\nfunction StreamingIndicator/u)?.[0] ?? "";
+assert.match(
+  roleplayLiveStreamSource,
+  /function RoleplayLiveStreamText[\s\S]*?setText\(next\)[\s\S]*?requestAnimationFrame\(apply\)/u,
+  "Roleplay live formatting should update at animation-frame cadence",
+);
+assert.doesNotMatch(
+  roleplayLiveStreamSource,
+  /replaceChildren|textContent\s*=/u,
+  "Roleplay streaming should let React reconcile formatted output instead of mutating the DOM directly",
+);
+assert.match(
+  chatMessageSource,
+  /streamingContent\(renderStreamingText\)/u,
+  "Roleplay streaming must reuse the committed-message formatter",
 );
 assert.doesNotMatch(
   chatRoleplaySurfaceSource,
@@ -252,18 +349,18 @@ assert.doesNotMatch(
 );
 assert.match(
   echoChamberPanelSource,
-  /const HUD_EDGE_GAP = 24;[^\n]*native chat scrollbar/u,
+  /const FLOATING_EDGE_GAP = 16;/u,
   "Echo Chamber should leave the native Roleplay scrollbar reachable",
 );
 assert.match(
   echoChamberPanelSource,
-  /rightEdgeOffset =[\s\S]{0,420}Math\.max\(HUD_EDGE_GAP, Math\.round\(containerRect\.right - alignmentRect\.right\)\)/u,
-  "Echo Chamber alignment anchors must not pull it back across the scrollbar clearance",
+  /\.\.\.\(!isLeft && \{ right: FLOATING_EDGE_GAP \}\)/u,
+  "Echo Chamber should keep a fixed clearance from the right edge",
 );
 assert.match(
   appShellSource,
-  /right: \(rightPanelOpen \? liveRightPanelWidth : 0\) \+ CHAT_SCROLLBAR_CLEARANCE/u,
-  "the right-side Trackers Panel should leave the native Roleplay scrollbar reachable",
+  /right: rightPanelOpen \? liveRightPanelWidth : 0/u,
+  "the right-side Trackers Panel should stay outside the open settings panel",
 );
 assert.doesNotMatch(
   peekPromptModalSource.match(/<div\s+className="fixed inset-0 z-\[100\][^\n]*/u)?.[0] ?? "",
@@ -275,7 +372,8 @@ const illustratorCadencePersistenceIndex = generateRouteSource.indexOf(
 );
 assert.notEqual(illustratorCadencePersistenceIndex, -1, "agent cadence decisions should be persisted eagerly");
 assert.ok(
-  illustratorCadencePersistenceIndex < generateRouteSource.indexOf("pendingIllustration =", illustratorCadencePersistenceIndex),
+  illustratorCadencePersistenceIndex <
+    generateRouteSource.indexOf("pendingIllustration =", illustratorCadencePersistenceIndex),
   "Illustrator cadence must be persisted before background image generation begins",
 );
 assert.match(
@@ -297,6 +395,11 @@ assert.match(
   echoChamberPanelSource,
   /onPointerCancel=\{handleResizeCancel\}/u,
   "a canceled Echo Chamber resize should use its rollback path",
+);
+assert.match(
+  echoChamberPanelSource,
+  /onLostPointerCapture=\{handleResizeLostCapture\}/u,
+  "Echo Chamber should still commit a finished drag when the browser drops pointer capture",
 );
 assert.doesNotMatch(
   echoChamberPanelSource,
@@ -329,10 +432,7 @@ assert.doesNotMatch(
   "summary keystrokes must not update popover-level draft state",
 );
 assert.equal(
-  shouldFormatTextareaQuotes(
-    { inputType: "insertText", data: '"', isComposing: false } as InputEvent,
-    'She said "',
-  ),
+  shouldFormatTextareaQuotes({ inputType: "insertText", data: '"', isComposing: false } as InputEvent, 'She said "'),
   true,
   "direct quote insertion should retain immediate quote formatting",
 );
@@ -477,8 +577,6 @@ try {
     value: { type: "token", data: "Before hiding" },
   });
   const stalledRead = stalledEvents.next();
-  visibilityDocument.setVisibility("hidden");
-  visibilityDocument.setVisibility("visible");
   await assert.rejects(stalledRead, StreamResumeDisconnectError);
 } finally {
   globalThis.fetch = originalFetch;
@@ -507,8 +605,8 @@ assert.match(
 );
 assert.match(
   generateHookSource,
-  /const submittedUserTurn = params\.userMessage !== undefined;/u,
-  "generation should remember whether the stopped request already submitted a user turn",
+  /const submittedUserTurn = hasVisibleUserMessagePayload\(params\.userMessage, pendingAttachments\);/u,
+  "generation should remember whether the stopped request submitted visible text or attachments",
 );
 assert.equal(
   generateHookSource.match(/submittedUserTurn \|\| receivedContent \|\| spatialTransitionCommitted/gu)?.length,
@@ -883,6 +981,17 @@ assert.equal(
   50,
   "a 30 FPS animation cadence must preserve the configured 50 characters-per-second reveal rate",
 );
+const delayedFrameBudget = getTypewriterFrameBudget(90, 120, 0);
+assert.ok(delayedFrameBudget.accruedCharacters > 10, "a delayed frame should retain its reveal debt");
+assert.ok(
+  delayedFrameBudget.maxCharacters <= 3,
+  "a delayed frame must not dump its entire reveal debt as one chunky typewriter burst",
+);
+assert.match(
+  echoChamberPanelSource,
+  /behavior: streamingChatId === activeChatId \? "auto" : "smooth"/u,
+  "Echo Chamber should avoid competing smooth-scroll animation while the same Roleplay chat is streaming",
+);
 
 assert.equal(
   shouldKeepStreamLiveThroughPostProcessing({
@@ -1203,7 +1312,11 @@ useAgentStore.setState({
 useAgentStore.getState().revealNextEchoMessage();
 assert.equal(useAgentStore.getState().echoVisibleCount, 2, "one Echo timer tick must reveal exactly one reaction");
 useAgentStore.getState().revealNextEchoMessage();
-assert.equal(useAgentStore.getState().echoVisibleCount, 3, "a second Echo timer tick must reveal only the next reaction");
+assert.equal(
+  useAgentStore.getState().echoVisibleCount,
+  3,
+  "a second Echo timer tick must reveal only the next reaction",
+);
 
 let weatherAccumulator = 0;
 let weatherDraws = 0;

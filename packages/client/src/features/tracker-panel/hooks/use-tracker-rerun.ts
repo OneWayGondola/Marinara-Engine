@@ -2,7 +2,6 @@ import { useCallback } from "react";
 import { useAgentStore } from "../../../stores/agent.store";
 import { useChatStore } from "../../../stores/chat.store";
 import { useGenerate } from "../../../hooks/use-generate";
-import { TRACKER_AGENT_TYPE_IDS } from "../lib/tracker-panel.constants";
 
 export function useTrackerRerun({
   activeChatId,
@@ -26,12 +25,7 @@ export function useTrackerRerun({
 
   const rerunTracker = useCallback(
     async (agentType: string) => {
-      if (
-        !activeChatId ||
-        trackerRetryBusy ||
-        !TRACKER_AGENT_TYPE_IDS.has(agentType) ||
-        !enabledAgentTypes.has(agentType)
-      ) {
+      if (!activeChatId || trackerRetryBusy || !enabledAgentTypes.has(agentType)) {
         return;
       }
       try {

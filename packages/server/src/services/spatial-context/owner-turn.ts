@@ -2,6 +2,7 @@ import type {
   CapabilityMessageRecord,
   MessageAttachment,
   PendingSpatialTransition,
+  ResolvedSpatialTravel,
   SpatialContextSnapshot,
   SpatialTransitionErrorCode,
 } from "@marinara-engine/shared";
@@ -23,6 +24,7 @@ interface SpatialErrorShape {
   details?: {
     snapshot?: SpatialContextSnapshot;
     messageId?: string;
+    travel?: ResolvedSpatialTravel;
     currentRevision?: number;
     currentLocationId?: string | null;
     currentBreadcrumb?: Array<{ id: string; name: string }>;
@@ -54,10 +56,18 @@ export interface CommitSpatialOwnerTurnInput {
   attachments?: MessageAttachment[];
 }
 
-type CommitResult = { message: CapabilityMessageRecord; snapshot: SpatialContextSnapshot };
-export type AppliedSpatialOwnerTurn = { messageId: string; snapshot: SpatialContextSnapshot };
+export type CommitSpatialOwnerTurnResult = {
+  message: CapabilityMessageRecord;
+  snapshot: SpatialContextSnapshot;
+  travel?: ResolvedSpatialTravel;
+};
+export type AppliedSpatialOwnerTurn = {
+  messageId: string;
+  snapshot: SpatialContextSnapshot;
+  travel?: ResolvedSpatialTravel;
+};
 interface OwnerTurnService {
-  commitSpatialOwnerTurn(input: CommitSpatialOwnerTurnInput): Promise<CommitResult>;
+  commitSpatialOwnerTurn(input: CommitSpatialOwnerTurnInput): Promise<CommitSpatialOwnerTurnResult>;
   findAppliedSpatialOwnerTurn?(
     input: Pick<CommitSpatialOwnerTurnInput, "chatId" | "transition">,
   ): Promise<AppliedSpatialOwnerTurn | null>;
@@ -71,7 +81,9 @@ export async function findAppliedSpatialOwnerTurn(
   return provider.findAppliedSpatialOwnerTurn?.(input) ?? null;
 }
 
-export async function commitSpatialOwnerTurn(input: CommitSpatialOwnerTurnInput): Promise<CommitResult> {
+export async function commitSpatialOwnerTurn(
+  input: CommitSpatialOwnerTurnInput,
+): Promise<CommitSpatialOwnerTurnResult> {
   const provider = getCapabilityService<OwnerTurnService>("hierarchical-maps:owner-turn");
   if (!provider) throw new SpatialOwnerTurnError("spatial_feature_unavailable", "World Maps is not active.", 409);
   return provider.commitSpatialOwnerTurn(input);

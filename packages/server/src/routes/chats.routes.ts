@@ -10,6 +10,7 @@ import {
   createMessageSchema,
   appendChatSummaryEntryToMetadata,
   CHAT_SUMMARY_PROMPT_SETTINGS_KEY,
+  combineChatSummaryEntryHistory,
   compileChatSummaryEntries,
   createChatSummaryEntry,
   DEFAULT_CONVERSATION_PROMPT,
@@ -124,6 +125,10 @@ import {
 } from "../services/generation/roleplay-summary-runtime.js";
 import { resolveLorebookTokenBudget } from "../services/generation/lorebook-generation-runtime.js";
 import { resolveGameGmPromptTemplate } from "../services/generation/game-gm-prompt-runtime.js";
+import {
+  isBackgroundAutonomousCandidate,
+  hasRoleplayDmThreadMarkers,
+} from "../services/conversation/autonomous-candidates.js";
 
 type TrackerWrapFormat = "xml" | "markdown" | "none";
 type EntryStateOverrides = Record<string, { ephemeral?: number | null; enabled?: boolean }>;
@@ -627,6 +632,28 @@ export async function chatsRoutes(app: FastifyInstance) {
     await cleanupEmptyRoleplayDmChats();
     const chats = await storage.list();
     return chats.filter((chat) => !shouldHideProfessorMariChat(chat)).map(normalizeChatForResponse);
+  });
+
+  // Lightweight candidate ids for the background-autonomous poller (#4704):
+  // the poller only needs ids, so skip the full-list materialization,
+  // metadata serialization, and DM-cleanup scans the / route performs.
+  // Static path — Fastify prefers it over GET /:id.
+  app.get("/autonomous-candidates", async () => {
+    const chats = await storage.list();
+    const candidates = chats.filter(isBackgroundAutonomousCandidate);
+    // Exclude EMPTIED Roleplay DM threads: the legacy poll's GET /chats ran
+    // cleanupEmptyRoleplayDmChats as a side effect, and an emptied thread with
+    // stale in-memory activity state could otherwise receive an autonomous
+    // message, permanently exempting it from cleanup. countMessages runs only
+    // for DM-marker candidates, so the scan cost this route avoids stays avoided.
+    const eligible = [];
+    for (const chat of candidates) {
+      if (hasRoleplayDmThreadMarkers(parseChatMetadata(chat.metadata))) {
+        if ((await storage.countMessages(chat.id)) === 0) continue;
+      }
+      eligible.push({ id: chat.id });
+    }
+    return eligible;
   });
 
   app.get("/internal/professor-mari/chats", async () => {
@@ -2362,12 +2389,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         : typeof chatMeta.presetId === "string" && chatMeta.presetId
           ? chatMeta.presetId
           : null;
-    if (
-      presetId ||
-      chatMode === "conversation" ||
-      chatMode === "game" ||
-      chatMode === "roleplay"
-    ) {
+    if (presetId || chatMode === "conversation" || chatMode === "game" || chatMode === "roleplay") {
       try {
         const { createPromptsStorage } = await import("../services/storage/prompts.storage.js");
         const { createCharactersStorage } = await import("../services/storage/characters.storage.js");
@@ -2378,12 +2400,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
         const preset = presetId ? await presetStore.getById(presetId) : null;
         const chatMode = (chat.mode as string) ?? "roleplay";
-        if (
-          preset ||
-          chatMode === "conversation" ||
-          chatMode === "game" ||
-          chatMode === "roleplay"
-        ) {
+        if (preset || chatMode === "conversation" || chatMode === "game" || chatMode === "roleplay") {
           // Apply conversation-start filter
           let scopedMessages = chatMessages;
           for (let i = chatMessages.length - 1; i >= 0; i--) {
@@ -2508,8 +2525,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           const generationTriggers = Array.from(new Set([chatMode, "chat"]));
           const lorebookTokenBudget = resolveLorebookTokenBudget(chatMeta);
           const forcedLorebookEntryIds =
-            ownerSpatialProjection &&
-            ownerSpatialProjection.ownerMode === chatMode
+            ownerSpatialProjection && ownerSpatialProjection.ownerMode === chatMode
               ? ownerSpatialProjection.lorebookEntryIds
               : [];
           if (chatMode === "conversation") {
@@ -3681,7 +3697,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       branchName: "New Branch",
       branchParentChatId: sourceChat.id,
       branchParentMessageId: forkSourceMessage?.id ?? null,
-      branchMessageId: forkSourceMessage ? sourceToBranchedMessageId.get(forkSourceMessage.id) ?? null : null,
+      branchMessageId: forkSourceMessage ? (sourceToBranchedMessageId.get(forkSourceMessage.id) ?? null) : null,
       summary: compileChatSummaryEntries(inheritedEntries),
       summaryEntries: inheritedEntries,
       ...(inheritedLastAutomaticSummaryMessageId
@@ -3927,10 +3943,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (selectedEntries.length !== requestedIds.size) {
         return reply.status(400).send({ error: "One or more selected summary entries no longer exist" });
       }
-      const effectiveSummaryMaxTokens = Math.min(
-        summaryMaxTokens,
-        provider.maxTokensOverrideValue ?? summaryMaxTokens,
-      );
+      const effectiveSummaryMaxTokens = Math.min(summaryMaxTokens, provider.maxTokensOverrideValue ?? summaryMaxTokens);
       const requestedPromptTemplateId =
         typeof body.promptTemplateId === "string" && body.promptTemplateId.trim()
           ? body.promptTemplateId.trim()
@@ -3998,7 +4011,6 @@ export async function chatsRoutes(app: FastifyInstance) {
         const starts = selected.flatMap((entry) => entry.rangeStartIndex ?? []);
         const ends = selected.flatMap((entry) => entry.rangeEndIndex ?? []);
         const now = new Date().toISOString();
-        const firstIndex = entries.findIndex((entry) => requestedIds.has(entry.id));
         combinedEntry = createChatSummaryEntry(
           {
             kind: "rolling",
@@ -4021,9 +4033,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           },
           { createId: newId, now },
         );
-        const nextEntries = entries.filter((entry) => !requestedIds.has(entry.id));
-        nextEntries.splice(Math.max(0, firstIndex), 0, combinedEntry);
-        combinedEntries = normalizeChatSummaryEntries(nextEntries);
+        combinedEntries = combineChatSummaryEntryHistory(entries, requestedIds, combinedEntry, now);
         combinedSummary = compileChatSummaryEntries(combinedEntries);
         return {
           summary: combinedSummary,

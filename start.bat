@@ -27,7 +27,7 @@ if /I "%AUTO_UPDATE_ENABLED%"=="no" set "AUTO_UPDATE_DISABLED=1"
 if /I "%AUTO_UPDATE_ENABLED%"=="off" set "AUTO_UPDATE_DISABLED=1"
 
 :: Check for Node.js
-where node >nul 2>&1
+node --version >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Node.js is not installed or not in PATH.
     echo  Please install Node.js 24 LTS or newer from https://nodejs.org
@@ -128,6 +128,21 @@ if errorlevel 1 (
 for /f "tokens=*" %%i in ('git rev-parse !TARGET_REF! 2^>nul') do set "TARGET_HEAD=%%i"
 if /I "!OLD_HEAD!"=="!TARGET_HEAD!" (
     echo  [OK] Already up to date
+    goto :skip_update
+)
+:: Never auto-move onto a build whose storage format predates the data on
+:: disk - it would silently show empty chat history (#4708). Checked BEFORE
+:: the snapshot: a blocked target stays blocked on every launch, and
+:: re-copying the whole data directory each time serves nothing. Exit 2 is a
+:: real format block; any other failure means the check itself could not run.
+:: Both skip the update (fail-safe) with distinguishable messages.
+node scripts\protect-launcher-data.mjs check-target "!TARGET_HEAD!"
+if errorlevel 2 (
+    echo  [WARN] Skipping auto-update: the target version is older than your data format.
+    goto :skip_update
+)
+if errorlevel 1 (
+    echo  [WARN] Skipping auto-update: could not verify the target's storage format.
     goto :skip_update
 )
 node scripts\protect-launcher-data.mjs snapshot

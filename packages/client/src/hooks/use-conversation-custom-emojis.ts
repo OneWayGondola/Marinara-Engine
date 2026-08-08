@@ -13,12 +13,7 @@ import { useChat } from "./use-chats";
 import { getChatCharacterIds } from "../lib/chat-macros";
 import { parseCharacterDisplayData } from "../lib/character-display";
 import { useCustomEmojis } from "./use-custom-emojis";
-import {
-  usePersona,
-  usePersonaGalleryImages,
-  characterKeys,
-  type CharacterGalleryImage,
-} from "./use-characters";
+import { usePersona, usePersonaGalleryImages, characterKeys, type CharacterGalleryImage } from "./use-characters";
 
 export interface ConversationCustomEmoji {
   name: string;
@@ -40,7 +35,7 @@ export function useConversationCustomEmojis(): { list: ConversationCustomEmoji[]
   const stableResultRef = useRef<{ list: ConversationCustomEmoji[]; map: Map<string, string> } | null>(null);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const { data: activeChat } = useChat(activeChatId);
-  const personaId = (activeChat as { personaId?: string | null } | undefined)?.personaId ?? null;
+  const personaId = activeChat?.personaId ?? null;
   const characterIds = getChatCharacterIds(activeChat);
 
   const { data: globalEmojis } = useCustomEmojis();

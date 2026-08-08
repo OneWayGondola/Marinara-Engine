@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { X } from "lucide-react";
-import type { DiceRollResult } from "@marinara-engine/shared";
+import { skillCheckDiceSumToTotal, type DiceRollResult } from "@marinara-engine/shared";
 import { cn } from "../../lib/utils";
 import { DiceGlyph, type DiceGlyphPhase, type DiceGlyphSize } from "./DiceGlyph";
 import { getFaceLabel } from "./dice-shapes";
@@ -15,6 +15,7 @@ interface AnimatedDiceRollProps extends DiceRollResult {
   onDismiss?: () => void;
   hero?: boolean;
   highlightValue?: number;
+  resolution?: "sum" | "successes";
 }
 
 function parseDiceSides(notation: string): number {
@@ -72,6 +73,7 @@ export function AnimatedDiceRoll({
   onDismiss,
   hero,
   highlightValue,
+  resolution = "sum",
 }: AnimatedDiceRollProps) {
   const { t: localizeUi } = useUiTranslation();
   const sides = parseDiceSides(notation);
@@ -98,11 +100,14 @@ export function AnimatedDiceRoll({
     const interval = window.setInterval(() => {
       setDisplayValues(rolls.map(() => randomFace(sides)));
     }, 72);
-    const impactTimer = window.setTimeout(() => {
-      window.clearInterval(interval);
-      setDisplayValues(rolls);
-      setPhase("impact");
-    }, Math.min(980, 620 + rolls.length * 46));
+    const impactTimer = window.setTimeout(
+      () => {
+        window.clearInterval(interval);
+        setDisplayValues(rolls);
+        setPhase("impact");
+      },
+      Math.min(980, 620 + rolls.length * 46),
+    );
     const settledTimer = window.setTimeout(() => setPhase("settled"), Math.min(1180, 820 + rolls.length * 48));
 
     return () => {
@@ -115,6 +120,7 @@ export function AnimatedDiceRoll({
 
   const style = accentColor ? ({ "--dice-accent": accentColor } as CSSProperties) : undefined;
   const modifierText = modifier !== 0 ? `${modifier > 0 ? "+" : ""}${modifier}` : "";
+  const sumsToTotal = resolution === "sum" && skillCheckDiceSumToTotal({ rolls, modifier, total, resolution });
   const rollText = useMemo(() => rolls.map((roll) => getFaceLabel(sides, roll)).join(", "), [rolls, sides]);
   const totalVisible = phase === "impact" || phase === "settled";
 
@@ -133,11 +139,16 @@ export function AnimatedDiceRoll({
       style={style}
     >
       <div className="dice-roll-header">
-        <span className="dice-roll-header-mark" aria-hidden="true">✦</span>
+        <span className="dice-roll-header-mark" aria-hidden="true">
+          ✦
+        </span>
         <span>{notation}</span>
       </div>
 
-      <div className="dice-stage" aria-label={localizeUi("ui.dice.animateddiceroll.rolledValue1Value2", { value1: notation, value2: rollText })}>
+      <div
+        className="dice-stage"
+        aria-label={localizeUi("ui.dice.animateddiceroll.rolledValue1Value2", { value1: notation, value2: rollText })}
+      >
         {rolls.map((roll, index) => {
           const shown = displayValues[index] ?? roll;
           const emphasized = highlightValue == null || roll === highlightValue;
@@ -158,13 +169,38 @@ export function AnimatedDiceRoll({
 
       <div className="dice-roll-footer">
         <span className="dice-roll-breakdown">
-          {rolls.join(" + ")}{modifierText && ` ${modifierText}`}
+          {/* Only show the addition when the dice genuinely add up to the total.
+              They do not under advantage/disadvantage (one die is discarded) or
+              in pool systems that count successes, and printing "4 + 1 + 9 = 1"
+              makes correct results look like broken arithmetic. */}
+          {sumsToTotal ? (
+            <>
+              {rolls.join(" + ")}
+              {modifierText && ` ${modifierText}`}
+            </>
+          ) : (
+            <>
+              {rolls.join(" · ")}
+              {resolution === "sum" && modifierText && ` ${modifierText}`}
+            </>
+          )}
         </span>
-        <span className={cn("dice-roll-total", totalVisible && "is-visible")}> = {total}</span>
+        <span className={cn("dice-roll-total", totalVisible && "is-visible")}>
+          {sumsToTotal ? " = " : " → "}
+          {total}
+          {resolution === "successes" ? (
+            <> {localizeUi("ui.dice.animateddiceroll.successCount", { count: total })}</>
+          ) : null}
+        </span>
       </div>
 
       {onDismiss && (
-        <button type="button" onClick={onDismiss} className="dice-roll-dismiss" aria-label={localizeUi("ui.dice.animateddiceroll.dismissDiceRollResult")}>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="dice-roll-dismiss"
+          aria-label={localizeUi("ui.dice.animateddiceroll.dismissDiceRollResult")}
+        >
           <X size={14} />
         </button>
       )}

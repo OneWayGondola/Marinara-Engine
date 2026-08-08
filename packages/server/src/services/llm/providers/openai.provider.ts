@@ -83,11 +83,7 @@ export function normalizeOpenAIChatCompletionsResponseFormat(
 
   if (responseFormat.type === "json_schema") {
     if (responseFormat.json_schema && typeof responseFormat.json_schema === "object") return responseFormat;
-    if (
-      typeof responseFormat.name === "string" &&
-      responseFormat.schema &&
-      typeof responseFormat.schema === "object"
-    ) {
+    if (typeof responseFormat.name === "string" && responseFormat.schema && typeof responseFormat.schema === "object") {
       return {
         type: "json_schema",
         json_schema: {
@@ -928,12 +924,7 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private shouldUseOpenRouterPromptCaching(options: ChatOptions): boolean {
-    return (
-      !this.isGenericCustomProvider() &&
-      this.baseUrl.includes("openrouter.ai") &&
-      !!options.enableCaching &&
-      options.model.toLowerCase().includes("claude")
-    );
+    return !this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai") && !!options.enableCaching;
   }
 
   private applyOpenRouterPromptCaching(body: Record<string, unknown>, options: ChatOptions): void {

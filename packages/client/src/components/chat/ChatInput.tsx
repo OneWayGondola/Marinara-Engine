@@ -36,6 +36,7 @@ import {
   PROFESSOR_MARI_ID,
   type MariSuggestionChip,
   type Message,
+  type Persona,
 } from "@marinara-engine/shared";
 import {
   matchSlashCommand,
@@ -979,7 +980,7 @@ export const ChatInput = memo(function ChatInput({
     }
 
     const cachedCharacters = qc.getQueryData<Array<{ id: string; data: unknown }>>(characterKeys.list());
-    const cachedPersonas = qc.getQueryData<Array<Record<string, unknown>>>(characterKeys.personas);
+    const cachedPersonas = qc.getQueryData<Persona[]>(characterKeys.personas);
     const resolveInputMacros = createInputMacroResolverForChat(chat, cachedCharacters, cachedPersonas, normalized);
     const chatMeta = parseChatMetadata(chat?.metadata);
     let message = applyToUserInput(normalized, {
@@ -1225,7 +1226,7 @@ export const ChatInput = memo(function ChatInput({
 
     const chat = useChatStore.getState().activeChat;
     const cachedCharacters = qc.getQueryData<Array<{ id: string; data: unknown }>>(characterKeys.list());
-    const cachedPersonas = qc.getQueryData<Array<Record<string, unknown>>>(characterKeys.personas);
+    const cachedPersonas = qc.getQueryData<Persona[]>(characterKeys.personas);
     const resolveInputMacros = createInputMacroResolverForChat(chat, cachedCharacters, cachedPersonas, normalized);
     const chatMeta = parseChatMetadata(chat?.metadata);
     let message = applyToUserInput(normalized, {
@@ -1466,17 +1467,20 @@ export const ChatInput = memo(function ChatInput({
     handleImpersonateQuickButton,
   ]);
 
-  const scheduleDraftPersistence = useCallback((chatId: string, text: string) => {
-    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
-    draftTimerRef.current = setTimeout(() => {
-      draftTimerRef.current = null;
-      if (text.trim()) {
-        setInputDraft(chatId, text);
-      } else {
-        clearInputDraft(chatId);
-      }
-    }, 300);
-  }, [clearInputDraft, setInputDraft]);
+  const scheduleDraftPersistence = useCallback(
+    (chatId: string, text: string) => {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = setTimeout(() => {
+        draftTimerRef.current = null;
+        if (text.trim()) {
+          setInputDraft(chatId, text);
+        } else {
+          clearInputDraft(chatId);
+        }
+      }, 300);
+    },
+    [clearInputDraft, setInputDraft],
+  );
 
   const scheduleTextareaResize = useCallback((el: HTMLTextAreaElement, delay: number) => {
     if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
@@ -1519,11 +1523,7 @@ export const ChatInput = memo(function ChatInput({
   }, [releaseHeldDeleteWork]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (
-      mode === "roleplay" &&
-      (e.key === "Backspace" || e.key === "Delete") &&
-      !heldDeleteKeyRef.current
-    ) {
+    if (mode === "roleplay" && (e.key === "Backspace" || e.key === "Delete") && !heldDeleteKeyRef.current) {
       heldDeleteKeyRef.current = true;
       heldDeleteDraftRef.current = null;
       heldDeleteResizeRef.current = null;
@@ -1621,10 +1621,7 @@ export const ChatInput = memo(function ChatInput({
         resizeTimerRef.current = null;
       }
     } else {
-      scheduleTextareaResize(
-        el,
-        ROLEPLAY_INPUT_DELETE_RESIZE_IDLE_MS,
-      );
+      scheduleTextareaResize(el, ROLEPLAY_INPUT_DELETE_RESIZE_IDLE_MS);
     }
 
     // Slash command autocomplete

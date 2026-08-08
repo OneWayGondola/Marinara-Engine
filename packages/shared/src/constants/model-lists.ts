@@ -499,9 +499,16 @@ export const GROQ_MODELS: KnownModel[] = [
 
 // DeepSeek (from #model_deepseek_select)
 export const DEEPSEEK_MODELS: KnownModel[] = [
+  { id: "deepseek-v4-pro", name: "deepseek-v4-pro", context: 1_000_000, maxOutput: 384_000 },
+  { id: "deepseek-v4-flash", name: "deepseek-v4-flash", context: 1_000_000, maxOutput: 384_000 },
   { id: "deepseek-chat", name: "deepseek-chat", context: 131072, maxOutput: 8192 },
   { id: "deepseek-coder", name: "deepseek-coder", context: 131072, maxOutput: 8192 },
   { id: "deepseek-reasoner", name: "deepseek-reasoner", context: 131072, maxOutput: 8192 },
+];
+
+// Xiaomi MiMo (available through OAI-compatible aggregators and direct APIs)
+export const MIMO_MODELS: KnownModel[] = [
+  { id: "mimo-v2.5-pro", name: "mimo-v2.5-pro", context: 1_000_000, maxOutput: 128_000 },
 ];
 
 // Perplexity (from #model_perplexity_select)
@@ -518,6 +525,8 @@ export const PERPLEXITY_MODELS: KnownModel[] = [
 
 // Moonshot (from #model_moonshot_select)
 export const MOONSHOT_MODELS: KnownModel[] = [
+  { id: "kimi-k3", name: "kimi-k3", context: 1_048_576, maxOutput: 131_072 },
+  { id: "kimi-k2.6", name: "kimi-k2.6", context: 262_144, maxOutput: 32_768 },
   { id: "kimi-k2-0711-preview", name: "kimi-k2-0711-preview", context: 256000, maxOutput: 8192 },
   { id: "moonshot-v1-8k", name: "moonshot-v1-8k", context: 8192, maxOutput: 4096 },
   { id: "moonshot-v1-32k", name: "moonshot-v1-32k", context: 32768, maxOutput: 4096 },
@@ -533,7 +542,8 @@ export const MOONSHOT_MODELS: KnownModel[] = [
 // Z.AI / GLM (from #model_zai_select)
 export const ZAI_MODELS: KnownModel[] = [
   { id: "glm-5.2", name: "glm-5.2", context: 1000000, maxOutput: 128000 },
-  { id: "glm-5", name: "glm-5", context: 200000, maxOutput: 8192 },
+  { id: "glm-5.1", name: "glm-5.1", context: 200_000, maxOutput: 128_000 },
+  { id: "glm-5", name: "glm-5", context: 200000, maxOutput: 128000 },
   { id: "glm-4.7", name: "glm-4.7", context: 200000, maxOutput: 8192 },
   { id: "glm-4.7-flash", name: "glm-4.7-flash", context: 200000, maxOutput: 8192 },
   { id: "glm-4.7-flashx", name: "glm-4.7-flashx", context: 200000, maxOutput: 8192 },
@@ -655,6 +665,13 @@ export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
     requiresApiKey: true,
   },
   {
+    id: "arli",
+    name: "Arli.ai",
+    description: "Hosted Stable Diffusion models through Arli.ai's native image API.",
+    defaultBaseUrl: "https://api.arliai.com/v1",
+    requiresApiKey: true,
+  },
+  {
     id: "novelai",
     name: "NovelAI",
     description: "NovelAI Diffusion anime-style image generation.",
@@ -722,6 +739,13 @@ export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
     name: "ComfyUI",
     description: "Local node-based image generation with ComfyUI.",
     defaultBaseUrl: "http://127.0.0.1:8188",
+    requiresApiKey: false,
+  },
+  {
+    id: "swarmui",
+    name: "SwarmUI",
+    description: "Swarm-managed image generation and distributed ComfyUI workflows.",
+    defaultBaseUrl: "http://127.0.0.1:7801",
     requiresApiKey: false,
   },
   {
@@ -893,6 +917,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
     m === "openai" ||
     m === "stability" ||
     m === "togetherai" ||
+    m === "arli" ||
     m === "novelai" ||
     m === "pollinations" ||
     m === "horde" ||
@@ -903,6 +928,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
     m === "zai" ||
     m === "atlas" ||
     m === "comfyui" ||
+    m === "swarmui" ||
     m === "automatic1111" ||
     m === "runpod_comfyui" ||
     m === "gemini_image"
@@ -916,6 +942,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
   if (u.includes("venice.ai")) return "venice";
   if (u.includes("api.z.ai")) return "zai";
   if (u.includes("atlascloud.ai")) return "atlas";
+  if (u.includes("arliai.com")) return "arli";
   if (m === "glm-image" || m.startsWith("cogview")) return "zai";
   if (m.startsWith("grok-") && m.includes("image")) return "xai";
   if (m.includes("grok") && m.includes("imagine")) return "xai";
@@ -926,6 +953,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
   if (m.includes("black-forest") || m.includes("flux") || u.includes("together.xyz")) return "togetherai";
   if (u.includes("stablehorde.net")) return "horde";
   if (u.includes("blockentropy")) return "blockentropy";
+  if (u.includes(":7801") || u.includes("swarmui")) return "swarmui";
   if (u.includes(":8188") || u.includes("comfyui")) return "comfyui";
   if (u.includes("runpod.ai")) return "runpod_comfyui";
   if (u.includes(":7860") && !u.includes("drawthings")) return "automatic1111";
@@ -957,11 +985,30 @@ export const MODEL_LISTS: Record<APIProvider, KnownModel[]> = {
   video_generation: VIDEO_GEN_MODELS,
 };
 
+const OPENAI_COMPATIBLE_AGGREGATOR_MODELS: KnownModel[] = [
+  ...OPENAI_MODELS,
+  ...ANTHROPIC_MODELS,
+  ...GOOGLE_MODELS,
+  ...DEEPSEEK_MODELS,
+  ...MIMO_MODELS,
+  ...MOONSHOT_MODELS,
+  ...ZAI_MODELS,
+  ...XAI_MODELS,
+];
+
 /**
  * Look up a known model by ID across all providers.
  */
 export function findKnownModel(provider: APIProvider, modelId: string): KnownModel | undefined {
-  return MODEL_LISTS[provider]?.find((m) => m.id === modelId);
+  const exact = MODEL_LISTS[provider]?.find((model) => model.id === modelId);
+  if (exact || (provider !== "openrouter" && provider !== "nanogpt" && provider !== "custom")) return exact;
+
+  // Aggregators namespace model IDs (for example, `deepseek/deepseek-v4-pro`)
+  // while direct OAI-compatible endpoints generally do not. Resolve both
+  // forms without exposing a large, stale static list in their model pickers.
+  const normalizedId = modelId.trim().toLowerCase();
+  const unqualifiedId = normalizedId.split("/").pop()?.split(":", 1)[0] ?? normalizedId;
+  return OPENAI_COMPATIBLE_AGGREGATOR_MODELS.find((model) => model.id.toLowerCase() === unqualifiedId);
 }
 
 function normalizeProviderForCatalog(provider: APIProvider | string): APIProvider | null {

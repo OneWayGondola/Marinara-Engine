@@ -76,6 +76,14 @@ async function runCase(options, env = {}) {
 }
 
 {
+  const { result, statuses } = await evaluateCase({
+    pullRequest: { ...basePullRequest, base: { ref: "main" } },
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(statuses.length, 0);
+}
+
+{
   const { result, status } = await runCase({
     pullRequest: { ...basePullRequest, user: { login: "MemberDeveloper" } },
     membership: { state: "active", role: "member" },
@@ -144,6 +152,30 @@ async function runCase(options, env = {}) {
   const { status } = await runCase({
     membershipError: notFound,
     reviews: [
+      { id: 1, state: "APPROVED", commit_id: "head-sha", user: { login: "SpicyMarinara" } },
+      { id: 2, state: "DISMISSED", commit_id: "head-sha", user: { login: "SpicyMarinara" } },
+    ],
+  });
+  assert.equal(status.state, "failure");
+}
+
+{
+  const notFound = Object.assign(new Error("Not Found"), { status: 404 });
+  const { status } = await runCase({
+    membershipError: notFound,
+    reviews: [
+      { id: 1, state: "APPROVED", commit_id: "head-sha", user: { login: "SpicyMarinara" } },
+      { id: 2, state: "COMMENTED", commit_id: "head-sha", user: { login: "SpicyMarinara" } },
+    ],
+  });
+  assert.equal(status.state, "success");
+}
+
+{
+  const notFound = Object.assign(new Error("Not Found"), { status: 404 });
+  const { status } = await runCase({
+    membershipError: notFound,
+    reviews: [
       { id: 1, state: "APPROVED", commit_id: "stale-sha", user: { login: "SpicyMarinara" } },
     ],
   });
@@ -179,7 +211,7 @@ async function runCase(options, env = {}) {
     membership: { state: "active", role: "member" },
     statusFailures: 1,
   });
-  assert.equal(status.state, "error");
+  assert.equal(status.state, "success");
   assert.equal(getStatusAttempts(), 2);
 }
 

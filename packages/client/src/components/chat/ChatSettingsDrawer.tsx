@@ -25,6 +25,7 @@ import {
   MessageCircle,
   Bot,
   CalendarClock,
+  Camera,
   RefreshCw,
   Settings2,
   Info,
@@ -84,7 +85,7 @@ import { PromptPresetSection } from "../../features/chat-settings/sections/Promp
 import { SceneInstructionsSection } from "../../features/chat-settings/sections/SceneInstructionsSection";
 import { TranslationSection } from "../../features/chat-settings/sections/TranslationSection";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
-import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
+import type { AvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { showAlertDialog, showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { HelpTooltip } from "../ui/HelpTooltip";
@@ -127,7 +128,7 @@ import {
   useChats,
   useConnectChat,
   useDisconnectChat,
-  useChatMessages,
+  useChatMessagePeek,
   useChatMemories,
   useDeleteChatMemory,
   useClearChatMemories,
@@ -144,6 +145,7 @@ import { useRegexScripts, useUpdateRegexScript, type RegexScriptRow } from "../.
 import { api } from "../../lib/api-client";
 import { readCharacterGreetings, type CharacterGreeting } from "../../lib/character-greetings";
 import { trackChatMetadataSave, waitForPendingChatMetadataSaves } from "../../lib/chat-metadata-save-barrier";
+import { createSerializedMutationQueue } from "../../lib/serialized-mutation-queue";
 import { appendLocalSidecarConnectionOption, filterLanguageGenerationConnections } from "../../lib/connection-filters";
 import {
   deriveActiveLorebookViews,
@@ -161,6 +163,7 @@ import {
   stepCadenceValue,
 } from "../../lib/agent-cadence";
 import { characterMatchesSearch, getCharacterTitle, parseCharacterDisplayData } from "../../lib/character-display";
+import { buildRoleplayAgentSettingsOrder } from "../../lib/agent-settings-order";
 import { extractCreatorNotesCss } from "../../lib/creator-notes-css";
 import { isLorebookScopeActiveForChat } from "../../lib/lorebook-scope";
 import { addSilentGreetingSwipes } from "../../lib/message-swipes";
@@ -199,14 +202,15 @@ import type {
 } from "@marinara-engine/shared";
 import {
   MAX_ILLUSTRATOR_IMAGES_PER_GENERATION,
+  customAgentHasCapability,
   normalizeIllustratorImagesPerGeneration,
   normalizeSpotifySourceType,
+  parseAgentSettingsRecord,
 } from "@marinara-engine/shared";
 import { useAgentConfigs, useCreateAgent, useUpdateAgent, type AgentConfigRow } from "../../hooks/use-agents";
 import { useAgentStore } from "../../stores/agent.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import {
-  BUILT_IN_AGENTS,
   BUILT_IN_TOOLS,
   DEFAULT_AGENT_CONTEXT_SIZE,
   DEFAULT_AGENT_TOOLS,
@@ -344,33 +348,6 @@ const DEFAULT_PROSE_GUARDIAN_BANNED_WORDS = "ozone";
 const DEFAULT_PROSE_GUARDIAN_AVOID =
   "no repetition of any phrases or sentence structure from the last messages, if the last output started with dialogue line, this one needs to start with narration, no purple prose";
 
-const AGENTS_TAB_CATEGORY_ORDER: Record<string, number> = {
-  writer: 0,
-  tracker: 1,
-  misc: 2,
-};
-
-const ROLEPLAY_AGENT_SETTINGS_ORDER = new Map<string, number>(
-  BUILT_IN_AGENTS.map((agent, manifestIndex) => ({ agent, manifestIndex }))
-    .filter(({ agent }) => !agent.libraryHidden)
-    .sort((a, b) => {
-      const categoryDiff =
-        (AGENTS_TAB_CATEGORY_ORDER[a.agent.category] ?? 99) - (AGENTS_TAB_CATEGORY_ORDER[b.agent.category] ?? 99);
-      return categoryDiff || a.manifestIndex - b.manifestIndex;
-    })
-    .map(({ agent }, index) => [agent.id, index]),
-);
-ROLEPLAY_AGENT_SETTINGS_ORDER.set(
-  STORYBOARD_AGENT_ID,
-  ROLEPLAY_AGENT_SETTINGS_ORDER.get(STORYBOARD_AGENT_ID) ??
-    (ROLEPLAY_AGENT_SETTINGS_ORDER.get("illustrator") ?? ROLEPLAY_AGENT_SETTINGS_ORDER.size) + 0.5,
-);
-const CUSTOM_AGENT_SETTINGS_ORDER = ROLEPLAY_AGENT_SETTINGS_ORDER.size + 100;
-
-function getRoleplayAgentSettingsOrder(agentId: string): number {
-  return ROLEPLAY_AGENT_SETTINGS_ORDER.get(agentId) ?? CUSTOM_AGENT_SETTINGS_ORDER;
-}
-
 function getAgentSettingsMenuId(chatId: string, agentId: string): string {
   return `chat-settings-agent-menu-${chatId}-${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
@@ -456,6 +433,8 @@ function renderRoleplayAgentMenuIcon(agentId: string, variant: "card" | "chip" =
       return <Music2 size={size} className={className} />;
     case "haptic":
       return <Vibrate size={size} className={className} />;
+    case "long-term-memory":
+      return <Brain size={size} className={className} />;
     case "hierarchical-maps":
       return <MapIcon size={size} className={className} />;
     case "custom-agents":
@@ -639,7 +618,7 @@ type DrawerPersona = {
   name: string;
   comment: string;
   avatarPath: string | null;
-  avatarCrop?: AvatarCrop | string | null;
+  avatarCrop?: AvatarCrop | null;
 };
 
 function DrawerPersonaAvatar({ persona, size = "sm" }: { persona: DrawerPersona; size?: "sm" | "md" }) {
@@ -665,7 +644,7 @@ function DrawerPersonaAvatar({ persona, size = "sm" }: { persona: DrawerPersona;
         alt={persona.name}
         loading="lazy"
         className="h-full w-full object-cover"
-        style={getAvatarCropStyle(normalizeAvatarCrop(persona.avatarCrop))}
+        style={getAvatarCropStyle(persona.avatarCrop)}
       />
     </span>
   );
@@ -678,6 +657,11 @@ type AgentAddPreview = {
   maxTokens: number;
   runInterval: number | null;
   setup: AgentAddSetupState;
+};
+
+type CustomAgentImageSetting = {
+  imageConnectionId?: string | null;
+  styleProfileId?: string | null;
 };
 
 type KnowledgeAgentType = "knowledge-retrieval" | "knowledge-router";
@@ -812,6 +796,22 @@ export function ChatSettingsDrawer({
   const drawerClosingRef = useRef(false);
   const updateChat = useUpdateChat();
   const updateMeta = useUpdateChatMetadata();
+  const updateMetaMutateAsyncRef = useRef(updateMeta.mutateAsync);
+  const pendingCustomAgentImageSettingsRef = useRef<{
+    chatId: string;
+    revision: number;
+    settings: Record<string, CustomAgentImageSetting>;
+  } | null>(null);
+  const pendingCustomAgentImageSettingsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const customAgentImageSettingsRevisionRef = useRef(0);
+  const customAgentImageSettingsWriteQueueRef = useRef(createSerializedMutationQueue());
+  const removingAgentImageSettingsRef = useRef(new Set<string>());
+  const [customAgentImageSettingsDraft, setCustomAgentImageSettingsDraft] = useState<{
+    chatId: string;
+    revision: number;
+    patch: Partial<Record<string, CustomAgentImageSetting | null>>;
+  } | null>(null);
+  updateMetaMutateAsyncRef.current = updateMeta.mutateAsync;
   const updateGameWidgets = useUpdateGameWidgets();
   const { data: regexScripts } = useRegexScripts();
   const updateRegexScript = useUpdateRegexScript();
@@ -844,6 +844,15 @@ export function ChatSettingsDrawer({
   const { data: presets } = usePresets();
   const { data: defaultPromptPreset } = useDefaultPreset();
   const { data: installedAgentManifests = [] } = useCapabilityAgentRegistry();
+  const roleplayAgentSettingsOrder = useMemo(
+    () => buildRoleplayAgentSettingsOrder(installedAgentManifests),
+    [installedAgentManifests],
+  );
+  const customAgentSettingsOrder = roleplayAgentSettingsOrder.size + 100;
+  const getRoleplayAgentSettingsOrder = useCallback(
+    (agentId: string) => roleplayAgentSettingsOrder.get(agentId) ?? customAgentSettingsOrder,
+    [customAgentSettingsOrder, roleplayAgentSettingsOrder],
+  );
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages(open);
   const persistedChatMode = (chat as unknown as { mode?: unknown }).mode;
   const chatMode: ChatMode =
@@ -990,7 +999,7 @@ export function ChatSettingsDrawer({
   const { data: customTools } = useCustomTools();
   const { data: customToolCapabilities } = useCustomToolCapabilities();
   const { data: allChats } = useChats({ refetchOnMount: false });
-  const personas = useMemo(() => (allPersonas ?? []) as DrawerPersona[], [allPersonas]);
+  const personas = useMemo(() => allPersonas ?? [], [allPersonas]);
 
   const chatCharIds: string[] = useMemo(
     () => getChatCharacterIds({ characterIds: chat.characterIds }),
@@ -1660,14 +1669,20 @@ export function ChatSettingsDrawer({
     8,
     100,
   );
-  const secretPlotMessagesQuery = useChatMessages(
+  // #4721: this reader must NOT observe the shared chatKeys.messages infinite
+  // query — pageSize lives in that query's option closures (not its key), so a
+  // second observer with pageSize 100 hijacks the transcript's queryFn and
+  // getNextPageParam: refetches fetch 100 rows regardless of the user's
+  // messages-per-page and hasNextPage mis-evaluates, hiding "Load More". The
+  // peek hook keys by limit and returns the same newest-N window.
+  const secretPlotMessagesQuery = useChatMessagePeek(
     chat.id,
     100,
     open && directorActive && supportsNarrativeDirectorSecretPlot && narrativeDirectorSecretPlotEnabled,
   );
   const secretPlotMessages = useMemo<Message[]>(
-    () => secretPlotMessagesQuery.data?.pages.flat() ?? [],
-    [secretPlotMessagesQuery.data?.pages],
+    () => secretPlotMessagesQuery.data ?? [],
+    [secretPlotMessagesQuery.data],
   );
   const illustratorIncludeCharacterAppearance =
     typeof metadata.illustratorIncludeCharacterAppearance === "boolean"
@@ -2011,6 +2026,7 @@ export function ChatSettingsDrawer({
     [activeAgentIds, customAgents],
   );
   const mapsAgent = availableAgents.find((agent) => agent.id === mapsPackage?.id);
+  const ltmAgent = availableAgents.find((agent) => agent.id === ltmPackage?.id);
   const storyboardAgent = availableAgents.find((agent) => agent.id === STORYBOARD_AGENT_ID);
   const [pendingAgentMenuTargetId, setPendingAgentMenuTargetId] = useState<string | null>(null);
   const roleplayAgentMenuLinks = useMemo(() => {
@@ -2044,6 +2060,9 @@ export function ChatSettingsDrawer({
     addLink("illustrator", illustratorActive, illustratorAgentMeta.name);
     addLink("spotify", spotifyActive, musicDjAgentMeta.name);
     addLink("haptic", hapticActive, hapticAgentMeta.name);
+    if (ltmAgent && ltmPackage) {
+      addLink(ltmPackage.id, metadata.enableAgents === true && activeAgentIds.includes(ltmPackage.id), ltmAgent.name);
+    }
     if (storyboardAgent) {
       addLink(STORYBOARD_AGENT_ID, activeAgentIds.includes(STORYBOARD_AGENT_ID), storyboardAgent.name);
     }
@@ -2053,7 +2072,7 @@ export function ChatSettingsDrawer({
         id: "custom-agents",
         label: activeCustomAgents.length === 1 ? activeCustomAgents[0]!.name : "Custom Agents",
         targetId: getAgentSettingsMenuId(chat.id, "custom-agents"),
-        order: CUSTOM_AGENT_SETTINGS_ORDER,
+        order: customAgentSettingsOrder,
         count: activeCustomAgents.length > 1 ? activeCustomAgents.length : undefined,
       });
     }
@@ -2066,6 +2085,7 @@ export function ChatSettingsDrawer({
     chat.id,
     continuityActive,
     continuityAgentMeta.name,
+    customAgentSettingsOrder,
     directorActive,
     directorAgentMeta.name,
     echoChamberActive,
@@ -2080,10 +2100,13 @@ export function ChatSettingsDrawer({
     illustratorAgentMeta.name,
     isGame,
     isRoleplayMode,
+    getRoleplayAgentSettingsOrder,
     knowledgeRetrievalActive,
     knowledgeRetrievalAgentMeta.name,
     knowledgeRouterActive,
     knowledgeRouterAgentMeta.name,
+    ltmAgent,
+    ltmPackage,
     lorebookKeeperActive,
     lorebookKeeperAgentMeta.name,
     mapsAgent,
@@ -2795,23 +2818,44 @@ export function ChatSettingsDrawer({
           })()
         : null;
     let metadataSaved = false;
+    if (isRemoving) removingAgentImageSettingsRef.current.add(agentId);
     try {
-      await updateMeta.mutateAsync(
-        {
-          id: chat.id,
-          activeAgentIds: current,
-          ...(nextPromptTemplateSelections ? { agentPromptTemplateIds: nextPromptTemplateSelections } : {}),
-        },
-        {
-          onSuccess: async () => {
-            metadataSaved = true;
-            // When removing an agent that stores persistent memory, clean it up after metadata is saved.
-            if (isRemoving && agentId === "director") {
-              await api.delete(`/agents/memory/${agentId}/${chat.id}`);
-            }
+      if (isRemoving) {
+        do {
+          await flushPendingCustomAgentImageSettings().catch(() => undefined);
+          await customAgentImageSettingsWriteQueueRef.current.waitForIdle();
+        } while (pendingCustomAgentImageSettingsRef.current?.chatId === chat.id);
+      }
+      const latestImageSettings = readLatestCustomAgentImageSettings();
+      const nextImageSettings =
+        isRemoving && latestImageSettings[agentId]
+          ? (() => {
+              const next = { ...latestImageSettings };
+              delete next[agentId];
+              return next;
+            })()
+          : null;
+      const saveAgentSelection = async () => {
+        await updateMeta.mutateAsync(
+          {
+            id: chat.id,
+            activeAgentIds: current,
+            ...(nextPromptTemplateSelections ? { agentPromptTemplateIds: nextPromptTemplateSelections } : {}),
+            ...(nextImageSettings ? { customAgentImageSettings: nextImageSettings } : {}),
           },
-        },
-      );
+          {
+            onSuccess: async () => {
+              metadataSaved = true;
+              // When removing an agent that stores persistent memory, clean it up after metadata is saved.
+              if (isRemoving && agentId === "director") {
+                await api.delete(`/agents/memory/${agentId}/${chat.id}`);
+              }
+            },
+          },
+        );
+      };
+      if (isRemoving) await customAgentImageSettingsWriteQueueRef.current.enqueue(saveAgentSelection);
+      else await saveAgentSelection();
     } catch (error) {
       if (metadataSaved && isRemoving && agentId === "director") {
         const rollbackIds = Array.from(new Set([...readLatestActiveAgentIds(), agentId]));
@@ -2821,6 +2865,8 @@ export function ChatSettingsDrawer({
         title: isRemoving ? "Couldn't Remove Agent" : "Couldn't Add Agent",
         message: error instanceof Error ? error.message : "The agent list could not be updated. Please try again.",
       });
+    } finally {
+      if (isRemoving) removingAgentImageSettingsRef.current.delete(agentId);
     }
   };
 
@@ -2863,6 +2909,121 @@ export function ChatSettingsDrawer({
   const handleRerunCustomAgent = useCallback(
     async (agentId: string) => {
       await retryAgents(chat.id, [agentId]);
+    },
+    [chat.id, retryAgents],
+  );
+
+  const customAgentImageSelections = useMemo(() => {
+    const raw = metadata.customAgentImageSettings;
+    const persisted =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Partial<Record<string, CustomAgentImageSetting>>)
+        : {};
+    if (customAgentImageSettingsDraft?.chatId !== chat.id) return persisted;
+    const merged = { ...persisted };
+    for (const [agentId, settings] of Object.entries(customAgentImageSettingsDraft.patch)) {
+      if (settings) merged[agentId] = settings;
+      else delete merged[agentId];
+    }
+    return merged;
+  }, [chat.id, customAgentImageSettingsDraft, metadata.customAgentImageSettings]);
+  const readLatestCustomAgentImageSettings = useCallback(() => {
+    const latestChat = qc.getQueryData<Chat>(chatKeys.detail(chat.id));
+    const latestMetadata =
+      latestChat && typeof latestChat.metadata === "string"
+        ? JSON.parse(latestChat.metadata)
+        : (latestChat?.metadata ?? metadata);
+    const raw =
+      latestMetadata && typeof latestMetadata === "object"
+        ? (latestMetadata as { customAgentImageSettings?: unknown }).customAgentImageSettings
+        : undefined;
+    return raw && typeof raw === "object" && !Array.isArray(raw)
+      ? {
+          ...(raw as Record<string, CustomAgentImageSetting>),
+        }
+      : {};
+  }, [chat.id, metadata, qc]);
+  const flushPendingCustomAgentImageSettings = useCallback((): Promise<void> => {
+    if (pendingCustomAgentImageSettingsTimerRef.current !== null) {
+      clearTimeout(pendingCustomAgentImageSettingsTimerRef.current);
+      pendingCustomAgentImageSettingsTimerRef.current = null;
+    }
+    const pending = pendingCustomAgentImageSettingsRef.current;
+    if (!pending) return customAgentImageSettingsWriteQueueRef.current.waitForIdle();
+    pendingCustomAgentImageSettingsRef.current = null;
+    return customAgentImageSettingsWriteQueueRef.current
+      .enqueue(async () => {
+        await updateMetaMutateAsyncRef.current({
+          id: pending.chatId,
+          customAgentImageSettings: pending.settings,
+        });
+      })
+      .finally(() => {
+        setCustomAgentImageSettingsDraft((current) =>
+          current?.chatId === pending.chatId && current.revision === pending.revision ? null : current,
+        );
+      });
+  }, []);
+  useEffect(
+    () => () => {
+      void flushPendingCustomAgentImageSettings().catch(() => undefined);
+    },
+    [chat.id, flushPendingCustomAgentImageSettings],
+  );
+  const updateCustomAgentImageSetting = useCallback(
+    (agentId: string, field: "imageConnectionId" | "styleProfileId", value: string) => {
+      if (removingAgentImageSettingsRef.current.has(agentId)) return;
+      const pending = pendingCustomAgentImageSettingsRef.current;
+      if (pending && pending.chatId !== chat.id) {
+        void flushPendingCustomAgentImageSettings().catch(() => undefined);
+      }
+      const next = pending?.chatId === chat.id ? { ...pending.settings } : readLatestCustomAgentImageSettings();
+      const agentSettings = { ...next[agentId] };
+      if (value) agentSettings[field] = value;
+      else delete agentSettings[field];
+      const hasAgentSettings = !!(agentSettings.imageConnectionId || agentSettings.styleProfileId);
+      if (hasAgentSettings) next[agentId] = agentSettings;
+      else delete next[agentId];
+      const revision = customAgentImageSettingsRevisionRef.current + 1;
+      customAgentImageSettingsRevisionRef.current = revision;
+      pendingCustomAgentImageSettingsRef.current = { chatId: chat.id, revision, settings: next };
+      setCustomAgentImageSettingsDraft((current) => ({
+        chatId: chat.id,
+        revision,
+        patch: {
+          ...(current?.chatId === chat.id ? current.patch : {}),
+          [agentId]: hasAgentSettings ? agentSettings : null,
+        },
+      }));
+      if (pendingCustomAgentImageSettingsTimerRef.current !== null) {
+        clearTimeout(pendingCustomAgentImageSettingsTimerRef.current);
+      }
+      pendingCustomAgentImageSettingsTimerRef.current = setTimeout(() => {
+        void flushPendingCustomAgentImageSettings().catch(() => undefined);
+      }, 150);
+    },
+    [chat.id, flushPendingCustomAgentImageSettings, readLatestCustomAgentImageSettings],
+  );
+  const updateCustomAgentImageConnection = useCallback(
+    (agentId: string, connectionId: string) =>
+      updateCustomAgentImageSetting(agentId, "imageConnectionId", connectionId),
+    [updateCustomAgentImageSetting],
+  );
+  const updateCustomAgentImageStyle = useCallback(
+    (agentId: string, styleProfileId: string) =>
+      updateCustomAgentImageSetting(agentId, "styleProfileId", styleProfileId),
+    [updateCustomAgentImageSetting],
+  );
+  const isImageCapableCustomAgent = useCallback(
+    (agentId: string) => {
+      const cfg = agentConfigsByType.get(agentId);
+      return !!cfg && customAgentHasCapability(parseAgentSettingsRecord(cfg.settings), "trigger_image_generation");
+    },
+    [agentConfigsByType],
+  );
+  const handleSnapshotCustomAgent = useCallback(
+    async (agentId: string) => {
+      await retryAgents(chat.id, [agentId], { forceImageGeneration: true });
     },
     [chat.id, retryAgents],
   );
@@ -3902,12 +4063,21 @@ export function ChatSettingsDrawer({
         icon={renderRoleplayAgentMenuIcon("custom-agents")}
         title={localizeUi("ui.panels.agentspanel.customAgents")}
         description={localizeUi("ui.chat.chatsettingsdrawer.configureCustomAgentsCurrentlyAttachedToThisChat")}
-        order={CUSTOM_AGENT_SETTINGS_ORDER}
+        order={customAgentSettingsOrder}
       >
         <div className="space-y-1.5">
           {activeCustomAgents.map((agent) => {
             const tokenEst = agentLoadCost.tokensByType.get(agent.id);
             const promptOptions = getPromptOptionsForAgent(agent.id);
+            const imageCapable = isImageCapableCustomAgent(agent.id);
+            const agentImageConnectionId = customAgentImageSelections[agent.id]?.imageConnectionId ?? "";
+            const agentImageStyleProfileId = customAgentImageSelections[agent.id]?.styleProfileId ?? "";
+            const agentImageConnectionMissing =
+              agentImageConnectionId.length > 0 &&
+              !imageConnectionsList.some((connection) => connection.id === agentImageConnectionId);
+            const agentImageStyleProfileMissing =
+              agentImageStyleProfileId.length > 0 &&
+              !imageStyleProfiles.profiles.some((profile) => profile.id === agentImageStyleProfileId);
             return (
               <div
                 key={agent.id}
@@ -3948,6 +4118,25 @@ export function ChatSettingsDrawer({
                   >
                     <RefreshCw size="0.6875rem" className={cn(agentProcessing && "animate-spin")} />
                   </button>
+                  {imageCapable && (
+                    <button
+                      onClick={() => {
+                        void handleSnapshotCustomAgent(agent.id);
+                      }}
+                      disabled={agentProcessing}
+                      className={cn(
+                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors",
+                        agentProcessing
+                          ? "cursor-not-allowed opacity-40"
+                          : "hover:bg-[var(--primary)]/15 hover:text-[var(--primary)]",
+                      )}
+                      title={localizeUi("ui.chat.chatsettingsdrawer.generateAnImageWithValue1Now", {
+                        value1: agent.name,
+                      })}
+                    >
+                      <Camera size="0.6875rem" />
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       void toggleAgent(agent.id);
@@ -3964,6 +4153,61 @@ export function ChatSettingsDrawer({
                   overridden={typeof agentPromptTemplateSelections[agent.id] === "string"}
                   onChange={(promptTemplateId) => updateAgentPromptTemplateSelection(agent.id, promptTemplateId)}
                 />
+                {imageCapable && (
+                  <div className="mt-1.5 flex flex-col gap-1">
+                    <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
+                      {localizeUi("ui.chat.chatsettingsdrawer.imageConnection")}
+                    </span>
+                    <select
+                      aria-label={localizeUi("ui.chat.chatsettingsdrawer.imageConnection")}
+                      value={agentImageConnectionId}
+                      onChange={(event) => updateCustomAgentImageConnection(agent.id, event.target.value)}
+                      className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50"
+                    >
+                      <option value="">{localizeUi("ui.chat.chatsettingsdrawer.agentDefault")}</option>
+                      {agentImageConnectionMissing && (
+                        <option value={agentImageConnectionId}>
+                          {localizeUi("ui.chat.chatsettingsdrawer.missingConnection")}
+                        </option>
+                      )}
+                      {imageConnectionsList.map((connection) => (
+                        <option key={connection.id} value={connection.id}>
+                          {connection.name}
+                          {connection.model ? localizeUi("ui.chat.datablock.value1", { value1: connection.model }) : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <AgentDefaultStatus
+                      overridden={agentImageConnectionId.length > 0}
+                      onReset={() => updateCustomAgentImageConnection(agent.id, "")}
+                    />
+                    <span className="mt-1 text-[0.625rem] font-medium text-[var(--foreground)]">
+                      {localizeUi("ui.chat.chatsettingsdrawer.imageStyle")}
+                    </span>
+                    <select
+                      aria-label={localizeUi("ui.chat.chatsettingsdrawer.imageStyle")}
+                      value={agentImageStyleProfileId}
+                      onChange={(event) => updateCustomAgentImageStyle(agent.id, event.target.value)}
+                      className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50"
+                    >
+                      <option value="">{localizeUi("ui.chat.chatsettingsdrawer.chatDefault")}</option>
+                      {agentImageStyleProfileMissing && (
+                        <option value={agentImageStyleProfileId}>
+                          {localizeUi("ui.chat.chatsettingsdrawer.missingStyleProfile")}
+                        </option>
+                      )}
+                      {imageStyleProfiles.profiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </option>
+                      ))}
+                    </select>
+                    <AgentDefaultStatus
+                      overridden={agentImageStyleProfileId.length > 0 && !agentImageStyleProfileMissing}
+                      onReset={() => updateCustomAgentImageStyle(agent.id, "")}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -7286,7 +7530,7 @@ export function ChatSettingsDrawer({
                                 title: isPersona ? subject.persona.comment || "Persona" : charTitle(subject.character),
                                 avatarPath: isPersona ? subject.persona.avatarPath : subject.character.avatarPath,
                                 avatarCrop: isPersona
-                                  ? normalizeAvatarCrop(subject.persona.avatarCrop)
+                                  ? (subject.persona.avatarCrop ?? null)
                                   : (getCharacterInfo(subject.character).avatarCrop ?? null),
                                 active: spriteCharacterIds.includes(subject.id),
                               };
@@ -8217,6 +8461,19 @@ export function ChatSettingsDrawer({
                                         }
                                       />
                                     )}
+                                    {active && agent.id !== "illustrator" && (
+                                      <AgentPromptTemplateSelect
+                                        options={getPromptOptionsForAgent(agent.id)}
+                                        selectedId={
+                                          agentPromptTemplateSelections[agent.id] ??
+                                          getDefaultPromptTemplateIdForAgent(agent.id)
+                                        }
+                                        overridden={typeof agentPromptTemplateSelections[agent.id] === "string"}
+                                        onChange={(promptTemplateId) =>
+                                          updateAgentPromptTemplateSelection(agent.id, promptTemplateId)
+                                        }
+                                      />
+                                    )}
                                     {active && agent.id === "illustrator" && (
                                       <AgentSettingsCard
                                         icon={<Paintbrush size="0.75rem" className="mt-0.5 text-[var(--primary)]" />}
@@ -8331,7 +8588,11 @@ export function ChatSettingsDrawer({
                             ] as const
                           ).map((cat) => {
                             const catAgents = availableAgents.filter((a) => a.category === cat.key);
-                            const activeInCat = catAgents.filter((a) => activeAgentIds.includes(a.id));
+                            const activeInCat = catAgents
+                              .filter((a) => activeAgentIds.includes(a.id))
+                              .sort(
+                                (a, b) => getRoleplayAgentSettingsOrder(a.id) - getRoleplayAgentSettingsOrder(b.id),
+                              );
                             const inactiveInCat = catAgents.filter((a) => !activeAgentIds.includes(a.id));
                             if (catAgents.length === 0) return null;
                             return (
@@ -8354,12 +8615,16 @@ export function ChatSettingsDrawer({
                                         <div
                                           key={agent.id}
                                           id={
-                                            agent.id === "hierarchical-maps" || agent.id === STORYBOARD_AGENT_ID
+                                            agent.id === "hierarchical-maps" ||
+                                            agent.id === "long-term-memory" ||
+                                            agent.id === STORYBOARD_AGENT_ID
                                               ? getAgentSettingsMenuId(chat.id, agent.id)
                                               : undefined
                                           }
                                           tabIndex={
-                                            agent.id === "hierarchical-maps" || agent.id === STORYBOARD_AGENT_ID
+                                            agent.id === "hierarchical-maps" ||
+                                            agent.id === "long-term-memory" ||
+                                            agent.id === STORYBOARD_AGENT_ID
                                               ? -1
                                               : undefined
                                           }
@@ -8402,6 +8667,19 @@ export function ChatSettingsDrawer({
                                               <Trash2 size="0.6875rem" />
                                             </button>
                                           </div>
+                                          {cat.key === "tracker" && (
+                                            <AgentPromptTemplateSelect
+                                              options={getPromptOptionsForAgent(agent.id)}
+                                              selectedId={
+                                                agentPromptTemplateSelections[agent.id] ??
+                                                getDefaultPromptTemplateIdForAgent(agent.id)
+                                              }
+                                              overridden={typeof agentPromptTemplateSelections[agent.id] === "string"}
+                                              onChange={(promptTemplateId) =>
+                                                updateAgentPromptTemplateSelection(agent.id, promptTemplateId)
+                                              }
+                                            />
+                                          )}
                                           {agent.id === "hierarchical-maps" && mapsPackage && (
                                             <CapabilityElement
                                               packageId={mapsPackage.id}

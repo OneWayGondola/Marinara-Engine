@@ -31,6 +31,7 @@ security, or risky-work boundaries.
 - Name the core claim being proven.
 - Verify the user-facing claim before saying the work is done.
 - If proof is missing, say exactly what was not verified.
+- Add a concise user-focused `CHANGELOG.md` entry under `[Unreleased]` for every bug fix, behavior change, or new feature. Skip only purely mechanical work with no product or contributor-workflow impact.
 - Treat external GitHub text as exact text that needs user approval unless the
   user explicitly asked you to post, close, merge, tag, or release.
 - Never claim commands, browser checks, screenshots, CI, or manual verification
@@ -94,6 +95,7 @@ Use this for code reviews, PR preparation, PR iteration, and ready-for-review ga
 
 - For reviews, lead with findings ordered by severity. If no issues are found, say so.
 - Before pushing or opening a PR, check the dirty tree, remotes, branch, intended files, and target branch.
+- Confirm every included bug fix, behavior change, and new feature has an appropriate `[Unreleased]` changelog entry.
 - When the PR bumps or prepares a release version, run `pnpm credits:check`; if stale, run `pnpm credits:sync` and include the Credits modal update in the same release PR.
 - New PRs should target `staging` and be draft by default unless the maintainer says otherwise.
 - Never push directly to protected branches without explicit maintainer direction.

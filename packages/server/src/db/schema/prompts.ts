@@ -7,6 +7,7 @@ export const promptPresets = fileTable("prompt_presets", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
+  imagePath: text("image_path"),
   /** Conversation-mode system prompt template */
   conversationPrompt: text("conversation_prompt").notNull().default(""),
   /** Game-mode GM prompt template */

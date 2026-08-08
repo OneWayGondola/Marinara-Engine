@@ -225,8 +225,8 @@ export async function generateNoodlePostImage(input: {
     const previewSize = resolveImagePromptReviewSize({
       connection: input.imageConnection,
       prompt: finalPrompt,
-      width: imageSettings.illustration.width,
-      height: imageSettings.illustration.height,
+      width: imageSettings.noodle.width,
+      height: imageSettings.noodle.height,
       imageDefaults,
     });
     return {
@@ -250,8 +250,8 @@ export async function generateNoodlePostImage(input: {
         prompt: finalPrompt,
         negativePrompt: finalNegativePrompt,
         model: imageModel,
-        width: imageSettings.illustration.width,
-        height: imageSettings.illustration.height,
+        width: imageSettings.noodle.width,
+        height: imageSettings.noodle.height,
         imageEndpointId: input.imageConnection.imageEndpointId || undefined,
         comfyWorkflow: input.imageConnection.comfyuiWorkflow || undefined,
         imageDefaults,
@@ -294,8 +294,8 @@ export async function generateNoodlePostImage(input: {
           prompt: finalPrompt,
           provider,
           model: imageModel || "unknown",
-          width: imageSettings.illustration.width,
-          height: imageSettings.illustration.height,
+          width: imageSettings.noodle.width,
+          height: imageSettings.noodle.height,
         },
       } satisfies StagedNoodlePostMedia,
     };

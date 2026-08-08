@@ -7,14 +7,7 @@ type CliContext = {
   command: string;
 };
 
-const BOOLEAN_FLAGS = new Set([
-  "case-sensitive",
-  "help",
-  "include-statistics",
-  "metadata",
-  "no-metadata",
-  "regex",
-]);
+const BOOLEAN_FLAGS = new Set(["case-sensitive", "help", "include-statistics", "metadata", "no-metadata", "regex"]);
 
 function parseArgs(args: string[]) {
   const positionals: string[] = [];
@@ -70,7 +63,8 @@ function outputResult<T>(
   flags: Map<string, string | boolean>,
   payload: ProfessorMariWikiPayload<T>,
 ): MariDbCommandResult {
-  const output = flagString(flags, "output") === "json" ? payload : formatWikiPayload(payload as ProfessorMariWikiPayload<unknown>);
+  const output =
+    flagString(flags, "output") === "json" ? payload : formatWikiPayload(payload as ProfessorMariWikiPayload<unknown>);
   return {
     ok: payload.ok,
     mode: "read",
@@ -110,6 +104,7 @@ export function wikiHelpText() {
     "  mari wiki find-wikis genshin",
     "  mari wiki search genshin-impact Nahida",
     "  mari wiki get-page --page-url https://genshin-impact.fandom.com/wiki/Nahida",
+    "  mari wiki get-page --page-url https://en.wikipedia.org/wiki/Artificial_intelligence",
     "  mari wiki sections --wiki genshin-impact --title Nahida",
     "  mari wiki get-page --wiki genshin-impact --title Nahida --content source --section 3",
   ].join("\n");
@@ -119,10 +114,9 @@ export function wikiCommandHelpText(command: string) {
   switch (command) {
     case "find-wikis":
     case "find":
-      return [
-        "Usage: mari wiki find-wikis <query> [--lang en] [--limit 10]",
-        "Find Fandom communities by topic.",
-      ].join("\n");
+      return ["Usage: mari wiki find-wikis <query> [--lang en] [--limit 10]", "Find Fandom communities by topic."].join(
+        "\n",
+      );
     case "search-all":
       return [
         "Usage: mari wiki search-all <query> [--lang en] [--namespace 0] [--limit 10]",
@@ -132,13 +126,13 @@ export function wikiCommandHelpText(command: string) {
     case "search-wiki":
       return [
         "Usage: mari wiki search <wiki> <query> [--limit 10] [--continue <token>]",
-        "Search inside one Fandom wiki. Wiki may be a slug or URL.",
+        "Search inside one Fandom or Wikipedia wiki. Wiki may be a Fandom slug or trusted URL.",
       ].join("\n");
     case "get-page":
     case "get":
       return [
         "Usage: mari wiki get-page (--wiki <wiki> --title <title> | --page-url <url>) [--content summary|source|html|none] [--section <n>]",
-        "Read one Fandom wiki page. Defaults to summary.",
+        "Read one Fandom or Wikipedia page. Defaults to summary.",
       ].join("\n");
     case "pages":
       return [
@@ -159,7 +153,7 @@ export function wikiCommandHelpText(command: string) {
     case "site-info":
       return [
         "Usage: mari wiki site-info <wiki> [--include-statistics]",
-        "Resolve and inspect one Fandom wiki.",
+        "Resolve and inspect one Fandom or Wikipedia wiki.",
       ].join("\n");
     case "search-in-page":
       return [
@@ -188,15 +182,25 @@ export async function executeWikiCli(args: string[], context: CliContext): Promi
     switch (command) {
       case "find":
       case "find-wikis": {
-        const query = required(parsed.positionals.slice(1).join(" ") || flagString(parsed.flags, "query"), "Query is required.");
+        const query = required(
+          parsed.positionals.slice(1).join(" ") || flagString(parsed.flags, "query"),
+          "Query is required.",
+        );
         return outputResult(
           context,
           parsed.flags,
-          await client.findWikis({ query, lang: flagString(parsed.flags, "lang"), limit: flagNumber(parsed.flags, "limit") }),
+          await client.findWikis({
+            query,
+            lang: flagString(parsed.flags, "lang"),
+            limit: flagNumber(parsed.flags, "limit"),
+          }),
         );
       }
       case "search-all": {
-        const query = required(parsed.positionals.slice(1).join(" ") || flagString(parsed.flags, "query"), "Query is required.");
+        const query = required(
+          parsed.positionals.slice(1).join(" ") || flagString(parsed.flags, "query"),
+          "Query is required.",
+        );
         return outputResult(
           context,
           parsed.flags,
@@ -211,12 +215,7 @@ export async function executeWikiCli(args: string[], context: CliContext): Promi
       case "search":
       case "search-wiki": {
         const wiki = required(flagString(parsed.flags, "wiki") ?? parsed.positionals[1], "Wiki is required.");
-        const query =
-          flagString(parsed.flags, "query") ??
-          parsed.positionals
-            .slice(2)
-            .join(" ")
-            .trim();
+        const query = flagString(parsed.flags, "query") ?? parsed.positionals.slice(2).join(" ").trim();
         return outputResult(
           context,
           parsed.flags,
@@ -281,7 +280,10 @@ export async function executeWikiCli(args: string[], context: CliContext): Promi
       case "category":
       case "category-members": {
         const wiki = required(flagString(parsed.flags, "wiki") ?? parsed.positionals[1], "Wiki is required.");
-        const category = required(flagString(parsed.flags, "category") ?? parsed.positionals.slice(2).join(" "), "Category is required.");
+        const category = required(
+          flagString(parsed.flags, "category") ?? parsed.positionals.slice(2).join(" "),
+          "Category is required.",
+        );
         const type = flagString(parsed.flags, "type");
         if (type && type !== "page" && type !== "subcat" && type !== "file") {
           throw new Error("--type must be page, subcat, or file.");
@@ -311,7 +313,9 @@ export async function executeWikiCli(args: string[], context: CliContext): Promi
       case "search-in-page": {
         const query =
           flagString(parsed.flags, "query") ??
-          (flagString(parsed.flags, "wiki") || flagString(parsed.flags, "page-url") || flagString(parsed.flags, "pageUrl")
+          (flagString(parsed.flags, "wiki") ||
+          flagString(parsed.flags, "page-url") ||
+          flagString(parsed.flags, "pageUrl")
             ? parsed.positionals.slice(1).join(" ")
             : parsed.positionals.slice(3).join(" "));
         return outputResult(
@@ -329,7 +333,12 @@ export async function executeWikiCli(args: string[], context: CliContext): Promi
         );
       }
       default:
-        return { ok: false, mode: "read", command: context.command, error: `Unknown mari wiki command: ${command}\n${wikiHelpText()}` };
+        return {
+          ok: false,
+          mode: "read",
+          command: context.command,
+          error: `Unknown mari wiki command: ${command}\n${wikiHelpText()}`,
+        };
     }
   } catch (err) {
     return {

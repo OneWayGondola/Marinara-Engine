@@ -3,8 +3,6 @@ export type LlamaStartupPlan = {
   label: string;
 };
 
-const LLAMA_SERVER_PARALLEL_SLOTS = 2;
-
 function needsCudaSingleGpuSplitMode(modelPath: string): boolean {
   return /gemma/i.test(modelPath);
 }
@@ -18,16 +16,17 @@ export function buildLlamaArgs(options: {
   enableNativeToolCalls: boolean;
   embeddingPooling: string;
   embeddingBatchSize: number;
+  maxParallelJobs: number;
 }): string[] {
   // llama-server divides --ctx-size across --parallel slots; Marinara's setting is the per-request budget.
-  const totalContextSize = options.contextSize * LLAMA_SERVER_PARALLEL_SLOTS;
+  const totalContextSize = options.contextSize * options.maxParallelJobs;
   const args = [
     "-m",
     options.modelPath,
     "--host",
     "127.0.0.1",
     "--parallel",
-    String(LLAMA_SERVER_PARALLEL_SLOTS),
+    String(options.maxParallelJobs),
     "--ctx-size",
     String(totalContextSize),
     "--port",

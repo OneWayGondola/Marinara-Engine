@@ -64,6 +64,8 @@ export interface RecalledMemory {
 }
 
 export interface MemoryRecallEmbeddingSource {
+  /** Stable identity for the provider/model vector space, when known. */
+  spaceId?: string;
   label: string;
   embed(texts: string[], signal?: AbortSignal): Promise<number[][] | null>;
 }
@@ -108,7 +110,9 @@ export async function embedMemoryRecallTexts(
 
   if (!warnedUnavailableEmbeddingSource) {
     warnedUnavailableEmbeddingSource = true;
-    logger.warn("[memory-recall] No embedder configured; memory recall is disabled until an embedding source is available");
+    logger.warn(
+      "[memory-recall] No embedder configured; memory recall is disabled until an embedding source is available",
+    );
   }
   return [];
 }
@@ -354,7 +358,11 @@ export async function chunkAndEmbedMessages(
     .where(and(eq(memoryChunks.chatId, chatId), isNull(memoryChunks.sourceChatId), isNotNull(memoryChunks.embedding)))
     .limit(1);
   const existingEmbedding = parseStoredEmbedding(existingEmbeddedChunk[0]?.embedding ?? null);
-  if (Array.isArray(existingEmbedding) && existingEmbedding.length > 0 && existingEmbedding.length !== embeddingDimension) {
+  if (
+    Array.isArray(existingEmbedding) &&
+    existingEmbedding.length > 0 &&
+    existingEmbedding.length !== embeddingDimension
+  ) {
     logger.warn(
       "[memory-recall] Skipping memory chunk insert for chat %s because embedding dimension changed from %d to %d. Rebuild memories before mixing embedding models.",
       chatId,

@@ -26,6 +26,7 @@ import {
   resolveAgentPromptTemplate,
   stripMacroComments,
   findKnownModel,
+  shouldSuppressUnknownModelParameters,
   type AgentCallDebugEvent,
   type AgentContext,
   type AgentResult,
@@ -33,6 +34,7 @@ import {
   type ChatMode,
   type GameMap,
   type WrapFormat,
+  type GenerationParameterSendMap,
 } from "@marinara-engine/shared";
 import { eq } from "../../db/file-query.js";
 import { listCharacterSprites } from "../../services/game/sprite.service.js";
@@ -42,6 +44,7 @@ import {
   getAgentBatchLane,
   normalizeAgentMaxParallelJobs,
   settleAgentJobsWithConcurrencyLimit,
+  shouldUseToolsDuringAgentExecution,
   type ResolvedAgent,
 } from "../../services/agents/agent-pipeline.js";
 import { executeAgent, executeAgentBatch, normalizeAgentContextSize } from "../../services/agents/agent-executor.js";
@@ -157,6 +160,7 @@ import {
 import {
   suppressesReferencePromptLine,
   mergeIllustratorNegativePrompt,
+  illustratorPromptTemplateOwnsComposition,
   resolveIllustratorCharacterReferences,
 } from "./illustrator-references.js";
 import {
@@ -167,6 +171,12 @@ import {
   normalizeProseGuardianPromptTemplate,
 } from "../../services/generation/prose-guardian-settings.js";
 import { applyKnowledgeAgentChatSettings } from "../../services/generation/knowledge-agent-settings.js";
+import {
+  applyCustomAgentImageChatSettings,
+  forceImageGenerationScopeError,
+  needsForcedSnapshotFallback,
+  resolveCustomAgentStyleProfileId,
+} from "../../services/generation/custom-agent-image-settings.js";
 import {
   generateIllustratorSceneBackground,
   illustratorBackgroundGenerationEnabled,
@@ -633,6 +643,8 @@ async function buildRetryAgentContext(args: {
   wrapFormat: WrapFormat;
   forceIllustratorBackgroundGeneration: boolean;
   forceIllustratorImageGeneration: boolean;
+  /** Snapshot button (#4682): tell retried custom image agents the user explicitly requested an image. */
+  forceCustomImageGeneration: boolean;
   /**
    * When retrying agents for a specific assistant message (e.g. refreshing cached prompt injections),
    * use the game-state snapshot committed for that message+swipe — not the latest chat snapshot.
@@ -659,6 +671,7 @@ async function buildRetryAgentContext(args: {
     wrapFormat,
     forceIllustratorBackgroundGeneration,
     forceIllustratorImageGeneration,
+    forceCustomImageGeneration,
     historicalGameStateAnchor,
     useLatestGameStateFallback = true,
   } = args;
@@ -1123,6 +1136,13 @@ async function buildRetryAgentContext(args: {
     agentContext.memory._forceIllustratorImageGeneration = true;
   }
 
+  // Scoped to single-agent retries: memory is shared across the batch, and the
+  // snapshot button (#4682) only ever targets one agent — enforce that here so
+  // a multi-agent force request can't leak the directive to unrelated agents.
+  if (forceCustomImageGeneration && resolvedAgentTypes.size === 1) {
+    agentContext.memory._forceImageGeneration = true;
+  }
+
   const spotifyRetryConfig = enabledConfigs.find((config) => config.type === "spotify");
   const spotifyMusicSettings = parseSettingsRecord(spotifyRetryConfig?.settings);
   const spotifyMusicUsesYoutube = musicAgentUsesYoutube(spotifyMusicSettings);
@@ -1289,6 +1309,9 @@ async function resolveRetryAgents(args: {
       provider: any;
       model: string;
       customParameters: Record<string, unknown>;
+      temperature?: number;
+      enabledParameters?: GenerationParameterSendMap;
+      suppressModelParameters: boolean;
       maxOutputTokens: number | null;
       maxParallelJobs: number;
       enableCaching: boolean;
@@ -1318,6 +1341,7 @@ async function resolveRetryAgents(args: {
     }
 
     const knownModel = findKnownModel(storedConn.provider as APIProvider, model);
+    const storedParameters = parseStoredGenerationParameters(storedConn.defaultParameters);
     connForPromptDefaults ??= storedConn;
     const primaryProvider = createLLMProvider(
       storedConn.provider,
@@ -1335,7 +1359,10 @@ async function resolveRetryAgents(args: {
         connectionId,
         provider: wrapRetryAgentProvider(primaryProvider, connectionId ?? storedConn.id),
         model,
-        customParameters: parseStoredGenerationParameters(storedConn.defaultParameters)?.customParameters ?? {},
+        customParameters: storedParameters?.customParameters ?? {},
+        temperature: storedParameters?.temperature,
+        enabledParameters: storedParameters?.enabledParameters,
+        suppressModelParameters: shouldSuppressUnknownModelParameters(storedConn.provider, model),
         maxOutputTokens: knownModel?.maxOutput && knownModel.maxOutput > 0 ? Math.floor(knownModel.maxOutput) : null,
         maxParallelJobs: Number(storedConn.maxParallelJobs) || 1,
         enableCaching: storedConn.enableCaching === "true",
@@ -1422,8 +1449,11 @@ async function resolveRetryAgents(args: {
           provider: wrapRetryAgentProvider(primaryProvider, connectionId),
           model: LOCAL_SIDECAR_MODEL,
           customParameters: {},
+          temperature: sidecarModelService.getConfig().temperature,
+          enabledParameters: { temperature: true },
+          suppressModelParameters: false,
           maxOutputTokens: null,
-          maxParallelJobs: 1,
+          maxParallelJobs: sidecarModelService.getConfig().maxParallelJobs,
           enableCaching: false,
           anthropicExtendedCacheTtl: false,
           cachingAtDepth: 5,
@@ -1482,6 +1512,7 @@ async function resolveRetryAgents(args: {
     }
     settings = applyTextRewriteAgentChatSettings(cfg.type as string, settings, chatMeta);
     settings = applyKnowledgeAgentChatSettings(cfg.type as string, settings, chatMeta);
+    settings = applyCustomAgentImageChatSettings(cfg.type as string, settings, chatMeta);
     const selectedPromptTemplate = resolveAgentPromptTemplate({
       promptTemplate: normalizeProseGuardianPromptTemplate(cfg.type as string, cfg.promptTemplate),
       fallbackPromptTemplate: getRetryAgentFallbackPrompt(cfg.type as string, settings),
@@ -1501,6 +1532,9 @@ async function resolveRetryAgents(args: {
         connectionId: effectiveConnectionId,
         settings,
         customParameters: agentConnection.entry.customParameters,
+        temperature: agentConnection.entry.temperature,
+        enabledParameters: agentConnection.entry.enabledParameters,
+        suppressModelParameters: agentConnection.entry.suppressModelParameters,
         maxOutputTokens: agentConnection.entry.maxOutputTokens,
         enableCaching: agentConnection.entry.enableCaching,
         anthropicExtendedCacheTtl: agentConnection.entry.anthropicExtendedCacheTtl,
@@ -1575,6 +1609,9 @@ async function resolveRetryAgents(args: {
         connectionId: builtInConnection.entry.connectionId,
         settings,
         customParameters: builtInConnection.entry.customParameters,
+        temperature: builtInConnection.entry.temperature,
+        enabledParameters: builtInConnection.entry.enabledParameters,
+        suppressModelParameters: builtInConnection.entry.suppressModelParameters,
         maxOutputTokens: builtInConnection.entry.maxOutputTokens,
         enableCaching: builtInConnection.entry.enableCaching,
         anthropicExtendedCacheTtl: builtInConnection.entry.anthropicExtendedCacheTtl,
@@ -2462,13 +2499,23 @@ async function executeRetryBatches(
     jobGroups,
     AGENT_PHASE_MAX_CONCURRENT_GROUPS,
     async (group) => {
-      const toolAgents = group.agents.filter((agent) => agent.resolved.toolContext?.tools.length);
-      const batchAgents = group.agents.filter((agent) => !agent.resolved.toolContext?.tools.length);
+      const toolAgents = group.agents.filter((agent) => shouldUseToolsDuringAgentExecution(agent.resolved));
+      const batchAgents = group.agents.filter((agent) => !shouldUseToolsDuringAgentExecution(agent.resolved));
       const groupResults: AgentResult[] = [];
 
       if (batchAgents.length > 0) {
         const configs = batchAgents.map((agent) => agent.resolved);
-        groupResults.push(...(await executeAgentBatch(configs, group.context, group.provider, group.model)));
+        const batchResults = await executeAgentBatch(configs, group.context, group.provider, group.model);
+        for (const result of batchResults) {
+          const entry = batchAgents.find(
+            (agent) => agent.resolved.id === result.agentId || agent.resolved.type === result.agentType,
+          );
+          groupResults.push(
+            entry?.resolved.type === "spotify"
+              ? await validateSpotifyRetryPlayback(entry, result, group.context)
+              : result,
+          );
+        }
       }
 
       for (const entry of toolAgents) {
@@ -2668,6 +2715,7 @@ async function applyRetryResultEffects(args: {
   reviewImagePromptsBeforeSend: boolean;
   illustratorPromptReviewOverride: IllustratorPromptReviewOverride | null;
   illustratorRetryTargets: IllustratorRetryTarget[] | undefined;
+  forceImageGeneration: boolean;
   debugMode: boolean;
   secretPlotRerollMode?: "full" | "turn_only";
 }) {
@@ -2690,6 +2738,7 @@ async function applyRetryResultEffects(args: {
     reviewImagePromptsBeforeSend,
     illustratorPromptReviewOverride,
     illustratorRetryTargets,
+    forceImageGeneration,
     debugMode,
     secretPlotRerollMode,
   } = args;
@@ -3210,7 +3259,12 @@ async function applyRetryResultEffects(args: {
       const illustratorFailureName = imagePromptAgent?.cfg.name ?? "Illustrator";
       try {
         const illData = result.data as Record<string, unknown>;
-        const shouldGenerate = isManualIllustratorImageRequest || illData.shouldGenerate === true;
+        // Snapshot button (#4682): force generation for custom image agents only —
+        // the vanilla Illustrator has its own manual path (illustratorRetryTargets).
+        const shouldGenerate =
+          isManualIllustratorImageRequest ||
+          (forceImageGeneration && !usesChatIllustratorSettings) ||
+          illData.shouldGenerate === true;
         const imagePrompt = ((illData.prompt as string) ?? "").trim();
         const negativePrompt = ((illData.negativePrompt as string) ?? "").trim();
         const style = ((illData.style as string) ?? "").trim();
@@ -3263,10 +3317,13 @@ async function applyRetryResultEffects(args: {
 
             const chatMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
             const setupConfig = parseSettingsRecord(chatMeta.gameSetupConfig);
-            const styleProfileId =
-              (typeof setupConfig.imageStyleProfileId === "string" ? setupConfig.imageStyleProfileId : "") ||
-              (typeof chatMeta.imageStyleProfileId === "string" ? chatMeta.imageStyleProfileId : "") ||
-              null;
+            const styleProfileId = resolveCustomAgentStyleProfileId({
+              usesChatIllustratorSettings,
+              agentSettings: imagePromptAgent?.resolved.settings,
+              availableProfiles: imageSettings.styleProfiles.profiles,
+              gameStyleProfileId: setupConfig.imageStyleProfileId,
+              chatStyleProfileId: chatMeta.imageStyleProfileId,
+            });
             const illustrationSize = resolveIllustratorImageSize(
               chat.mode === "game" ? imageSettings.game : imageSettings.illustration,
               illData.aspectRatio,
@@ -3373,20 +3430,65 @@ async function applyRetryResultEffects(args: {
               omitProfileStyleText:
                 illData._styleProfileInstructionApplied === true ||
                 typeof agentContext.memory._illustratorImageStyleInstruction === "string",
-              omitProfileSubjectTags: true,
+              omitProfileSubjectTags: illustratorPromptTemplateOwnsComposition(
+                imagePromptAgent?.resolved.promptTemplate ?? "",
+              ),
             });
             const finalNegativePrompt = mergeIllustratorNegativePrompt(
               compiledPrompt.prompt,
               compiledPrompt.negativePrompt,
               requestedNegativePrompt,
+              imgConnFull,
             );
             const promptSubmission = resolveIllustratorPromptSubmission({
               generatedPrompt: compiledPrompt.prompt,
               generatedNegativePrompt: finalNegativePrompt,
               reviewOverride: illustratorPromptReviewOverride,
             });
+            const fallbackCompiledPrompt = imageFallback
+              ? compileImagePrompt({
+                  kind: "illustration",
+                  prompt: fullPrompt,
+                  negativePrompt: requestedNegativePrompt || undefined,
+                  styleProfiles: imageSettings.styleProfiles,
+                  styleProfileId,
+                  imageDefaults: imageFallback.imageDefaults,
+                  generatedStyle: style,
+                  omitProfileStyleText:
+                    illData._styleProfileInstructionApplied === true ||
+                    typeof agentContext.memory._illustratorImageStyleInstruction === "string",
+                  omitProfileSubjectTags: illustratorPromptTemplateOwnsComposition(
+                    imagePromptAgent?.resolved.promptTemplate ?? "",
+                  ),
+                })
+              : null;
+            const fallbackPromptSubmission =
+              imageFallback && fallbackCompiledPrompt
+                ? resolveIllustratorPromptSubmission({
+                    generatedPrompt: fallbackCompiledPrompt.prompt,
+                    generatedNegativePrompt: mergeIllustratorNegativePrompt(
+                      fallbackCompiledPrompt.prompt,
+                      fallbackCompiledPrompt.negativePrompt,
+                      requestedNegativePrompt,
+                      imageFallback,
+                    ),
+                    reviewOverride: illustratorPromptReviewOverride,
+                  })
+                : null;
+            const providerAwareImageFallback =
+              imageFallback && fallbackPromptSubmission
+                ? {
+                    ...imageFallback,
+                    prompt: fallbackPromptSubmission.prompt,
+                    negativePrompt: fallbackPromptSubmission.negativePrompt || null,
+                  }
+                : undefined;
 
-            if (reviewImagePromptsBeforeSend && !illustratorPromptReviewOverride) {
+            // A forced custom-agent snapshot (#4682) skips prompt review: the
+            // camera press is itself the explicit user request, and the review
+            // approval round-trip only supports the vanilla Illustrator.
+            const skipReviewForForcedSnapshot = forceImageGeneration && !usesChatIllustratorSettings;
+            if (reviewImagePromptsBeforeSend && !illustratorPromptReviewOverride && !skipReviewForForcedSnapshot) {
               const previewSize = resolveImagePromptReviewSize({
                 connection: imgConnFull,
                 prompt: promptSubmission.prompt,
@@ -3455,7 +3557,7 @@ async function applyRetryResultEffects(args: {
                       imageDefaults,
                       referenceImages,
                       signal: agentContext.signal,
-                      fallback: imageFallback,
+                      fallback: providerAwareImageFallback,
                       onFallback: createReplyFallbackNotifier(reply),
                     }),
                 }),
@@ -3464,6 +3566,7 @@ async function applyRetryResultEffects(args: {
             });
 
             for (const [variantIndex, imageResult] of imageResults.entries()) {
+              const renderedPrompt = imageResult.effectivePrompt ?? promptSubmission.prompt;
               const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext, { shared: true });
               // A fallback connection may have rendered this variant; record
               // the connection that actually produced it.
@@ -3473,7 +3576,7 @@ async function applyRetryResultEffects(args: {
               const galleryEntry = await galleryStore.create({
                 chatId,
                 filePath,
-                prompt: promptSubmission.prompt,
+                prompt: renderedPrompt,
                 provider: effectiveImageProvider,
                 model: effectiveImageModel,
                 width: imgWidth,
@@ -3486,7 +3589,7 @@ async function applyRetryResultEffects(args: {
                 personaIds: referenceResolution.personaId ? [referenceResolution.personaId] : [],
                 characterGallery: createCharacterGalleryStorage(app.db),
                 personaGallery: createPersonaGalleryStorage(app.db),
-                prompt: promptSubmission.prompt,
+                prompt: renderedPrompt,
                 provider: effectiveImageProvider,
                 model: effectiveImageModel,
                 width: imgWidth,
@@ -3503,7 +3606,7 @@ async function applyRetryResultEffects(args: {
                   type: "image",
                   url: imageUrl,
                   filename: `illustration_${variantIndex + 1}.${imageResult.ext}`,
-                  prompt: promptSubmission.prompt,
+                  prompt: renderedPrompt,
                   galleryId: (galleryEntry as any)?.id,
                 };
                 await chatsDb.appendSwipeAttachment(retryMessageId, retrySwipeIndex, attachment);
@@ -3515,7 +3618,7 @@ async function applyRetryResultEffects(args: {
                 data: {
                   messageId: retryMessageId,
                   imageUrl,
-                  prompt: promptSubmission.prompt,
+                  prompt: renderedPrompt,
                   reason: illData.reason,
                   galleryId: (galleryEntry as any)?.id,
                 },
@@ -3545,24 +3648,58 @@ async function applyRetryResultEffects(args: {
             sendSseEvent(reply, {
               type: "agent_error",
               data: {
-                agentType: "illustrator",
+                // Attribute to the agent that actually ran (custom snapshot vs vanilla).
+                agentType: result.agentType,
                 agentName: illustratorFailureName,
                 retryTarget: "illustration",
                 error:
-                  "No image generation connection is set on the Illustrator agent or under Settings -> Connections -> Defaults -> Images. Choose one there, or assign one directly in Settings -> Agents -> Illustrator.",
+                  "No image generation connection is set on this agent or under Settings -> Connections -> Defaults -> Images. Choose one there, or assign one in the agent's settings.",
               },
             });
           }
+        } else if (forceImageGeneration && !usesChatIllustratorSettings) {
+          // Snapshot button (#4682): the forced agent still declined or returned
+          // no prompt — surface it so the camera press never looks like a no-op.
+          sendSseEvent(reply, {
+            type: "agent_error",
+            data: {
+              agentType: result.agentType,
+              agentName: illustratorFailureName,
+              retryTarget: "illustration",
+              error:
+                "The agent ran but did not produce an image prompt. Try again, or adjust its prompt template so it always returns a prompt when an image is requested.",
+            },
+          });
         }
       } catch (illErr) {
         logger.error(illErr, "[retry-agents] Illustrator image generation failed");
         sendSseEvent(reply, {
           type: "agent_error",
           data: {
-            agentType: "illustrator",
+            // Attribute the failure to the agent that actually ran — a custom
+            // agent's snapshot failure must not be reported as the Illustrator.
+            agentType: result.agentType,
             agentName: illustratorFailureName,
             retryTarget: "illustration",
             error: illErr instanceof Error ? illErr.message : "Image generation failed",
+          },
+        });
+      }
+    } else if (needsForcedSnapshotFallback(forceImageGeneration === true, result)) {
+      // Snapshot button (#4682): the forced agent SUCCEEDED without a usable
+      // image_prompt payload (different result type, or null data), so nothing
+      // above surfaces the outcome — without this the camera press would be a
+      // silent no-op. Failed results already reach the client via agent_result.
+      const forcedAgent = resolvedAgents.find((agent) => agent.resolved.id === result.agentId);
+      if (forcedAgent && forcedAgent.resolved.type !== "illustrator") {
+        sendSseEvent(reply, {
+          type: "agent_error",
+          data: {
+            agentType: result.agentType,
+            agentName: forcedAgent.cfg.name ?? "Agent",
+            retryTarget: "illustration",
+            error:
+              "The agent completed without producing an image prompt. Check that its result type is set to Image Prompt and that its template returns a prompt when an image is requested.",
           },
         });
       }
@@ -3772,6 +3909,8 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       illustratorPromptReviewOverride?: unknown;
       /** Limit an Illustrator retry to visual jobs that failed in the original run. */
       illustratorRetryTargets?: unknown;
+      /** Force image generation for retried custom image agents' results (snapshot button, #4682). */
+      forceImageGeneration?: boolean;
       lorebookKeeperBackfill?: boolean;
       /** When set, scope history and game state to this assistant message (as at original generation), not the latest turn. */
       forMessageId?: string;
@@ -3792,6 +3931,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       agentPromptTemplateIds,
       illustratorPromptReviewOverride: rawIllustratorPromptReviewOverride,
       illustratorRetryTargets: rawIllustratorRetryTargets,
+      forceImageGeneration = false,
       lorebookKeeperBackfill = false,
       forMessageId,
       musicPlayerSource = "spotify",
@@ -3977,6 +4117,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         wrapFormat: retryWrapFormat,
         forceIllustratorBackgroundGeneration: isManualIllustratorBackgroundRequest,
         forceIllustratorImageGeneration: isManualIllustratorImageRequest,
+        forceCustomImageGeneration: forceImageGeneration === true,
         historicalGameStateAnchor,
       });
       agentContext.signal = abortController.signal;
@@ -4001,6 +4142,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
               wrapFormat: retryWrapFormat,
               forceIllustratorBackgroundGeneration: isManualIllustratorBackgroundRequest,
               forceIllustratorImageGeneration: isManualIllustratorImageRequest,
+              forceCustomImageGeneration: forceImageGeneration === true,
               historicalGameStateAnchor: preGenerationGameStateAnchor,
               useLatestGameStateFallback: false,
             })
@@ -4053,6 +4195,26 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         throw new Error(
           "No runnable agents were found for this retry. Add tracker agents to this chat or check their connection settings.",
         );
+      }
+      // Snapshot force (#4682) is a single-custom-image-agent contract: the flag
+      // applies to every image_prompt result in the batch and its directive only
+      // makes sense for agents that can emit one, so reject ineligible forced
+      // requests up front instead of guarding each downstream effect site.
+      const forceScopeError = forceImageGenerationScopeError(
+        forceImageGeneration === true,
+        resolvedAgents.map((entry) => ({
+          isCustomAgent: entry.resolved.isCustomAgent,
+          canEmitImagePrompt: customAgentHasCapability(entry.resolved.settings, "trigger_image_generation"),
+        })),
+      );
+      if (forceScopeError) {
+        logger.warn(
+          "[retry-agents] Rejected forceImageGeneration: %d agents resolved for chatId=%s agentTypes=%j",
+          resolvedAgents.length,
+          chatId,
+          agentTypes,
+        );
+        throw new Error(forceScopeError);
       }
       const lorebookKeeperAgent = resolvedAgents.find((entry) => entry.resolved.type === "lorebook-keeper") ?? null;
       const nonLorebookAgents = resolvedAgents.filter((entry) => entry.resolved.type !== "lorebook-keeper");
@@ -4289,6 +4451,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         reviewImagePromptsBeforeSend,
         illustratorPromptReviewOverride,
         illustratorRetryTargets,
+        forceImageGeneration: forceImageGeneration === true,
         debugMode,
         secretPlotRerollMode,
       });

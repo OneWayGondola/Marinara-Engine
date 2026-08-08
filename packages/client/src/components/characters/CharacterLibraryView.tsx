@@ -747,6 +747,7 @@ export function CharacterLibraryView() {
                 return (
                   <Fragment key={card.id}>
                     <article
+                      data-card-library-card={card.id}
                       onClick={() => {
                         if (selection.selectionMode) selection.toggleSelected(card.id);
                       }}
@@ -804,8 +805,9 @@ export function CharacterLibraryView() {
                         />
                       )}
                       <div
+                        data-card-library-avatar
                         className={cn(
-                          "mari-avatar-placeholder relative h-24 w-24 shrink-0 overflow-hidden sm:h-auto sm:w-full sm:aspect-square",
+                          "mari-avatar-placeholder relative min-h-24 w-24 shrink-0 self-stretch overflow-hidden sm:h-auto sm:min-h-0 sm:w-full sm:self-auto sm:aspect-square",
                           placeholderClass,
                         )}
                       >

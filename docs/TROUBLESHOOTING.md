@@ -42,11 +42,11 @@ If the checkout itself cannot update, run `git pull` in the Marinara folder and 
 npm install -g pnpm@10.34.5
 ```
 
-### Launcher stops once after the pnpm 10.34.5 security update
+### Launcher update to pnpm 10.34.5
 
-If an update prints `Expected version: >=10.34.5` and `Got: 10.33.2`, close the launcher and run it again. This one-time stop is intentional: the old launcher has already downloaded the updated Marinara files, but the new engine requirement prevents the affected pnpm version from installing dependencies. On the second launch, the refreshed launcher selects pnpm 10.34.5 before continuing. Corepack verifies the release against the SHA-512 digest pinned in `package.json`; the npm fallback also requests exactly 10.34.5 rather than an unpinned latest version.
+Marinara v2.4.1 moves its pinned package manager to pnpm 10.34.5. An existing 10.33.2 launcher can finish that one-time handoff in the same run; the refreshed launcher then selects 10.34.5 for future starts. Corepack verifies the release against the SHA-512 digest pinned in `package.json`, and the npm fallback also requests exactly 10.34.5 rather than an unpinned latest version.
 
-Do not use the generic unpinned command suggested by pnpm's engine error. If the second launch cannot obtain the pinned release automatically, install the same exact version and rerun the launcher:
+If an earlier v2.4.1 staging build already stopped with `Expected version: >=10.34.5` and `Got: 10.33.2`, run the launcher once more; that build downloaded the refreshed launcher before stopping. If the launcher still cannot obtain the pinned release automatically, install the exact version and rerun it:
 
 ```bash
 npm install -g pnpm@10.34.5
@@ -248,6 +248,27 @@ Check both of these local locations for a `storage` folder:
 2. `data/`
 
 The server prints the data and storage directories it resolved on startup.
+
+### Chats show no messages after switching to an older version
+
+Newer versions of Marinara store each chat's data (messages, swipes, memories, images, and other per-chat records) in its own files instead of one big file per table, which makes saving long chats much faster. Older versions do not understand that layout. If you switch to an older version, your chats look empty — the data is still on disk, the older version just cannot see it.
+
+Marinara refuses obvious downgrades on its own: the launcher skips an auto-update that would land on an incompatible version, and the in-app updater blocks it with an error that points here.
+
+To downgrade anyway:
+
+1. Stop the Marinara server.
+2. From the Marinara folder, run:
+
+   ```bash
+   node scripts/protect-launcher-data.mjs unshard
+   ```
+
+3. Switch to the older version and start it normally.
+
+The command rebuilds the old single-file layout from the per-chat files. Nothing is deleted: the per-chat files are kept next to each rebuilt file in folders named `<table>.post-unshard-<timestamp>` (for example `messages.post-unshard-…`), and any pre-migration originals stay as `.pre-shard` files. When you upgrade again later, Marinara converts your data back automatically.
+
+Docker and Podman keep data in the `marinara-data` volume, so run the command in a one-off container instead: stop the running container, then `docker compose run --rm marinara node scripts/protect-launcher-data.mjs unshard`, then start the older image.
 
 ### Backup or Export returns 403
 

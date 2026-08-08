@@ -1,4 +1,5 @@
 import { LOCAL_SIDECAR_CONNECTION_ID, PROVIDERS, localAuthProviderBaseUrl } from "@marinara-engine/shared";
+import { createHash } from "node:crypto";
 import type { DB } from "../db/connection.js";
 import { logger } from "../lib/logger.js";
 import { isLocalEmbedderAvailable } from "./local-embedder.js";
@@ -59,6 +60,13 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function embeddingSpaceId(kind: string, ...parts: Array<string | null | undefined>): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(parts.map((part) => part?.trim() ?? "")))
+    .digest("hex");
+  return `${kind}:${digest}`;
+}
+
 function buildVectorizerCacheKey(options: {
   chatMetadata?: unknown;
   connectionId?: string | null;
@@ -71,7 +79,8 @@ function buildVectorizerCacheKey(options: {
     connectionId: options.connectionId ?? active?.id ?? "default",
     activeBaseUrl: options.activeBaseUrl ?? "",
     provider: active?.provider ?? "",
-    embeddingConnectionId: nonEmptyString(chatMeta.embeddingConnectionId) ?? nonEmptyString(active?.embeddingConnectionId) ?? "",
+    embeddingConnectionId:
+      nonEmptyString(chatMeta.embeddingConnectionId) ?? nonEmptyString(active?.embeddingConnectionId) ?? "",
     embeddingBaseUrl: nonEmptyString(active?.embeddingBaseUrl) ?? "",
     embeddingModel: nonEmptyString(active?.embeddingModel) ?? "",
   });
@@ -122,6 +131,11 @@ export async function resolveMemoryRecallEmbeddingSource(
     const provider = getLocalSidecarProvider();
     const label = "Local Model sidecar";
     return {
+      spaceId: embeddingSpaceId(
+        "sidecar",
+        sidecarModelService.getResolvedBackend(),
+        sidecarModelService.getConfiguredModelRef(),
+      ),
       label,
       async embed(texts: string[], signal?: AbortSignal) {
         try {
@@ -169,6 +183,7 @@ export async function resolveMemoryRecallEmbeddingSource(
   const label = `${embeddingConnection.name || embeddingConnection.provider} (${embeddingModel})`;
 
   return {
+    spaceId: embeddingSpaceId("remote", embeddingConnection.provider, embeddingBaseUrl, embeddingModel),
     label,
     async embed(texts: string[], signal?: AbortSignal) {
       try {

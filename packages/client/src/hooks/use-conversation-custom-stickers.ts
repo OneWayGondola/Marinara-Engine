@@ -13,12 +13,7 @@ import { useChat } from "./use-chats";
 import { getChatCharacterIds } from "../lib/chat-macros";
 import { parseCharacterDisplayData } from "../lib/character-display";
 import { useCustomStickers } from "./use-custom-stickers";
-import {
-  usePersona,
-  usePersonaGalleryImages,
-  characterKeys,
-  type CharacterGalleryImage,
-} from "./use-characters";
+import { usePersona, usePersonaGalleryImages, characterKeys, type CharacterGalleryImage } from "./use-characters";
 
 export interface ConversationCustomSticker {
   name: string;
@@ -40,7 +35,7 @@ export function useConversationCustomStickers(): { list: ConversationCustomStick
   const stableResultRef = useRef<{ list: ConversationCustomSticker[]; map: Map<string, string> } | null>(null);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const { data: activeChat } = useChat(activeChatId);
-  const personaId = (activeChat as { personaId?: string | null } | undefined)?.personaId ?? null;
+  const personaId = activeChat?.personaId ?? null;
   const characterIds = getChatCharacterIds(activeChat);
 
   const { data: globalStickers } = useCustomStickers();

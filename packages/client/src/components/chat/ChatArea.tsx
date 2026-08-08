@@ -4,6 +4,7 @@
 import {
   Suspense,
   lazy,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -43,6 +44,7 @@ import {
   type SpriteInfo,
 } from "../../hooks/use-characters";
 import { usePageActivity } from "../../hooks/use-page-activity";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { useRenderTimer, useWhyRender } from "../../lib/perf-diagnostics";
 import { usePresenceClock } from "../../hooks/use-presence-clock";
 import { useKeepLatestChatMessageVisible } from "../../hooks/use-visual-viewport-chat-bottom";
@@ -53,6 +55,7 @@ import { resolveSpriteExpression } from "../../lib/sprite-expression-match";
 import { parseCharacterDisplayData } from "../../lib/character-display";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
+import { trimInactiveMessagePageCaches } from "../../lib/message-page-cache";
 import { normalizeSpriteExpressionMap, resolveSpriteExpressionState } from "../../lib/sprite-expression-state";
 import { chatBackgroundMetadataToUrl, chatBackgroundUrlToMetadata } from "../../lib/backgrounds";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -507,7 +510,7 @@ function HomeStarfield() {
   );
 }
 
-export function ChatArea() {
+export const ChatArea = memo(function ChatArea() {
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   useRenderTimer("chat-area"); // [#3104 diagnostic]
@@ -520,6 +523,7 @@ export function ChatArea() {
   );
   const isTextStreaming = isStreaming && !isBackgroundIllustration;
   const isPageActive = usePageActivity();
+  const reduceAmbientEffects = useReducedAmbientEffects();
   const regenerateMessageId = useChatStore((s) => s.regenerateMessageId);
   const chatBackground = useUIStore((s) => s.chatBackground);
   const weatherEffects = useUIStore((s) => s.weatherEffects);
@@ -756,6 +760,12 @@ export function ChatArea() {
       return trimNewestLoadedMessagePage(old, messagePageSize);
     });
   }, [activeChatId, messagePageSize, newestMessagePageLength, queryClient]);
+  // #4703: bound the page depth of chats the user has navigated away from.
+  // Their old pages re-fetch on demand via Load More; keeping them would let
+  // any later refetch of that chat re-drain its full loaded history.
+  useEffect(() => {
+    trimInactiveMessagePageCaches(queryClient, activeChatId);
+  }, [activeChatId, queryClient]);
   const { data: messageCountData } = useChatMessageCount(activeChatId);
   const totalMessageCount = messageCountData?.count ?? messages?.length ?? 0;
   const loadedMessageCount = messages?.length ?? 0;
@@ -775,14 +785,14 @@ export function ChatArea() {
   const deleteMessage = useDeleteMessage(activeChatId);
   const deleteMessages = useDeleteMessages(activeChatId);
   const deleteSwipe = useDeleteSwipe(activeChatId);
-  const updateMessage = useUpdateMessage(activeChatId);
-  const updateMessageExtra = useUpdateMessageExtra(activeChatId);
+  const { mutate: updateMessage, mutateAsync: updateMessageAsync } = useUpdateMessage(activeChatId);
+  const { mutate: updateMessageExtra } = useUpdateMessageExtra(activeChatId);
   const peekPrompt = usePeekPrompt();
   const branchChat = useBranchChat();
   const branchPendingRef = useRef(false);
   const { generate, retryAgents } = useGenerate();
   const generateGallerySelfie = useGenerateGallerySelfie(activeChatId ?? "");
-  const setActiveSwipe = useSetActiveSwipe(activeChatId);
+  const { mutateAsync: setActiveSwipe } = useSetActiveSwipe(activeChatId);
   const setActiveChatId = useChatStore((s) => s.setActiveChatId);
   const pendingNewChatMode = useChatStore((s) => s.pendingNewChatMode);
   const failedAgentTypes = useAgentStore((s) =>
@@ -1050,19 +1060,18 @@ export function ChatArea() {
     // falls back to the globally active account Persona.
     const persona = chatPersona ?? (chatMode === "conversation" ? activePersonaFallback : null);
     if (!persona) return undefined;
-    const avatarCrop = normalizeAvatarCrop(persona.avatarCrop);
     return {
       id: persona.id,
       name: persona.name,
       convoDisplayName: persona.convoDisplayName || undefined,
       phoneticName: persona.phoneticName || undefined,
-      description: persona.description ?? "",
+      description: persona.description,
       personality: persona.personality || undefined,
       scenario: persona.scenario || undefined,
       backstory: persona.backstory || undefined,
       appearance: persona.appearance || undefined,
       avatarUrl: persona.avatarPath || undefined,
-      avatarCrop,
+      avatarCrop: persona.avatarCrop ?? null,
       nameColor: persona.nameColor || undefined,
       dialogueColor: persona.dialogueColor || undefined,
       boxColor: persona.boxColor || undefined,
@@ -1436,13 +1445,8 @@ export function ChatArea() {
   // (personas have no other data-card-css hook), so only feed it in Convo mode.
   const cardCssPersonas = useMemo<PersonaCssRow[] | undefined>(() => {
     if (chatMode !== "conversation") return undefined;
-    const persona = (chatPersona ?? (chatMode === "conversation" ? activePersonaFallback : null)) as
-      | { id?: string; creatorNotes?: string | null }
-      | null
-      | undefined;
-    return persona?.id
-      ? [{ id: persona.id, creatorNotes: typeof persona.creatorNotes === "string" ? persona.creatorNotes : null }]
-      : undefined;
+    const persona = chatPersona ?? activePersonaFallback;
+    return persona?.id ? [{ id: persona.id, creatorNotes: persona.creatorNotes }] : undefined;
   }, [chatMode, chatPersona, activePersonaFallback]);
   const cardCssInjector = (
     <CreatorNotesCssInjector
@@ -1616,7 +1620,7 @@ export function ChatArea() {
         for (let i = messages.length - 1; i >= 0; i--) {
           const m = messages[i]!;
           if (m.role === "assistant") {
-            updateMessageExtra.mutate({
+            updateMessageExtra({
               messageId: m.id,
               extra: { spriteExpressions: expressions },
             });
@@ -2105,7 +2109,7 @@ export function ChatArea() {
             }
           }
           if (swipeActionSeq.current !== actionId) return;
-          const mutation = setActiveSwipe.mutateAsync({ messageId, index });
+          const mutation = setActiveSwipe({ messageId, index });
           const trackedMutation = mutation.then(
             () => undefined,
             () => undefined,
@@ -2135,21 +2139,28 @@ export function ChatArea() {
 
   const handleEdit = useCallback(
     (messageId: string, content: string) => {
-      updateMessage.mutate({ messageId, content });
+      updateMessage({ messageId, content });
     },
     [updateMessage],
   );
 
+  const handleRoleplayEdit = useCallback(
+    async (messageId: string, content: string) => {
+      await updateMessageAsync({ messageId, content });
+    },
+    [updateMessageAsync],
+  );
+
   const handleToggleConversationStart = useCallback(
     (messageId: string, current: boolean) => {
-      updateMessageExtra.mutate({ messageId, extra: { isConversationStart: !current } });
+      updateMessageExtra({ messageId, extra: { isConversationStart: !current } });
     },
     [updateMessageExtra],
   );
 
   const handleToggleHiddenFromAI = useCallback(
     (messageId: string, hiddenFromAll: boolean, hiddenFromAICharacterIds?: string[]) => {
-      updateMessageExtra.mutate({
+      updateMessageExtra({
         messageId,
         extra:
           hiddenFromAICharacterIds === undefined
@@ -2514,7 +2525,7 @@ export function ChatArea() {
     },
     [scrollToMessagesBottom],
   );
-  useKeepLatestChatMessageVisible(scrollRef, isNearBottomRef, scheduleScrollToMessagesBottom);
+  useKeepLatestChatMessageVisible(scrollRef, scheduleScrollToMessagesBottom);
   useEffect(() => {
     const handleScrollRequest = (event: Event) => {
       const detail = (event as CustomEvent<ChatScrollToBottomDetail>).detail;
@@ -2853,7 +2864,9 @@ export function ChatArea() {
                 ? localizeUi("ui.chat.chatarea.couldNotOpenThisChat")
                 : localizeUi("ui.chat.chatarea.openingChat")}
             </p>
-            {hasOpenError && <p className="max-w-sm text-xs text-[var(--muted-foreground)]">{errorMessage}</p>}
+            {hasOpenError && (
+              <p className="mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs">{errorMessage}</p>
+            )}
           </div>
           {hasOpenError && (
             <button
@@ -2873,7 +2886,7 @@ export function ChatArea() {
   // Empty state (no active chat)
   // ═══════════════════════════════════════════════
   if (!activeChatId) {
-    const showEmptyStateEffects = isPageActive;
+    const showEmptyStateEffects = isPageActive && !reduceAmbientEffects;
 
     return (
       <>
@@ -2928,7 +2941,7 @@ export function ChatArea() {
                   <h3
                     className={cn(
                       "mari-logo-gradient-text text-base font-bold sm:text-xl",
-                      isPageActive && "mari-logo-gradient-text--active",
+                      showEmptyStateEffects && "mari-logo-gradient-text--active",
                     )}
                   >
                     {localizeUi("app.documentTitle")}
@@ -3405,7 +3418,7 @@ export function ChatArea() {
           onLoadMore={handleLoadMore}
           onDelete={handleDelete}
           onRegenerate={handleRegenerate}
-          onEdit={handleEdit}
+          onEdit={handleRoleplayEdit}
           onSetActiveSwipe={handleSetActiveSwipe}
           onToggleConversationStart={handleToggleConversationStart}
           onToggleHiddenFromAI={handleToggleHiddenFromAI}
@@ -3493,7 +3506,7 @@ export function ChatArea() {
       )}
     </>
   );
-}
+});
 
 function AgentInjectionReviewModal({
   request,

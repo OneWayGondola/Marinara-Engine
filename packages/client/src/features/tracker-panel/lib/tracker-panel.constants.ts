@@ -1,4 +1,3 @@
-import { BUILT_IN_AGENTS } from "@marinara-engine/shared";
 import type { TrackerPanelSection, TrackerStatDensity } from "../tracker-panel.types";
 export {
   DEFAULT_TRACKER_CARD_PORTRAIT_FOCUS_X as TRACKER_PORTRAIT_DEFAULT_FOCUS_X,
@@ -8,10 +7,6 @@ export {
   MIN_TRACKER_CARD_PORTRAIT_ZOOM as TRACKER_PORTRAIT_MIN_ZOOM,
   MAX_TRACKER_CARD_PORTRAIT_ZOOM as TRACKER_PORTRAIT_MAX_ZOOM,
 } from "../../../lib/tracker-card-colors";
-
-export const TRACKER_AGENT_TYPE_IDS = new Set(
-  BUILT_IN_AGENTS.filter((agent) => agent.category === "tracker").map((agent) => agent.id),
-);
 
 export const TRACKER_SECTION_AGENT_TYPES: Partial<Record<TrackerPanelSection, string>> = {
   world: "world-state",

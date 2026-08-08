@@ -4,8 +4,14 @@
 import { cn, copyToClipboard, getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
 import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { applyInlineMarkdown, renderMarkdownBlocks, applyInlineMarkdownHTML } from "../../lib/markdown";
-import { normalizeCardAssetImageSyntax, resolveCardAssetUrl, resolveSelfCardAssets, type ChatGalleryIndex } from "../../lib/card-asset-links";
+import {
+  normalizeCardAssetImageSyntax,
+  resolveCardAssetUrl,
+  resolveSelfCardAssets,
+  type ChatGalleryIndex,
+} from "../../lib/card-asset-links";
 import { useChatGalleryFilenameIndex } from "../../hooks/use-characters";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { PendingTypingDots } from "./PendingTypingDots";
 import { isDiceRollResult } from "../dice/AnimatedDiceRoll";
 import { DiceMessageContent } from "./ConversationMessageShared";
@@ -57,6 +63,7 @@ import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCa
 import { DIALOGUE_QUOTE_PATTERN_SOURCE, HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE } from "../../lib/dialogue-quotes";
 import { resolveMessageRewriteVersions } from "../../lib/message-rewrite-versions";
 import { convertChatHtmlNewlines } from "../../lib/chat-html-newlines";
+import { resolveMessageReasoningDisplay } from "../../lib/message-reasoning";
 import DOMPurify from "dompurify";
 import type { CharacterMap, ExpressionAvatarResolver, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
 import {
@@ -292,7 +299,10 @@ function AIVisibilityRecipientAvatars({
   const { t: localizeUi } = useUiTranslation();
   if (hiddenFromAll) {
     return (
-      <span className="ml-0.5 inline-flex" title={localizeUi("ui.chat.aivisibilityrecipientavatars.hiddenFromAllCharacters")}>
+      <span
+        className="ml-0.5 inline-flex"
+        title={localizeUi("ui.chat.aivisibilityrecipientavatars.hiddenFromAllCharacters")}
+      >
         <AIVisibilityGroupAvatar characters={characters} className="h-4 w-4" />
       </span>
     );
@@ -306,7 +316,9 @@ function AIVisibilityRecipientAvatars({
   return (
     <span
       className="ml-0.5 inline-flex -space-x-1"
-      title={localizeUi("ui.chat.aivisibilityrecipientavatars.hiddenFromValue1", { value1: recipients.map((item) => item.name).join(", ") })}
+      title={localizeUi("ui.chat.aivisibilityrecipientavatars.hiddenFromValue1", {
+        value1: recipients.map((item) => item.name).join(", "),
+      })}
     >
       {recipients.map((character) => (
         <span key={character.id} className="rounded-full ring-1 ring-[var(--marinara-chat-chrome-panel-bg)]">
@@ -381,11 +393,11 @@ function HideFromAIAction({
         title={
           isGroupChat
             ? hasRestriction
-              ?localizeUi("ui.chat.hidefromaiaction.changeWhoThisIsHiddenFrom")
-              :localizeUi("ui.chat.hidefromaiaction.chooseWhoToHideThisFrom")
+              ? localizeUi("ui.chat.hidefromaiaction.changeWhoThisIsHiddenFrom")
+              : localizeUi("ui.chat.hidefromaiaction.chooseWhoToHideThisFrom")
             : hasRestriction
-              ?localizeUi("ui.chat.conversationmessageactions.unhideFromAi")
-              :localizeUi("ui.chat.conversationmessageactions.hideFromAi")
+              ? localizeUi("ui.chat.conversationmessageactions.unhideFromAi")
+              : localizeUi("ui.chat.conversationmessageactions.hideFromAi")
         }
         className={cn(
           "[-webkit-tap-highlight-color:transparent]",
@@ -494,8 +506,18 @@ function HiddenFromAIMessageButton({
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
           roleplay && "opacity-80 hover:opacity-100",
         )}
-        aria-label={localizeUi("ui.chat.hiddenfromaimessagebutton.value1MessageValue2", { value1: isHiddenExpanded ?localizeUi("ui.panels.ttsconfigcard.collapse") :localizeUi("ui.panels.ttsconfigcard.expand"), value2: statusLabel })}
-        title={localizeUi("ui.chat.hiddenfromaimessagebutton.value1Value2", { value1: statusLabel, value2: isHiddenExpanded ?localizeUi("ui.chat.hiddenfromaimessagebutton.collapseMessage") :localizeUi("ui.chat.hiddenfromaimessagebutton.expandMessage") })}
+        aria-label={localizeUi("ui.chat.hiddenfromaimessagebutton.value1MessageValue2", {
+          value1: isHiddenExpanded
+            ? localizeUi("ui.panels.ttsconfigcard.collapse")
+            : localizeUi("ui.panels.ttsconfigcard.expand"),
+          value2: statusLabel,
+        })}
+        title={localizeUi("ui.chat.hiddenfromaimessagebutton.value1Value2", {
+          value1: statusLabel,
+          value2: isHiddenExpanded
+            ? localizeUi("ui.chat.hiddenfromaimessagebutton.collapseMessage")
+            : localizeUi("ui.chat.hiddenfromaimessagebutton.expandMessage"),
+        })}
       >
         <ChevronRight size="0.7rem" className={cn("shrink-0 transition-transform", isHiddenExpanded && "rotate-90")} />
         <EyeOff size="0.7rem" className="shrink-0" />
@@ -534,7 +556,9 @@ function HiddenFromAIMessageSummary({
       <EyeOff size="0.8rem" className="shrink-0" />
       {recipientAvatars}
       <span className="min-w-0 flex-1 truncate">{statusLabel}</span>
-      <span className="shrink-0 text-[0.625rem] opacity-70">{localizeUi("ui.chat.hiddenfromaimessagesummary.show")}</span>
+      <span className="shrink-0 text-[0.625rem] opacity-70">
+        {localizeUi("ui.chat.hiddenfromaimessagesummary.show")}
+      </span>
     </button>
   );
 }
@@ -544,13 +568,15 @@ const EditTextarea = memo(function EditTextarea({
   initialContent,
   fontSize,
   quoteFormat,
+  saving,
   onSave,
   onCancel,
 }: {
   initialContent: string;
   fontSize: string | number | undefined;
   quoteFormat: QuoteFormat;
-  onSave: (content: string) => void;
+  saving: boolean;
+  onSave: (content: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
@@ -576,32 +602,36 @@ const EditTextarea = memo(function EditTextarea({
   }, [autoResize]);
 
   const handleSave = useCallback(() => {
-    if (ref.current) onSave(formatTextQuotes(ref.current.value, quoteFormat));
+    if (ref.current) void onSave(formatTextQuotes(ref.current.value, quoteFormat));
   }, [onSave, quoteFormat]);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative isolate z-20 flex flex-col gap-2">
       <textarea
         ref={ref}
         defaultValue={formatTextQuotes(initialContent, quoteFormat)}
+        readOnly={saving}
+        aria-busy={saving}
         rows={1}
         onInput={(event) => {
           applyTextareaQuoteFormat(event.currentTarget, quoteFormat, event.nativeEvent as InputEvent);
           autoResize();
         }}
         onKeyDown={(e) => {
+          if (saving) return;
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
           if (e.key === "Escape") onCancel();
         }}
-        className="w-full resize-none overflow-y-auto overscroll-contain rounded-lg bg-black/30 px-3 py-2 text-white outline-none ring-1 ring-white/20 focus:ring-blue-400/50"
+        className="relative z-0 w-full resize-none overflow-y-auto overscroll-contain rounded-lg bg-black/30 px-3 py-2 text-white outline-none ring-1 ring-white/20 focus:ring-blue-400/50"
         style={{ fontSize, lineHeight: 1.5, maxHeight: "min(60dvh, 32rem)" }}
       />
-      <div className="flex items-center gap-1.5 justify-end">
+      <div className="pointer-events-auto relative z-30 flex items-center justify-end gap-1.5">
         <button
           type="button"
           onClick={onCancel}
+          disabled={saving}
           aria-label={localizeUi("ui.chat.edittextarea.cancelEdit")}
-          className="rounded-md p-1 text-white/40 hover:bg-white/10 hover:text-white/70"
+          className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-white/40 hover:bg-white/10 hover:text-white/70 disabled:pointer-events-none disabled:opacity-50"
           title={localizeUi("ui.chat.edittextarea.cancelEsc")}
         >
           <X size="0.8125rem" />
@@ -609,8 +639,9 @@ const EditTextarea = memo(function EditTextarea({
         <button
           type="button"
           onClick={handleSave}
+          disabled={saving}
           aria-label={localizeUi("ui.chat.edittextarea.saveEdit")}
-          className="rounded-md p-1 text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400"
+          className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400 disabled:pointer-events-none disabled:opacity-50"
           title={localizeUi("ui.chat.edittextarea.saveCmdEnter")}
         >
           <Check size="0.8125rem" />
@@ -624,11 +655,11 @@ const EditTextarea = memo(function EditTextarea({
 interface ChatMessageProps {
   message: Message & { swipes?: Array<{ id: string; content: string }> };
   isStreaming?: boolean;
-  /** Lightweight live text rendered without rebuilding formatted message content on every character. */
-  streamingContent?: ReactNode;
+  /** Frame-throttled live content that receives the same formatter as committed messages. */
+  streamingContent?: (renderText: (text: string) => ReactNode) => ReactNode;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
-  onEdit?: (messageId: string, content: string) => void;
+  onEdit?: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe?: (messageId: string, index: number) => void;
   onToggleConversationStart?: (messageId: string, current: boolean) => void;
   onToggleHiddenFromAI?: ToggleHiddenFromAI;
@@ -1169,7 +1200,16 @@ export function RoleplayMessagePreview({
     [chatFontColor, textStrokeColor, textStrokeWidth],
   );
   const renderedContent = useMemo(
-    () => renderContent(content, resolvedDialogueColor, undefined, boldDialogue, htmlScopeClass, quoteFormat, selfCharacterId),
+    () =>
+      renderContent(
+        content,
+        resolvedDialogueColor,
+        undefined,
+        boldDialogue,
+        htmlScopeClass,
+        quoteFormat,
+        selfCharacterId,
+      ),
     [boldDialogue, content, htmlScopeClass, quoteFormat, resolvedDialogueColor, selfCharacterId],
   );
 
@@ -1325,6 +1365,7 @@ export const ChatMessage = memo(function ChatMessage({
 
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [editSavePending, setEditSavePending] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [showGenerationReplay, setShowGenerationReplay] = useState(false);
   const [showActions, setShowActions] = useState(false);
@@ -1336,6 +1377,7 @@ export const ChatMessage = memo(function ChatMessage({
   const msgRef = useRef<HTMLDivElement>(null);
   const thinkingButtonRef = useRef<HTMLButtonElement>(null);
   const editSwipeIndexRef = useRef<number | null>(null);
+  const editSavePendingRef = useRef(false);
   const lastQuickTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const openImageLightbox = useCallback(
     (url: string, prompt?: unknown) => {
@@ -1507,7 +1549,7 @@ export const ChatMessage = memo(function ChatMessage({
     if (!onEdit || isStreaming) return;
     const sp = msgRef.current?.closest("[class*='overflow-y']") as HTMLElement | null;
     if (sp) scrollRestoreRef.current = { el: sp, top: sp.scrollTop };
-    editSwipeIndexRef.current = message.activeSwipeIndex ?? null;
+    editSwipeIndexRef.current = message.activeSwipeIndex;
     setEditing(true);
   }, [isStreaming, message.activeSwipeIndex, onEdit]);
 
@@ -1602,9 +1644,12 @@ export const ChatMessage = memo(function ChatMessage({
       )
     : [];
   const isHiddenFromAI = isHiddenFromAllAI || hiddenFromAICharacterIds.length > 0;
-  const thinking =
-    typeof extra.thinking === "string" && extra.thinking.trim().length > 0 ? (extra.thinking as string) : null;
-  const showStreamingThinkingAction = !!isStreaming && !!thinking && !isUser;
+  const {
+    summary: thinking,
+    summaryUnavailable: reasoningSummaryUnavailable,
+    hasReasoning,
+  } = resolveMessageReasoningDisplay(extra);
+  const showStreamingThinkingAction = !!isStreaming && hasReasoning && !isUser;
   const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
   const diceRollResult = isDiceRollResult(extra.diceRollResult) ? extra.diceRollResult : null;
   const canCreateNextSwipe = Boolean(onRegenerate && !isUser);
@@ -1676,7 +1721,9 @@ export const ChatMessage = memo(function ChatMessage({
         updated?.activeSwipeIndex ?? message.activeSwipeIndex ?? null,
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message :localizeUi("ui.chat.chatmessage.couldNotSwitchMessageVersions"));
+      toast.error(
+        error instanceof Error ? error.message : localizeUi("ui.chat.chatmessage.couldNotSwitchMessageVersions"),
+      );
     } finally {
       setSwitchingRewriteVersion(false);
       qc.invalidateQueries({ queryKey: msgKey });
@@ -1690,7 +1737,8 @@ export const ChatMessage = memo(function ChatMessage({
     proseGuardianRewrittenText,
     qc,
     rewriteVersions.alternateText,
-    switchingRewriteVersion, localizeUi,
+    switchingRewriteVersion,
+    localizeUi,
   ]);
 
   const handleRemoveAttachment = useCallback(
@@ -1760,29 +1808,42 @@ export const ChatMessage = memo(function ChatMessage({
   }, [message.id, onEdit, startEditing]);
 
   const handleSaveEdit = useCallback(
-    (content: string) => {
-      if (editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== (message.activeSwipeIndex ?? null)) {
+    async (content: string) => {
+      if (editSavePendingRef.current) return;
+      if (!isUser && editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== message.activeSwipeIndex) {
         editSwipeIndexRef.current = null;
         setEditing(false);
         return;
       }
       const formattedSource = formatTextQuotes(message.content, quoteFormat);
       if (content.trim().length > 0 && content !== formattedSource) {
-        onEdit?.(message.id, content);
+        editSavePendingRef.current = true;
+        setEditSavePending(true);
+        try {
+          await onEdit?.(message.id, content);
+        } catch {
+          toast.error(localizeUi("ui.chat.chatmessage.couldNotSaveThatEdit"));
+          return;
+        } finally {
+          editSavePendingRef.current = false;
+          setEditSavePending(false);
+        }
       }
       editSwipeIndexRef.current = null;
       setEditing(false);
     },
-    [message.activeSwipeIndex, message.content, message.id, onEdit, quoteFormat],
+    [isUser, localizeUi, message.activeSwipeIndex, message.content, message.id, onEdit, quoteFormat],
   );
 
   const handleCancelEdit = useCallback(() => {
+    if (editSavePendingRef.current) return;
     editSwipeIndexRef.current = null;
     setEditing(false);
   }, []);
 
   const handleSetActiveSwipe = useCallback(
     (index: number) => {
+      if (editSavePendingRef.current) return;
       if (index === message.activeSwipeIndex) return;
       editSwipeIndexRef.current = null;
       setEditing(false);
@@ -1793,12 +1854,13 @@ export const ChatMessage = memo(function ChatMessage({
 
   useEffect(() => {
     if (!editing) return;
-    if (editSwipeIndexRef.current === null) return;
-    if (editSwipeIndexRef.current !== (message.activeSwipeIndex ?? null)) {
+    if (editSavePending) return;
+    if (isUser || editSwipeIndexRef.current === null) return;
+    if (editSwipeIndexRef.current !== message.activeSwipeIndex) {
       editSwipeIndexRef.current = null;
       setEditing(false);
     }
-  }, [editing, message.activeSwipeIndex]);
+  }, [editSavePending, editing, isUser, message.activeSwipeIndex]);
 
   // Apply regex scripts to AI output (assistant/narrator roles)
   const { applyToAIOutput } = useApplyRegex();
@@ -1990,7 +2052,8 @@ export const ChatMessage = memo(function ChatMessage({
     [chatCharacterIds, mergedGroupCharacterIds],
   );
   const mergedCycleKey = JSON.stringify(mergedCharacterIds);
-  const cycleMergedNarratorAvatars = !isRoleplay || roleplayNarratorAvatarCycling;
+  const reduceAmbientEffects = useReducedAmbientEffects();
+  const cycleMergedNarratorAvatars = (!isRoleplay || roleplayNarratorAvatarCycling) && !reduceAmbientEffects;
   const mergedAvatars = useMemo(() => {
     if (!isMergedGroup || !characterMap) return [];
     const fallbackPalette = [
@@ -2015,11 +2078,11 @@ export const ChatMessage = memo(function ChatMessage({
         };
       })
       .filter(Boolean) as {
-        id: string;
-        url: string;
-        crop?: AvatarCrop | null;
-        nameColor: string;
-      }[];
+      id: string;
+      url: string;
+      crop?: AvatarCrop | null;
+      nameColor: string;
+    }[];
   }, [isMergedGroup, characterMap, mergedCharacterIds, expressionAvatarResolver, message]);
   const mergedNameColors = useMemo(() => mergedAvatars.map((avatar) => avatar.nameColor), [mergedAvatars]);
   // Cycle index for merged group avatars/names — driven by a ref + 2s setInterval to avoid re-renders
@@ -2096,17 +2159,58 @@ export const ChatMessage = memo(function ChatMessage({
   }, [message.id]);
 
   const renderedContent = useMemo(() => {
-    return renderContent(text, dialogueColor, speakerColorMap, boldDialogue, htmlScopeClass, quoteFormat, selfCharacterId, galleryIndex);
+    return renderContent(
+      text,
+      dialogueColor,
+      speakerColorMap,
+      boldDialogue,
+      htmlScopeClass,
+      quoteFormat,
+      selfCharacterId,
+      galleryIndex,
+    );
   }, [text, dialogueColor, speakerColorMap, boldDialogue, htmlScopeClass, quoteFormat, selfCharacterId, galleryIndex]);
+  const renderStreamingText = useCallback(
+    (streamText: string) =>
+      renderContent(
+        streamText,
+        dialogueColor,
+        speakerColorMap,
+        boldDialogue,
+        htmlScopeClass,
+        quoteFormat,
+        selfCharacterId,
+        galleryIndex,
+      ),
+    [boldDialogue, dialogueColor, galleryIndex, htmlScopeClass, quoteFormat, selfCharacterId, speakerColorMap],
+  );
 
   // Translated text is rendered through the same markdown pipeline as the
   // message so bold/italics/quotes format identically.
   const renderedTranslation = useMemo(
     () =>
       translatedText
-        ? renderContent(translatedText, dialogueColor, speakerColorMap, boldDialogue, htmlScopeClass, quoteFormat, selfCharacterId, galleryIndex)
+        ? renderContent(
+            translatedText,
+            dialogueColor,
+            speakerColorMap,
+            boldDialogue,
+            htmlScopeClass,
+            quoteFormat,
+            selfCharacterId,
+            galleryIndex,
+          )
         : null,
-    [translatedText, dialogueColor, speakerColorMap, boldDialogue, htmlScopeClass, quoteFormat, selfCharacterId, galleryIndex],
+    [
+      translatedText,
+      dialogueColor,
+      speakerColorMap,
+      boldDialogue,
+      htmlScopeClass,
+      quoteFormat,
+      selfCharacterId,
+      galleryIndex,
+    ],
   );
   const translationDisplayOnly = useMemo(
     () => parseChatMetadata(activeChatMetadata).translationDisplayOnly === true,
@@ -2261,6 +2365,7 @@ export const ChatMessage = memo(function ChatMessage({
       initialContent={message.content}
       fontSize={chatFontSize}
       quoteFormat={quoteFormat}
+      saving={editSavePending}
       onSave={handleSaveEdit}
       onCancel={handleCancelEdit}
     />
@@ -2272,7 +2377,7 @@ export const ChatMessage = memo(function ChatMessage({
       >
         {isStreaming && streamingContent ? (
           <>
-            {streamingContent}
+            {streamingContent(renderStreamingText)}
             <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-blue-400" />
           </>
         ) : isStreaming && !message.content ? (
@@ -2297,9 +2402,7 @@ export const ChatMessage = memo(function ChatMessage({
           {isTranslating ? (
             <span className="text-[0.75rem] italic text-white/40">{localizeUi("ui.chat.chatmessage.translating")}</span>
           ) : (
-            <div className="translation-text whitespace-pre-wrap">
-              {renderedTranslation}
-            </div>
+            <div className="translation-text whitespace-pre-wrap">{renderedTranslation}</div>
           )}
         </div>
       )}
@@ -2351,89 +2454,95 @@ export const ChatMessage = memo(function ChatMessage({
     if (isNarrator) {
       return (
         <>
-        <div
-          ref={msgRef}
-          className={cn(
-            "mari-message mari-message-narrator rpg-narrator-msg group mb-4 px-2",
-            multiSelectMode && isSelected && cn("rounded-lg", MESSAGE_SELECTION_SURFACE_CLASS),
-          )}
-          data-message-id={message.id}
-          data-card-css={message.characterId ?? undefined}
-          onClick={handleMobileTap}
-          onDoubleClick={handleRoleplayDoubleClick}
-        >
-          <div className="flex gap-3">
-            {multiSelectMode && (
-              <div className="flex flex-shrink-0 items-start pt-2">
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={isSelected}
-                  aria-label={isSelected ?localizeUi("ui.chat.chatmessage.deselectMessage") :localizeUi("ui.chat.chatmessage.selectMessage")}
-                  className={cn(
-                    MESSAGE_SELECTION_CHECKBOX_CLASS,
-                    "flex items-center justify-center",
-                    isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
-                  )}
-                >
-                  {isSelected && (
-                    <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>
-                  )}
-                </button>
-              </div>
+          <div
+            ref={msgRef}
+            className={cn(
+              "mari-message mari-message-narrator rpg-narrator-msg group mb-4 px-2",
+              multiSelectMode && isSelected && cn("rounded-lg", MESSAGE_SELECTION_SURFACE_CLASS),
             )}
-            <div className="mari-message-bubble relative flex-1 rounded-xl border border-amber-500/10 bg-black/40 px-5 py-4">
-              {/* Delete button */}
-              {!multiSelectMode && onDelete && (
-                <button
-                  type="button"
-                  onClick={() => onDelete(message.id)}
-                  aria-label={localizeUi("chat.delete.dialog.title")}
-                  className={cn(
-                    "absolute right-2 top-2 rounded-md p-1 text-white/20 opacity-0 transition-all hover:bg-foreground/10 hover:text-foreground/70 group-hover:opacity-100",
-                    showActions && "opacity-100",
-                  )}
-                  title={localizeUi("lorebook.editor.batch.delete")}
-                >
-                  <Trash2 size="0.75rem" />
-                </button>
-              )}
-              <div className="mb-1 flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-widest text-amber-400/70">
-                <span className="h-px flex-1 bg-amber-400/20" />
-                {hiddenFromAIHeader}{localizeUi("ui.chat.chatmessage.narrator")}<span className="h-px flex-1 bg-amber-400/20" />
-              </div>
-              {isHiddenCollapsed ? (
-                <HiddenFromAIMessageSummary
-                  roleplay
-                  onExpand={() => setManuallyExpandedHidden(true)}
-                  recipientAvatars={hiddenFromAIRecipientAvatars}
-                  statusLabel={hiddenFromAIStatusLabel}
-                />
-              ) : (
-                <div
-                  className={cn("mari-message-content break-words italic", !isHtmlContent && "whitespace-pre-wrap")}
-                  style={messageTextStyle}
-                >
-                  {diceRollResult ? (
-                    <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
-                  ) : showTranslationOnly ? (
-                    renderedTranslation
-                  ) : (
-                    renderedContent
-                  )}
+            data-message-id={message.id}
+            data-card-css={message.characterId ?? undefined}
+            onClick={handleMobileTap}
+            onDoubleClick={handleRoleplayDoubleClick}
+          >
+            <div className="flex gap-3">
+              {multiSelectMode && (
+                <div className="flex flex-shrink-0 items-start pt-2">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={isSelected}
+                    aria-label={
+                      isSelected
+                        ? localizeUi("ui.chat.chatmessage.deselectMessage")
+                        : localizeUi("ui.chat.chatmessage.selectMessage")
+                    }
+                    className={cn(
+                      MESSAGE_SELECTION_CHECKBOX_CLASS,
+                      "flex items-center justify-center",
+                      isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
+                    )}
+                  >
+                    {isSelected && (
+                      <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>
+                    )}
+                  </button>
                 </div>
               )}
+              <div className="mari-message-bubble relative flex-1 rounded-xl border border-amber-500/10 bg-black/40 px-5 py-4">
+                {/* Delete button */}
+                {!multiSelectMode && onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(message.id)}
+                    aria-label={localizeUi("chat.delete.dialog.title")}
+                    className={cn(
+                      "absolute right-2 top-2 rounded-md p-1 text-white/20 opacity-0 transition-all hover:bg-foreground/10 hover:text-foreground/70 group-hover:opacity-100",
+                      showActions && "opacity-100",
+                    )}
+                    title={localizeUi("lorebook.editor.batch.delete")}
+                  >
+                    <Trash2 size="0.75rem" />
+                  </button>
+                )}
+                <div className="mb-1 flex items-center gap-2 text-[0.625rem] font-semibold uppercase tracking-widest text-amber-400/70">
+                  <span className="h-px flex-1 bg-amber-400/20" />
+                  {hiddenFromAIHeader}
+                  {localizeUi("ui.chat.chatmessage.narrator")}
+                  <span className="h-px flex-1 bg-amber-400/20" />
+                </div>
+                {isHiddenCollapsed ? (
+                  <HiddenFromAIMessageSummary
+                    roleplay
+                    onExpand={() => setManuallyExpandedHidden(true)}
+                    recipientAvatars={hiddenFromAIRecipientAvatars}
+                    statusLabel={hiddenFromAIStatusLabel}
+                  />
+                ) : (
+                  <div
+                    className={cn("mari-message-content break-words italic", !isHtmlContent && "whitespace-pre-wrap")}
+                    style={messageTextStyle}
+                  >
+                    {diceRollResult ? (
+                      <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
+                    ) : showTranslationOnly ? (
+                      renderedTranslation
+                    ) : (
+                      renderedContent
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-        </div>
-          {!editing && (storyboard || storyboardGenerating) ? (
-            <div className="mx-auto mt-2 w-full max-w-3xl">
-              <RoleplayStoryboardMessageMedia
-                storyboard={storyboard ?? null}
-                generating={storyboardGenerating}
-                onOpenImage={openStoryboardImageLightbox}
-              />
-            </div>
-          ) : null}
+            {!editing && (storyboard || storyboardGenerating) ? (
+              <div className="mx-auto mt-2 w-full max-w-3xl">
+                <RoleplayStoryboardMessageMedia
+                  storyboard={storyboard ?? null}
+                  generating={storyboardGenerating}
+                  onOpenImage={openStoryboardImageLightbox}
+                />
+              </div>
+            ) : null}
           </div>
           {imageLightbox && (
             <ChatImageLightbox
@@ -2473,16 +2582,18 @@ export const ChatMessage = memo(function ChatMessage({
                 type="button"
                 role="checkbox"
                 aria-checked={isSelected}
-                aria-label={isSelected ?localizeUi("ui.chat.chatmessage.deselectMessage") :localizeUi("ui.chat.chatmessage.selectMessage")}
+                aria-label={
+                  isSelected
+                    ? localizeUi("ui.chat.chatmessage.deselectMessage")
+                    : localizeUi("ui.chat.chatmessage.selectMessage")
+                }
                 className={cn(
                   MESSAGE_SELECTION_CHECKBOX_CLASS,
                   "flex items-center justify-center",
                   isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
                 )}
               >
-                {isSelected && (
-                  <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>
-                )}
+                {isSelected && <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>}
               </button>
             </div>
           )}
@@ -2621,15 +2732,23 @@ export const ChatMessage = memo(function ChatMessage({
 
             {/* Conversation start marker */}
             {isConversationStart && (
-              <div className="flex items-center gap-1.5 px-1 mb-1">
-                <span className={cn("h-px flex-1", MESSAGE_CHROME_MARKER_LINE_CLASS)} />
-                <span
-                  className={cn(
-                    "text-[0.5625rem] font-semibold uppercase tracking-widest",
-                    MESSAGE_CHROME_MARKER_TEXT_CLASS,
-                  )}
-                >{localizeUi("ui.chat.chatmessage.newStart")}</span>
-                <span className={cn("h-px flex-1", MESSAGE_CHROME_MARKER_LINE_CLASS)} />
+              <div className="mb-1 px-1">
+                <div
+                  aria-hidden="true"
+                  className="mari-chrome-accent-progress mari-accent-animated mb-1.5 h-0.5 w-full rounded-full"
+                />
+                <div className="flex items-center gap-1.5">
+                  <span className={cn("h-px flex-1", MESSAGE_CHROME_MARKER_LINE_CLASS)} />
+                  <span
+                    className={cn(
+                      "text-[0.5625rem] font-semibold uppercase tracking-widest",
+                      MESSAGE_CHROME_MARKER_TEXT_CLASS,
+                    )}
+                  >
+                    {localizeUi("ui.chat.chatmessage.newStart")}
+                  </span>
+                  <span className={cn("h-px flex-1", MESSAGE_CHROME_MARKER_LINE_CLASS)} />
+                </div>
               </div>
             )}
 
@@ -2700,9 +2819,7 @@ export const ChatMessage = memo(function ChatMessage({
                               decoding="async"
                               className={cn(
                                 "h-full object-cover object-top transition-opacity duration-700",
-                                cycleMergedNarratorAvatars
-                                  ? "absolute inset-0 w-full"
-                                  : "relative w-0 min-w-0 flex-1",
+                                cycleMergedNarratorAvatars ? "absolute inset-0 w-full" : "relative w-0 min-w-0 flex-1",
                               )}
                               style={{
                                 opacity: cycleMergedNarratorAvatars ? (i === 0 ? 1 : 0) : 1,
@@ -2784,7 +2901,9 @@ export const ChatMessage = memo(function ChatMessage({
                         onClick={() => openAttachmentImageLightbox(att, i)}
                         className="block"
                         title={localizeUi("ui.noodle.noodlepostcard.openImage")}
-                        aria-label={localizeUi("ui.chat.chatmessage.openValue1", { value1: att.filename || att.name ||localizeUi("ui.ui.spritegenerationmodal.image") })}
+                        aria-label={localizeUi("ui.chat.chatmessage.openValue1", {
+                          value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
+                        })}
                       >
                         <img
                           src={att.url || att.data}
@@ -2868,10 +2987,19 @@ export const ChatMessage = memo(function ChatMessage({
               <ActionBtn
                 icon={<Languages size={MESSAGE_ACTION_ICON_SIZE} />}
                 onClick={() => translate(message.id, message.content, message.chatId)}
-                title={translatedText ?localizeUi("ui.chat.chatmessage.hideTranslation") :localizeUi("ui.chat.chatmessage.translate")}
+                title={
+                  translatedText
+                    ? localizeUi("ui.chat.chatmessage.hideTranslation")
+                    : localizeUi("ui.chat.chatmessage.translate")
+                }
                 dark
               />
-              <ActionBtn icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />} onClick={startEditing} title={localizeUi("ui.noodle.noodlepostcard.edit")} dark />
+              <ActionBtn
+                icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={startEditing}
+                title={localizeUi("ui.noodle.noodlepostcard.edit")}
+                dark
+              />
               {hasRewriteVersions && (
                 <ActionBtn
                   icon={
@@ -2882,20 +3010,25 @@ export const ChatMessage = memo(function ChatMessage({
                     )
                   }
                   onClick={handleToggleProseGuardianVersion}
-                  title={showingProseGuardianOriginal ?localizeUi("ui.chat.chatmessage.showRewrittenVersion") :localizeUi("ui.chat.chatmessage.showOriginalBeforeRewrite")}
+                  title={
+                    showingProseGuardianOriginal
+                      ? localizeUi("ui.chat.chatmessage.showRewrittenVersion")
+                      : localizeUi("ui.chat.chatmessage.showOriginalBeforeRewrite")
+                  }
                   className={showingProseGuardianOriginal ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
                   disabled={switchingRewriteVersion}
                   dark
                 />
               )}
-              <GuidedRegenerateActionBtn
-                onClick={() => onRegenerate?.(message.id)}
-                dark
-              />
+              <GuidedRegenerateActionBtn onClick={() => onRegenerate?.(message.id)} dark />
               <ActionBtn
                 icon={<Flag size={MESSAGE_ACTION_ICON_SIZE} />}
                 onClick={() => onToggleConversationStart?.(message.id, isConversationStart)}
-                title={isConversationStart ?localizeUi("ui.chat.chatmessage.removeConversationStart") :localizeUi("ui.chat.chatmessage.markAsNewStart")}
+                title={
+                  isConversationStart
+                    ? localizeUi("ui.chat.chatmessage.removeConversationStart")
+                    : localizeUi("ui.chat.chatmessage.markAsNewStart")
+                }
                 className={isConversationStart ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
                 dark
               />
@@ -2926,11 +3059,15 @@ export const ChatMessage = memo(function ChatMessage({
                   dark
                 />
               )}
-              {thinking && !isUser && (
+              {hasReasoning && !isUser && (
                 <ActionBtn
                   icon={<Brain size={MESSAGE_ACTION_ICON_SIZE} />}
                   onClick={() => setShowThinking(true)}
-                  title={t("chat.message.thoughts.view")}
+                  title={t(
+                    reasoningSummaryUnavailable
+                      ? "chat.message.thoughts.unavailable.view"
+                      : "chat.message.thoughts.view",
+                  )}
                   thinkingAction
                   buttonRef={thinkingButtonRef}
                   dark
@@ -2972,7 +3109,11 @@ export const ChatMessage = memo(function ChatMessage({
                           )
                         }
                         onClick={handlePauseResumeTTS}
-                        title={isPausedThis ?localizeUi("ui.chat.chatmessage.resumeSpeaking") :localizeUi("ui.chat.chatmessage.pauseSpeaking")}
+                        title={
+                          isPausedThis
+                            ? localizeUi("ui.chat.chatmessage.resumeSpeaking")
+                            : localizeUi("ui.chat.chatmessage.pauseSpeaking")
+                        }
                         dark
                       />
                       <ActionBtn
@@ -2996,12 +3137,12 @@ export const ChatMessage = memo(function ChatMessage({
                     onClick={handleSpeak}
                     title={
                       !hasTTSContent
-                        ?localizeUi("ui.chat.chatmessage.noDialogueToSpeak")
+                        ? localizeUi("ui.chat.chatmessage.noDialogueToSpeak")
                         : isLoadingThis
-                          ?localizeUi("ui.panels.ttsconfigcard.loading")
+                          ? localizeUi("ui.panels.ttsconfigcard.loading")
                           : isSpeakingThis
-                            ?localizeUi("ui.chat.chatmessage.stopSpeaking")
-                            :localizeUi("ui.chat.chatmessage.speak")
+                            ? localizeUi("ui.chat.chatmessage.stopSpeaking")
+                            : localizeUi("ui.chat.chatmessage.speak")
                     }
                     disabled={!hasTTSContent || (ttsBusy && !isSpeakingThis)}
                     dark
@@ -3014,9 +3155,10 @@ export const ChatMessage = memo(function ChatMessage({
         </div>
 
         {/* Thinking modal */}
-        {showThinking && thinking && (
+        {showThinking && hasReasoning && (
           <MessageThinkingModal
             thinking={thinking}
+            summaryUnavailable={reasoningSummaryUnavailable}
             onClose={() => setShowThinking(false)}
             restoreFocusRef={thinkingButtonRef}
           />
@@ -3155,7 +3297,9 @@ export const ChatMessage = memo(function ChatMessage({
                   "text-[0.5625rem] font-semibold uppercase tracking-widest",
                   MESSAGE_CHROME_MARKER_TEXT_CLASS,
                 )}
-              >{localizeUi("ui.chat.chatmessage.newStart")}</span>
+              >
+                {localizeUi("ui.chat.chatmessage.newStart")}
+              </span>
               <span className={cn("h-px flex-1", MESSAGE_CHROME_MARKER_LINE_CLASS)} />
             </div>
           )}
@@ -3187,6 +3331,7 @@ export const ChatMessage = memo(function ChatMessage({
                 initialContent={message.content}
                 fontSize={chatFontSize}
                 quoteFormat={quoteFormat}
+                saving={editSavePending}
                 onSave={handleSaveEdit}
                 onCancel={handleCancelEdit}
               />
@@ -3198,7 +3343,7 @@ export const ChatMessage = memo(function ChatMessage({
                 >
                   {isStreaming && streamingContent ? (
                     <>
-                      {streamingContent}
+                      {streamingContent(renderStreamingText)}
                       <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-white/70" />
                     </>
                   ) : isStreaming && !message.content ? (
@@ -3225,11 +3370,11 @@ export const ChatMessage = memo(function ChatMessage({
                 {(translatedText || isTranslating) && !showTranslationOnly && (
                   <div className="mt-2 border-t border-[var(--border)] pt-2">
                     {isTranslating ? (
-                      <span className="text-[0.75rem] italic text-[var(--muted-foreground)]">{localizeUi("ui.chat.chatmessage.translating")}</span>
+                      <span className="text-[0.75rem] italic text-[var(--muted-foreground)]">
+                        {localizeUi("ui.chat.chatmessage.translating")}
+                      </span>
                     ) : (
-                      <div className="translation-text whitespace-pre-wrap">
-                        {renderedTranslation}
-                      </div>
+                      <div className="translation-text whitespace-pre-wrap">{renderedTranslation}</div>
                     )}
                   </div>
                 )}
@@ -3248,7 +3393,9 @@ export const ChatMessage = memo(function ChatMessage({
                       onClick={() => openAttachmentImageLightbox(att, i)}
                       className="block"
                       title={localizeUi("ui.noodle.noodlepostcard.openImage")}
-                      aria-label={localizeUi("ui.chat.chatmessage.openValue1", { value1: att.filename || att.name ||localizeUi("ui.ui.spritegenerationmodal.image") })}
+                      aria-label={localizeUi("ui.chat.chatmessage.openValue1", {
+                        value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
+                      })}
                     >
                       <img
                         src={att.url || att.data}
@@ -3339,9 +3486,17 @@ export const ChatMessage = memo(function ChatMessage({
             <ActionBtn
               icon={<Languages size={MESSAGE_ACTION_ICON_SIZE} />}
               onClick={() => translate(message.id, message.content, message.chatId)}
-              title={translatedText ?localizeUi("ui.chat.chatmessage.hideTranslation") :localizeUi("ui.chat.chatmessage.translate")}
+              title={
+                translatedText
+                  ? localizeUi("ui.chat.chatmessage.hideTranslation")
+                  : localizeUi("ui.chat.chatmessage.translate")
+              }
             />
-            <ActionBtn icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />} onClick={startEditing} title={localizeUi("ui.noodle.noodlepostcard.edit")} />
+            <ActionBtn
+              icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />}
+              onClick={startEditing}
+              title={localizeUi("ui.noodle.noodlepostcard.edit")}
+            />
             {hasRewriteVersions && (
               <ActionBtn
                 icon={
@@ -3352,18 +3507,24 @@ export const ChatMessage = memo(function ChatMessage({
                   )
                 }
                 onClick={handleToggleProseGuardianVersion}
-                title={showingProseGuardianOriginal ?localizeUi("ui.chat.chatmessage.showRewrittenVersion") :localizeUi("ui.chat.chatmessage.showOriginalBeforeRewrite")}
+                title={
+                  showingProseGuardianOriginal
+                    ? localizeUi("ui.chat.chatmessage.showRewrittenVersion")
+                    : localizeUi("ui.chat.chatmessage.showOriginalBeforeRewrite")
+                }
                 className={showingProseGuardianOriginal ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
                 disabled={switchingRewriteVersion}
               />
             )}
-            <GuidedRegenerateActionBtn
-              onClick={() => onRegenerate?.(message.id)}
-            />
+            <GuidedRegenerateActionBtn onClick={() => onRegenerate?.(message.id)} />
             <ActionBtn
               icon={<Flag size={MESSAGE_ACTION_ICON_SIZE} />}
               onClick={() => onToggleConversationStart?.(message.id, isConversationStart)}
-              title={isConversationStart ?localizeUi("ui.chat.chatmessage.removeConversationStart") :localizeUi("ui.chat.chatmessage.markAsNewStart")}
+              title={
+                isConversationStart
+                  ? localizeUi("ui.chat.chatmessage.removeConversationStart")
+                  : localizeUi("ui.chat.chatmessage.markAsNewStart")
+              }
               className={isConversationStart ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
             />
             {isLastAssistantMessage && !isUser && (
@@ -3380,11 +3541,13 @@ export const ChatMessage = memo(function ChatMessage({
                 title={localizeUi("ui.chat.chatmessage.storedGuidance")}
               />
             )}
-            {thinking && !isUser && (
+            {hasReasoning && !isUser && (
               <ActionBtn
                 icon={<Brain size={MESSAGE_ACTION_ICON_SIZE} />}
                 onClick={() => setShowThinking(true)}
-                title={t("chat.message.thoughts.view")}
+                title={t(
+                  reasoningSummaryUnavailable ? "chat.message.thoughts.unavailable.view" : "chat.message.thoughts.view",
+                )}
                 thinkingAction
                 buttonRef={thinkingButtonRef}
               />
@@ -3433,7 +3596,11 @@ export const ChatMessage = memo(function ChatMessage({
                         )
                       }
                       onClick={handlePauseResumeTTS}
-                      title={isPausedThis ?localizeUi("ui.chat.chatmessage.resumeSpeaking") :localizeUi("ui.chat.chatmessage.pauseSpeaking")}
+                      title={
+                        isPausedThis
+                          ? localizeUi("ui.chat.chatmessage.resumeSpeaking")
+                          : localizeUi("ui.chat.chatmessage.pauseSpeaking")
+                      }
                     />
                     <ActionBtn
                       icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
@@ -3455,12 +3622,12 @@ export const ChatMessage = memo(function ChatMessage({
                   onClick={handleSpeak}
                   title={
                     !hasTTSContent
-                      ?localizeUi("ui.chat.chatmessage.noDialogueToSpeak")
+                      ? localizeUi("ui.chat.chatmessage.noDialogueToSpeak")
                       : isLoadingThis
-                        ?localizeUi("ui.panels.ttsconfigcard.loading")
+                        ? localizeUi("ui.panels.ttsconfigcard.loading")
                         : isSpeakingThis
-                          ?localizeUi("ui.chat.chatmessage.stopSpeaking")
-                          :localizeUi("ui.chat.chatmessage.speak")
+                          ? localizeUi("ui.chat.chatmessage.stopSpeaking")
+                          : localizeUi("ui.chat.chatmessage.speak")
                   }
                   disabled={!hasTTSContent || (ttsBusy && !isSpeakingThis)}
                 />
@@ -3472,9 +3639,10 @@ export const ChatMessage = memo(function ChatMessage({
       </div>
 
       {/* Thinking modal */}
-      {showThinking && thinking && (
+      {showThinking && hasReasoning && (
         <MessageThinkingModal
           thinking={thinking}
+          summaryUnavailable={reasoningSummaryUnavailable}
           onClose={() => setShowThinking(false)}
           restoreFocusRef={thinkingButtonRef}
         />
@@ -3564,7 +3732,9 @@ function TTSLineVolumeControl({
           )}
         >
           <div className="flex items-center justify-between gap-2 text-[0.6875rem]">
-            <span className={dark ? "text-[var(--marinara-chat-chrome-panel-title)]" : "text-[var(--foreground)]"}>{localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}</span>
+            <span className={dark ? "text-[var(--marinara-chat-chrome-panel-title)]" : "text-[var(--foreground)]"}>
+              {localizeUi("ui.chat.ttslinevolumecontrol.lineVolume")}
+            </span>
             <span
               className={cn(
                 "tabular-nums",
@@ -3609,9 +3779,7 @@ const GuidedRegenerateActionBtn = memo(function GuidedRegenerateActionBtn({
       icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
       onClick={onClick}
       title={
-        isGuided
-          ? localizeUi("ui.chat.chatmessage.regenerateGuided")
-          : localizeUi("ui.chat.chatmessage.regenerate")
+        isGuided ? localizeUi("ui.chat.chatmessage.regenerateGuided") : localizeUi("ui.chat.chatmessage.regenerate")
       }
       className={
         isGuided

@@ -51,28 +51,9 @@ import { matchesCardLibrarySearch, parseCardLibrarySearchQuery } from "../../lib
 import { personaToLibraryItem, type LibraryItem, type PersonaLibraryRow } from "../../lib/library/library-item";
 import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
 import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
+import type { Persona } from "@marinara-engine/shared";
 
-type PersonaRow = {
-  id: string;
-  name: string;
-  comment?: string;
-  creator?: string;
-  personaVersion?: string;
-  creatorNotes?: string;
-  description: string;
-  entitySummary?: string | null;
-  personality: string;
-  scenario: string;
-  backstory: string;
-  appearance: string;
-  avatarPath: string | null;
-  /** JSON-encoded AvatarCrop, or empty string when unset. */
-  avatarCrop?: string;
-  isActive: string | boolean;
-  createdAt: string;
-  updatedAt?: string;
-  tags?: string;
-};
+type PersonaRow = Persona;
 type CompactPersonaRow = PersonaRow & { libraryItem: LibraryItem };
 
 type PersonaGroupRow = { id: string; name: string; description: string; personaIds: string };
@@ -165,7 +146,7 @@ export function PersonasPanel() {
   const [selectedPersonaIds, setSelectedPersonaIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
   const clientOnlyPersonaFilterActive = favFilter !== "all" || activeTag !== null;
-  const [completeFilteredPersonas, setCompleteFilteredPersonas] = useState<PersonaRow[] | null>(null);
+  const [completeFilteredPersonas, setCompleteFilteredPersonas] = useState<Persona[] | null>(null);
   const [completePersonasLoading, setCompletePersonasLoading] = useState(false);
   const serverSearch = useMemo(() => parseCardLibrarySearchQuery(search).text, [search]);
   const personaPages = usePersonaPages({ search: serverSearch, sort });
@@ -200,7 +181,7 @@ export function PersonasPanel() {
     setCompletePersonasLoading(true);
     fetchAllPersonaPages({ search: serverSearch, sort })
       .then((rows) => {
-        if (!cancelled) setCompleteFilteredPersonas(rows as PersonaRow[]);
+        if (!cancelled) setCompleteFilteredPersonas(rows);
       })
       .catch(() => {
         if (!cancelled) {
@@ -215,7 +196,7 @@ export function PersonasPanel() {
     return () => {
       cancelled = true;
     };
-  }, [clientOnlyPersonaFilterActive, serverSearch, sort, localizeUi]);
+  }, [clientOnlyPersonaFilterActive, serverSearch, sort, localizeUi, personaPages.dataUpdatedAt]);
 
   const handleCreate = () => {
     openModal("create-persona");
@@ -817,12 +798,26 @@ export function PersonasPanel() {
                   )}
                 </div>
                 {folderMemberIds.length > 0 && (
-                  <span className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)]">
+                  <span
+                    data-folder-item-count="inline"
+                    className="shrink-0 text-[0.5625rem] text-[var(--muted-foreground)] max-md:hidden [@media(pointer:coarse)]:hidden"
+                  >
                     {folderMemberIds.length}
                   </span>
                 )}
 
-                <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                <div
+                  data-folder-actions
+                  className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto"
+                >
+                  {folderMemberIds.length > 0 && (
+                    <span
+                      data-folder-item-count="actions"
+                      className="hidden px-1 text-[0.5625rem] text-[var(--muted-foreground)] max-md:inline [@media(pointer:coarse)]:inline"
+                    >
+                      {folderMemberIds.length}
+                    </span>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1263,7 +1258,7 @@ export function PersonasPanel() {
         >
           {personaPages.isFetchingNextPage
             ? localizeUi("ui.characters.characterlibraryview.loading")
-            : localizeUi("ui.panels.characterspanel.loadMoreValue1Loaded", { value1: rawList.length })}
+            : localizeUi("ui.panels.characterspanel.loadMoreValue1Loaded", { value1: personas.length })}
         </PanelLoadMoreBar>
       )}
 
