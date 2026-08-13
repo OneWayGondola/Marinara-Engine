@@ -3069,6 +3069,20 @@ export function useGenerate() {
           receivedContent &&
           (!passiveStreamRecovered || hasDurableAssistantReply) &&
           (!sawGroupTurn || currentGroupTurnSavedMessage !== null);
+        // Generation-complete ping. Fires for every successful reply — including
+        // the common case where you stayed on the chat and stepped away — not just
+        // when you navigated to a different chat. The navigated-away block below
+        // only adds the unread badge + floating avatar; the sound lives here so it
+        // isn't swallowed by the `currentActive !== params.chatId` condition.
+        if (notificationEligibleContent) {
+          const uiState = useUIStore.getState();
+          const completionSoundEnabled = isGameGeneration
+            ? uiState.gameNotificationSound && !gameTurnLoadedSoundPlayed
+            : chatModeForGeneration === "roleplay"
+              ? uiState.rpNotificationSound
+              : uiState.convoNotificationSound;
+          playConfiguredNotificationPing(completionSoundEnabled, uiState.notificationSoundsOnlyWhenUnfocused);
+        }
         if (notificationEligibleContent && currentActive !== params.chatId) {
           useChatStore.getState().incrementUnread(params.chatId);
           // Show floating avatar notification bubble — look up character from cache
