@@ -4235,8 +4235,34 @@ strong {
   animation: mari-logo-title-shift 5.2s ease-in-out infinite;
 }
 
+/* Pause cosmetic infinite background animations while effects are paused or
+   while any modal is open. The modal backdrop-filter re-blurs the whole
+   viewport every frame anything behind it animates, which is a large
+   continuous GPU load on integrated graphics. Loading/streaming indicators
+   (shimmer, glimmer-streaming, expression sprites, rpg-stream-pulse, text
+   effects) intentionally keep running so busy states still read as alive. */
 [data-marinara-effects-paused="true"] .mari-logo-gradient-text--active,
-[data-marinara-effects-paused="true"] .mari-rgb-toggle-track {
+[data-marinara-effects-paused="true"] .mari-rgb-toggle-track,
+[data-marinara-modal-open="true"] .mari-logo-gradient-text--active,
+[data-marinara-modal-open="true"] .mari-rgb-toggle-track,
+[data-marinara-modal-open="true"] .retro-card,
+[data-marinara-modal-open="true"] .y2k-star,
+[data-marinara-modal-open="true"] .y2k-star-md,
+[data-marinara-modal-open="true"] .y2k-star-lg,
+[data-marinara-modal-open="true"] .pulse-glow,
+[data-marinara-modal-open="true"] .bunny-glow,
+[data-marinara-modal-open="true"] .pastel-gradient,
+[data-marinara-modal-open="true"] .game-map-fog,
+[data-marinara-modal-open="true"] .mari-professor-pixel-scene[data-state="idle"] [data-part="sprite"],
+[data-marinara-modal-open="true"] .mari-professor-pixel-scene[data-state="idle"] [data-part="screen"] span,
+[data-marinara-modal-open="true"] .mari-professor-pixel-scene[data-state="active"] [data-part="sprite"],
+[data-marinara-modal-open="true"] .mari-professor-pixel-scene[data-state="active"] [data-part="screen"] span,
+[data-marinara-modal-open="true"] .mari-professor-pixel-scene[data-state="active"] [data-part="base"] i,
+[data-marinara-modal-open="true"] .retro-divider,
+[data-marinara-modal-open="true"] .gradient-border::before,
+[data-marinara-modal-open="true"] .roleplay-hud-scroll-track--active,
+[data-marinara-modal-open="true"] .group:hover .roleplay-hud-scroll-track,
+[data-marinara-modal-open="true"] .group:focus-visible .roleplay-hud-scroll-track {
   animation-play-state: paused;
 }
 
