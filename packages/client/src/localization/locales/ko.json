@@ -7069,6 +7069,7 @@
   "ui.trackerPanel.personainventorypanel.status": "상태",
   "ui.trackerPanel.personainventorypanel.value1Status": "{{value1}} 상태",
   "ui.trackerPanel.personainventoryrow.item": "아이템",
+  "ui.trackerPanel.personainventoryrow.stored": "보관됨",
   "ui.trackerPanel.personainventoryrow.value1Quantity": "{{value1}} 수량",
   "ui.trackerPanel.questboard.addQuest": "퀘스트 추가",
   "ui.trackerPanel.questboard.questBoard": "퀘스트 보드",

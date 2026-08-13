@@ -8202,6 +8202,7 @@
   "ui.trackerPanel.personainventorypanel.status": "Status",
   "ui.trackerPanel.personainventorypanel.value1Status": "{{value1}} status",
   "ui.trackerPanel.personainventoryrow.item": "Item",
+  "ui.trackerPanel.personainventoryrow.stored": "stored",
   "ui.trackerPanel.personainventoryrow.value1Quantity": "{{value1}} quantity",
   "ui.trackerPanel.questboard.addQuest": "Add quest",
   "ui.trackerPanel.questboard.questBoard": "Quest Board",
