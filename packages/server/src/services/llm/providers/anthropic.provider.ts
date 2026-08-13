@@ -13,7 +13,11 @@ import {
   type LLMToolDefinition,
   type LLMUsage,
 } from "../base-provider.js";
-import { isClaudeAdaptiveOnlyNoSamplingModel, shouldSuppressUnknownModelParameters } from "@marinara-engine/shared";
+import {
+  isClaudeAdaptiveOnlyNoSamplingModel,
+  isClaudeOpus5Model,
+  shouldSuppressUnknownModelParameters,
+} from "@marinara-engine/shared";
 import { logger } from "../../../lib/logger.js";
 
 const DEFAULT_CACHING_AT_DEPTH = 5;
@@ -394,7 +398,7 @@ export class AnthropicProvider extends BaseLLMProvider {
       if (isAdaptiveOnly) {
         applyAdaptiveThinkingConfig(body, options, maxTokens);
       } else {
-        const supportsAdaptive = /claude-(opus|sonnet)-4-[56]/.test(modelLower);
+        const supportsAdaptive = isClaudeOpus5Model(modelLower) || /claude-(opus|sonnet)-4-[56]/.test(modelLower);
         if (supportsAdaptive) {
           applyAdaptiveThinkingConfig(body, options, maxTokens);
           delete body.temperature;
@@ -585,8 +589,8 @@ export class AnthropicProvider extends BaseLLMProvider {
         // can safely capture and render in View Thoughts.
         applyAdaptiveThinkingConfig(body, options, outputMaxTokens);
       } else {
-        // Opus/Sonnet 4.5 and 4.6: prefer adaptive thinking (budget_tokens deprecated).
-        const supportsAdaptive = /claude-(opus|sonnet)-4-[56]/.test(modelLower);
+        // Opus 5 and Opus/Sonnet 4.5-4.6: prefer adaptive thinking (budget_tokens deprecated).
+        const supportsAdaptive = isClaudeOpus5Model(modelLower) || /claude-(opus|sonnet)-4-[56]/.test(modelLower);
         if (supportsAdaptive) {
           applyAdaptiveThinkingConfig(body, options, outputMaxTokens);
           // Cannot use temperature with extended thinking
