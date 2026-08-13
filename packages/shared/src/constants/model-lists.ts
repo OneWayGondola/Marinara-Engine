@@ -16,18 +16,55 @@ export interface KnownModel {
 const CLAUDE_ADAPTIVE_ONLY_OPUS_RE = /claude-opus-4-(?:[7-9]|\d{2,})/;
 
 export function isClaudeAdaptiveOnlyNoSamplingModel(model: string): boolean {
-  const normalized = model.toLowerCase();
+  const normalized = normalizeModelId(model);
   return (
     CLAUDE_ADAPTIVE_ONLY_OPUS_RE.test(normalized) ||
-    /claude-(?:opus|sonnet)-5(?:$|[-.])/u.test(normalized) ||
+    isClaudeOpus5Model(normalized) ||
     normalized.includes("claude-fable-5") ||
-    normalized.includes("claude-mythos-5")
+    normalized.includes("claude-mythos-5") ||
+    normalized.includes("claude-sonnet-5")
   );
 }
 
+const CLAUDE_OPUS_5_RE = /claude-opus-5(?!\d)/;
+
+/**
+ * Claude Opus 5 supports the full effort ladder (low → max) and adaptive
+ * thinking.
+ *
+ * It IS part of isClaudeAdaptiveOnlyNoSamplingModel. Anthropic's effort docs do
+ * not mention this, but the API returns 400 `temperature is deprecated for this
+ * model` when sampling parameters are sent. This was observed from tracker
+ * agents, which run with thinking disabled and an explicit temperature, so the
+ * thinking-gated temperature deletes in the Anthropic provider never fired.
+ */
+export function isClaudeOpus5Model(model: string): boolean {
+  return CLAUDE_OPUS_5_RE.test(normalizeModelId(model));
+}
+
+/**
+ * Aggregators namespace model IDs with a vendor segment: `openai/gpt-5.6-terra`,
+ * `moonshotai/kimi-k3`, `z-ai/glm-5.2`, `x-ai/grok-4.5`.
+ *
+ * EVERY model predicate in this file must match through this helper. Each helper
+ * used to strip its own prefix by hand, and the OpenAI ones never got one, which
+ * silently downgraded `max` reasoning effort to `high` on OpenRouter. Route new
+ * predicates through here so the next vendor prefix costs zero debugging.
+ */
+export function normalizeModelId(model: string): string {
+  // Strip exactly one leading `vendor/` segment. Bare model IDs are unchanged.
+  return model.trim().toLowerCase().replace(/^[^/\s]+\//, "");
+}
+
+/** Returns the leading `vendor/` segment of a model ID, or "" if there is none. */
+export function modelVendorPrefix(model: string): string {
+  return model.trim().toLowerCase().match(/^[^/\s]+\//)?.[0] ?? "";
+}
+
 export function supportsXhighReasoningEffort(model: string): boolean {
-  const normalized = model.toLowerCase();
+  const normalized = normalizeModelId(model);
   return (
+    isClaudeOpus5Model(normalized) ||
     normalized.startsWith("gpt-5.6") ||
     normalized.startsWith("gpt-5.5") ||
     normalized.startsWith("gpt-5.4") ||
@@ -37,15 +74,17 @@ export function supportsXhighReasoningEffort(model: string): boolean {
 }
 
 export function isOpenAIGpt56Model(model: string): boolean {
-  return model.toLowerCase().startsWith("gpt-5.6");
+  return normalizeModelId(model).startsWith("gpt-5.6");
 }
 
 export function isOpenAIGpt56SolProAlias(model: string): boolean {
-  return model.toLowerCase() === "gpt-5.6-sol-pro";
+  return normalizeModelId(model) === "gpt-5.6-sol-pro";
 }
 
 export function resolveOpenAIGpt56ModelForRequest(model: string): string {
-  return isOpenAIGpt56SolProAlias(model) ? "gpt-5.6-sol" : model;
+  if (!isOpenAIGpt56SolProAlias(model)) return model;
+  // Preserve any vendor prefix so aggregators still receive a valid ID.
+  return `${modelVendorPrefix(model)}gpt-5.6-sol`;
 }
 
 export type StoredReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "maximum" | "max" | null;
@@ -69,7 +108,12 @@ export function resolveProviderReasoningEffort(args: {
     (providerLower === "anthropic" || providerLower === "claude_subscription") &&
     isClaudeAdaptiveOnlyNoSamplingModel(modelLower);
   const supportsXhigh = supportsXhighReasoningEffort(modelLower);
-  const supportsMax = isOpenAIGpt56Model(modelLower) || isNativeAnthropicAdaptiveOnly;
+  const supportsMax =
+    isOpenAIGpt56Model(modelLower) ||
+    isNativeAnthropicAdaptiveOnly ||
+    isClaudeOpus5Model(modelLower) ||
+    isKimiK3Model(modelLower) ||
+    isGlm52Model(modelLower);
 
   if (args.reasoningEffort === "maximum") {
     return supportsMax ? "max" : supportsXhigh ? "xhigh" : "high";
@@ -83,14 +127,21 @@ export function resolveProviderReasoningEffort(args: {
   return args.reasoningEffort;
 }
 
+export function isKimiK3Model(model: string): boolean {
+  return normalizeModelId(model).startsWith("kimi-k3");
+}
+
+export function isGlm52Model(model: string): boolean {
+  return normalizeModelId(model).startsWith("glm-5.2");
+}
+
 export function isXaiConfigurableReasoningModel(model: string): boolean {
-  const normalized = model.toLowerCase().replace(/^x-ai\//, "");
+  const normalized = normalizeModelId(model);
   return normalized.startsWith("grok-4.5") || normalized.startsWith("grok-4.3");
 }
 
 export function isXaiAutoReasoningModel(model: string): boolean {
-  const normalized = model.toLowerCase().replace(/^x-ai\//, "");
-  return normalized.startsWith("grok-4-1-fast");
+  return normalizeModelId(model).startsWith("grok-4-1-fast");
 }
 
 // ── OpenAI (from #model_openai_select) ──
