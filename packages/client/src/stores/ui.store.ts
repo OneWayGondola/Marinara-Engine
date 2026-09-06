@@ -24,7 +24,7 @@ import { DEFAULT_APP_LANGUAGE, type AppLanguage } from "../localization/locale-t
 import { deferEditorLeave } from "../lib/editor-leave";
 import { UI_PERSISTENCE } from "../lib/ui-persistence";
 import type { ChatWizardDefaults, ChatWizardMode } from "../lib/chat-wizard-defaults";
-import { appendBounded } from "../lib/reading-gate";
+import { appendBounded, setBoundedProgress } from "../lib/reading-gate";
 
 export type Panel =
   | "chat"
@@ -748,6 +748,8 @@ interface UIState {
   readingMeasureCpl: number;
   /** `${messageId}:${swipeIndex}` keys already read to the end (bounded), so a reload does not re-gate. */
   readingGateReadThrough: string[];
+  /** `${messageId}:${swipeIndex}` → paragraphs revealed so far (bounded). A `/continue` grows the reply under the same key; the gate resumes here. */
+  readingGateProgress: Record<string, number>;
   /** Replies read through, times the gate was switched off, per-reply reveal durations (bounded). */
   readingGateStats: ReadingGateStats;
   /** Runtime only: the gate currently holding the composer, or null. */
@@ -1137,6 +1139,7 @@ interface UIState {
   setReadingGate: (v: boolean) => void;
   setReadingMeasureCpl: (v: number) => void;
   markReadingGateReadThrough: (key: string, durationMs: number) => void;
+  setReadingGateProgress: (key: string, revealed: number) => void;
   setReadingGateOpenKey: (key: string | null) => void;
   releaseReadingGateOpenKey: (key: string) => void;
   setGameInstantTextReveal: (v: boolean) => void;
@@ -1369,6 +1372,9 @@ export function pickSyncedSettings(state: UIState) {
     readingGate: state.readingGate,
     readingMeasureCpl: state.readingMeasureCpl,
     readingGateReadThrough: state.readingGateReadThrough,
+    // readingGateProgress is deliberately NOT synced: the settings sync is whole-blob
+    // last-write-wins across devices, and a reading position pushed from one screen would
+    // re-gate or skip the reply on another. It persists locally only.
     readingGateStats: state.readingGateStats,
     showPaidAgentConnectionWarning: state.showPaidAgentConnectionWarning,
     gameInstantTextReveal: state.gameInstantTextReveal,
@@ -1579,6 +1585,7 @@ export function pickPersistedUIState(state: UIState) {
     readingGateReadThrough: state.readingGateReadThrough,
     readingGateStats: state.readingGateStats,
     readingMeasureCpl: state.readingMeasureCpl,
+    readingGateProgress: state.readingGateProgress,
     gameInstantTextReveal: state.gameInstantTextReveal,
     gameMiddleMouseNav: state.gameMiddleMouseNav,
     gameDialogueDisplayMode: state.gameDialogueDisplayMode,
@@ -1826,6 +1833,7 @@ export const useUIStore = create<UIState>()(
       readingGate: false,
       readingMeasureCpl: 60,
       readingGateReadThrough: [],
+      readingGateProgress: {},
       readingGateStats: { readThrough: 0, switchedOff: 0, durationsMs: [] },
       readingGateOpenKey: null,
         gameInstantTextReveal: false,
@@ -2609,6 +2617,12 @@ export const useUIStore = create<UIState>()(
         })),
       setReadingMeasureCpl: (v) =>
         set({ readingMeasureCpl: Math.min(100, Math.max(40, Math.round(Number.isFinite(v) ? v : 60))) }),
+      setReadingGateProgress: (key, revealed) =>
+        set((state) =>
+          (state.readingGateProgress[key] ?? 0) >= revealed
+            ? {}
+            : { readingGateProgress: setBoundedProgress(state.readingGateProgress, key, revealed) },
+        ),
       markReadingGateReadThrough: (key, durationMs) =>
         set((state) => {
           if (state.readingGateReadThrough.includes(key)) return {};
