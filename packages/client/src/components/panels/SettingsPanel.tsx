@@ -3417,6 +3417,8 @@ function GeneralSettings() {
   const readingGate = useUIStore((s) => s.readingGate);
   const setReadingGate = useUIStore((s) => s.setReadingGate);
   const readingGateStats = useUIStore((s) => s.readingGateStats);
+  const readingMeasureCpl = useUIStore((s) => s.readingMeasureCpl);
+  const setReadingMeasureCpl = useUIStore((s) => s.setReadingMeasureCpl);
   const streamingSpeed = useUIStore((s) => s.streamingSpeed);
   const setStreamingSpeed = useUIStore((s) => s.setStreamingSpeed);
   const gameInstantTextReveal = useUIStore((s) => s.gameInstantTextReveal);
@@ -3582,6 +3584,30 @@ function GeneralSettings() {
               switchedOff: readingGateStats.switchedOff,
             })}
           />
+
+          <label
+            id={getSettingsControlAnchorId("reading-measure")}
+            className="flex scroll-mt-3 flex-col gap-1.5 rounded-lg p-1 transition-colors hover:bg-[var(--secondary)]/50"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs">{localizeUi("settings.controls.readingMeasure.label")}</span>
+              <span className="text-xs tabular-nums text-[var(--muted-foreground)]">{readingMeasureCpl}</span>
+              <HelpTooltip text={localizeUi("settings.controls.readingMeasure.help")} />
+            </div>
+            <input
+              type="range"
+              min={40}
+              max={100}
+              step={5}
+              value={readingMeasureCpl}
+              onChange={(e) => setReadingMeasureCpl(Number(e.target.value))}
+              className="w-full accent-[var(--primary)]"
+            />
+            <div className="flex justify-between text-[0.625rem] text-[var(--muted-foreground)]">
+              <span>{localizeUi("settings.controls.readingMeasure.narrow")}</span>
+              <span>{localizeUi("settings.controls.readingMeasure.wide")}</span>
+            </div>
+          </label>
 
           <label
             id={getSettingsControlAnchorId("streaming-speed")}
