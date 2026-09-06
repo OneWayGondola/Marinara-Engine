@@ -27,20 +27,32 @@ interface ReadingGateProps {
 export function ReadingGate({ gateKey, text, render }: ReadingGateProps) {
   const { t: localizeUi } = useUiTranslation();
   const readThroughKeys = useUIStore((s) => s.readingGateReadThrough);
+  const progress = useUIStore((s) => s.readingGateProgress);
   const markReadThrough = useUIStore((s) => s.markReadingGateReadThrough);
+  const setProgress = useUIStore((s) => s.setReadingGateProgress);
   const setOpenKey = useUIStore((s) => s.setReadingGateOpenKey);
   const releaseOpenKey = useUIStore((s) => s.releaseReadingGateOpenKey);
 
   const segments = useMemo(() => segmentForReadingGate(text), [text]);
   const total = segments.paragraphs.length;
-  const gated = total > 1 && !readThroughKeys.includes(gateKey);
+  // Where the reader stopped. A key read through before progress existed counts as complete
+  // (legacy rows); otherwise a `/continue` that grew the reply resumes at the old end.
+  const resumeAt = progress[gateKey] ?? (readThroughKeys.includes(gateKey) ? total : 1);
+  const gated = total > 1 && resumeAt < total;
 
-  const [revealed, setRevealed] = useState(1);
+  const [revealed, setRevealed] = useState(() => Math.max(1, Math.min(total, resumeAt)));
   const startedAtRef = useRef(Date.now());
   useEffect(() => {
-    setRevealed(1);
+    setRevealed(Math.max(1, Math.min(total, progress[gateKey] ?? 1)));
     startedAtRef.current = Date.now();
+    // Re-arm on key change only; `progress`/`total` are read at that moment on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gateKey]);
+
+  // Persist every reveal so a reload, or a continuation, resumes here.
+  useEffect(() => {
+    if (gated) setProgress(gateKey, revealed);
+  }, [gated, gateKey, revealed, setProgress]);
 
   // Hold the composer while the gate is open; release when it closes or unmounts.
   useEffect(() => {

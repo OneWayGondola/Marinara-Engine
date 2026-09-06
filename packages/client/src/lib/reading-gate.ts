@@ -82,6 +82,25 @@ export function appendBounded<T>(list: readonly T[], item: T, limit = READING_GA
   return next.length > limit ? next.slice(next.length - limit) : next;
 }
 
+/**
+ * Set `key` in an insertion-ordered progress map, dropping the oldest keys past `limit`.
+ * Progress is a paragraph count, so a `/continue` that grows the same message re-arms the
+ * gate from where the reader stopped instead of showing the continuation in full.
+ */
+export function setBoundedProgress(
+  map: Readonly<Record<string, number>>,
+  key: string,
+  value: number,
+  limit = READING_GATE_HISTORY_LIMIT,
+): Record<string, number> {
+  const next: Record<string, number> = { ...map };
+  delete next[key];
+  next[key] = value;
+  const keys = Object.keys(next);
+  for (let i = 0; i < keys.length - limit; i++) delete next[keys[i]];
+  return next;
+}
+
 /** True when the key event should advance the gate: plain Space / → / Enter outside any editable field. */
 export function isReadingGateAdvanceKey(event: {
   key: string;
