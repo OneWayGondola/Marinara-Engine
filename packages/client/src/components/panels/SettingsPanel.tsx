@@ -3414,6 +3414,9 @@ function GeneralSettings() {
   );
   const enableStreaming = useUIStore((s) => s.enableStreaming);
   const setEnableStreaming = useUIStore((s) => s.setEnableStreaming);
+  const readingGate = useUIStore((s) => s.readingGate);
+  const setReadingGate = useUIStore((s) => s.setReadingGate);
+  const readingGateStats = useUIStore((s) => s.readingGateStats);
   const streamingSpeed = useUIStore((s) => s.streamingSpeed);
   const setStreamingSpeed = useUIStore((s) => s.setStreamingSpeed);
   const gameInstantTextReveal = useUIStore((s) => s.gameInstantTextReveal);
@@ -3567,6 +3570,17 @@ function GeneralSettings() {
             checked={enableStreaming}
             onChange={setEnableStreaming}
             help={localizeUi("settings.controls.enableStreaming.help")}
+          />
+
+          <ToggleSetting
+            anchorId={getSettingsControlAnchorId("reading-gate")}
+            label={localizeUi("settings.controls.readingGate.label")}
+            checked={readingGate}
+            onChange={setReadingGate}
+            help={localizeUi("settings.controls.readingGate.help", {
+              readThrough: readingGateStats.readThrough,
+              switchedOff: readingGateStats.switchedOff,
+            })}
           />
 
           <label
