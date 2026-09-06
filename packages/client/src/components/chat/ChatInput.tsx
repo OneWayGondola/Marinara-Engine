@@ -16,6 +16,7 @@ import {
   Sparkles,
   WandSparkles,
   Swords,
+  BookOpen,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -2185,6 +2186,9 @@ export const ChatInput = memo(function ChatInput({
         >
           {isStreaming ? (
             <StopCircle size="1rem" />
+          ) : readingGateHold ? (
+            // The gate is the readers turn, not the machines: a static glyph, never the busy spinner.
+            <BookOpen size="1rem" />
           ) : isInputBusy ? (
             <Loader2 size="1rem" className="animate-spin" />
           ) : (
