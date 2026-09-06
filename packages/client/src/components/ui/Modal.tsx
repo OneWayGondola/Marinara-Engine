@@ -18,6 +18,24 @@ import { useBackDismiss } from "../../hooks/use-back-dismiss";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
+// While any modal is mounted, mark the document so CSS can pause the heavy
+// infinite background animations. The modal backdrop-filter forces the GPU to
+// re-blur everything behind it; every background animation frame therefore
+// triggers a full-viewport re-composite (real fan-spinning heat on laptops).
+// Counting handles stacked modals. Kept separate from App.tsx's
+// data-marinara-effects-paused so its visibilitychange handler cannot
+// accidentally unpause effects while a modal is still open.
+let mountedModalCount = 0;
+
+function syncModalOpenAttribute() {
+  const root = document.documentElement;
+  if (mountedModalCount > 0) {
+    root.dataset.marinaraModalOpen = "true";
+  } else {
+    delete root.dataset.marinaraModalOpen;
+  }
+}
+
 interface ModalProps {
   open: boolean;
   onClose: () => void;
@@ -79,6 +97,18 @@ export function Modal({
   useBackDismiss(open, () => {
     if (!closeDisabled) onClose();
   });
+
+  // Track the mounted overlay in the module-level counter so background
+  // animations pause for the whole time any modal is on screen.
+  useEffect(() => {
+    if (!mounted) return;
+    mountedModalCount += 1;
+    syncModalOpenAttribute();
+    return () => {
+      mountedModalCount = Math.max(0, mountedModalCount - 1);
+      syncModalOpenAttribute();
+    };
+  }, [mounted]);
 
   useEffect(() => {
     if (enterRafRef.current !== null) {
@@ -162,7 +192,7 @@ export function Modal({
       {/* Backdrop */}
       <div
         data-backdrop-dismiss-surface="true"
-        className="mari-modal-backdrop absolute inset-0 bg-black/55 backdrop-blur-[2px]"
+        className="mari-modal-backdrop absolute inset-0 bg-black/55"
         style={{
           opacity: isEntering ? 1 : 0,
           transition: "opacity 150ms ease-out",
