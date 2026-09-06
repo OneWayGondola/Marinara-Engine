@@ -69,11 +69,16 @@ export function ReadingGate({ gateKey, text, render }: ReadingGateProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [gated, advance]);
 
-  // Pin the newly opened paragraph to the bottom edge, the way a visual-novel textbox
-  // sits at the bottom of the screen: the reading position never moves.
+  // Each reveal scrolls the message list to its end, the way a visual-novel textbox sits
+  // at the bottom of the screen: the reading position never moves. The list, not the edge —
+  // aligning the edge alone left the swipe row and bottom padding below the fold. Same move
+  // as ChatArea's scrollToMessagesBottom, reached through the container's data hook.
   const edgeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (gated && revealed > 1) edgeRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    if (!gated || revealed <= 1) return;
+    const container = edgeRef.current?.closest<HTMLElement>("[data-chat-scroll]");
+    if (container) container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    else edgeRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [gated, revealed]);
 
   if (!gated) return <>{render(text)}</>;
