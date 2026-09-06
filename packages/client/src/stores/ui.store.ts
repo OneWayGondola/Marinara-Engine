@@ -24,6 +24,7 @@ import { DEFAULT_APP_LANGUAGE, type AppLanguage } from "../localization/locale-t
 import { deferEditorLeave } from "../lib/editor-leave";
 import { UI_PERSISTENCE } from "../lib/ui-persistence";
 import type { ChatWizardDefaults, ChatWizardMode } from "../lib/chat-wizard-defaults";
+import { appendBounded } from "../lib/reading-gate";
 
 export type Panel =
   | "chat"
@@ -66,6 +67,13 @@ function normalizeConnectionPanelSort(value: unknown): ConnectionPanelSort {
     : "name-asc";
 }
 type FontSize = 12 | 14 | 16 | 17 | 19 | 22 | 26 | 30 | 34;
+
+/** The reading gate's own hit rate — see `readingGate` below. */
+export interface ReadingGateStats {
+  readThrough: number;
+  switchedOff: number;
+  durationsMs: number[];
+}
 export type VisualTheme = "default" | "sillytavern";
 export type ConversationMessageStyle = "classic" | "bubble";
 export type ConversationAvatarShape = "circle" | "square";
@@ -727,6 +735,17 @@ interface UIState {
   showPaidAgentConnectionWarning: boolean;
   /** Typewriter speed: 1 (very slow) to 100 (instant). Controls how fast streaming tokens appear. */
   streamingSpeed: number;
+  /**
+   * Reading gate (roleplay): the newest finished reply is revealed one paragraph at a time,
+   * nothing can be skipped, and Send waits for the last paragraph. Off by default.
+   */
+  readingGate: boolean;
+  /** `${messageId}:${swipeIndex}` keys already read to the end (bounded), so a reload does not re-gate. */
+  readingGateReadThrough: string[];
+  /** Replies read through, times the gate was switched off, per-reply reveal durations (bounded). */
+  readingGateStats: ReadingGateStats;
+  /** Runtime only: the gate currently holding the composer, or null. */
+  readingGateOpenKey: string | null;
   /** When true, Game mode narration segments are revealed in full as soon as they become active. */
   gameInstantTextReveal: boolean;
   /**
@@ -1109,6 +1128,10 @@ interface UIState {
   setDebugMode: (v: boolean) => void;
   setShowPaidAgentConnectionWarning: (v: boolean) => void;
   setStreamingSpeed: (v: number) => void;
+  setReadingGate: (v: boolean) => void;
+  markReadingGateReadThrough: (key: string, durationMs: number) => void;
+  setReadingGateOpenKey: (key: string | null) => void;
+  releaseReadingGateOpenKey: (key: string) => void;
   setGameInstantTextReveal: (v: boolean) => void;
   setGameMiddleMouseNav: (v: boolean) => void;
   setGameDialogueDisplayMode: (v: GameDialogueDisplayMode) => void;
@@ -1336,6 +1359,9 @@ export function pickSyncedSettings(state: UIState) {
     fontFamily: state.fontFamily,
     enableStreaming: state.enableStreaming,
     streamingSpeed: state.streamingSpeed,
+    readingGate: state.readingGate,
+    readingGateReadThrough: state.readingGateReadThrough,
+    readingGateStats: state.readingGateStats,
     showPaidAgentConnectionWarning: state.showPaidAgentConnectionWarning,
     gameInstantTextReveal: state.gameInstantTextReveal,
     gameMiddleMouseNav: state.gameMiddleMouseNav,
@@ -1541,6 +1567,9 @@ export function pickPersistedUIState(state: UIState) {
     debugMode: state.debugMode,
     showPaidAgentConnectionWarning: state.showPaidAgentConnectionWarning,
     streamingSpeed: state.streamingSpeed,
+    readingGate: state.readingGate,
+    readingGateReadThrough: state.readingGateReadThrough,
+    readingGateStats: state.readingGateStats,
     gameInstantTextReveal: state.gameInstantTextReveal,
     gameMiddleMouseNav: state.gameMiddleMouseNav,
     gameDialogueDisplayMode: state.gameDialogueDisplayMode,
@@ -1785,6 +1814,10 @@ export const useUIStore = create<UIState>()(
         debugMode: false,
         showPaidAgentConnectionWarning: true,
         streamingSpeed: 50,
+      readingGate: false,
+      readingGateReadThrough: [],
+      readingGateStats: { readThrough: 0, switchedOff: 0, durationsMs: [] },
+      readingGateOpenKey: null,
         gameInstantTextReveal: false,
         gameMiddleMouseNav: false,
         gameDialogueDisplayMode: "classic" as GameDialogueDisplayMode,
@@ -2555,6 +2588,30 @@ export const useUIStore = create<UIState>()(
         setDebugMode: (v) => set({ debugMode: v }),
         setShowPaidAgentConnectionWarning: (v) => set({ showPaidAgentConnectionWarning: v }),
         setStreamingSpeed: (v) => set({ streamingSpeed: Math.max(1, Math.min(100, v)) }),
+      setReadingGate: (v) =>
+        set((state) => ({
+          readingGate: v,
+          readingGateOpenKey: v ? state.readingGateOpenKey : null,
+          readingGateStats:
+            state.readingGate && !v
+              ? { ...state.readingGateStats, switchedOff: state.readingGateStats.switchedOff + 1 }
+              : state.readingGateStats,
+        })),
+      markReadingGateReadThrough: (key, durationMs) =>
+        set((state) => {
+          if (state.readingGateReadThrough.includes(key)) return {};
+          return {
+            readingGateReadThrough: appendBounded(state.readingGateReadThrough, key),
+            readingGateStats: {
+              readThrough: state.readingGateStats.readThrough + 1,
+              switchedOff: state.readingGateStats.switchedOff,
+              durationsMs: appendBounded(state.readingGateStats.durationsMs, Math.max(0, Math.round(durationMs))),
+            },
+          };
+        }),
+      setReadingGateOpenKey: (key) => set({ readingGateOpenKey: key }),
+      releaseReadingGateOpenKey: (key) =>
+        set((state) => (state.readingGateOpenKey === key ? { readingGateOpenKey: null } : {})),
         setGameInstantTextReveal: (v) => set({ gameInstantTextReveal: v }),
         setGameMiddleMouseNav: (v) => set({ gameMiddleMouseNav: v }),
         setGameDialogueDisplayMode: (v) => set({ gameDialogueDisplayMode: v }),
