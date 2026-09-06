@@ -263,11 +263,15 @@ export const ChatInput = memo(function ChatInput({
   );
   const hasActiveStream = isStreamingGlobal && streamingChatId === activeChatId;
   const isStreaming = hasActiveStream && !isBackgroundIllustration;
-  const isInputBusy = isGenerationSendBlocked({
+  const generationBusy = isGenerationSendBlocked({
     streamActive: hasActiveStream,
     agentsProcessing: mode === "roleplay" ? false : interactionsLocked,
     backgroundIllustration: isBackgroundIllustration,
   });
+  // Reading gate: the newest reply is still being revealed paragraph by paragraph.
+  const readingGateOpenKey = useUIStore((s) => s.readingGateOpenKey);
+  const readingGateHold = mode === "roleplay" && readingGateOpenKey !== null;
+  const isInputBusy = generationBusy || readingGateHold;
   const responseQueue = useChatStore((s) =>
     activeChatId ? (s.responseQueues.get(activeChatId) ?? EMPTY_RESPONSE_QUEUE) : EMPTY_RESPONSE_QUEUE,
   );
@@ -668,7 +672,9 @@ export const ChatInput = memo(function ChatInput({
   const hasPendingAttachments = isReadingAttachments || attachments.length > 0;
   const requiresManualGuideTarget = groupResponseOrder === "manual" && activeCharacterNames.length > 1;
   const inputBusyReason = isInputBusy
-    ? isStreaming
+    ? readingGateHold
+      ? localizeUi("ui.chat.chatinput.readingGateBusy")
+      : isStreaming
       ? "Wait for the current stream to finish."
       : "Wait for agents to finish."
     : null;

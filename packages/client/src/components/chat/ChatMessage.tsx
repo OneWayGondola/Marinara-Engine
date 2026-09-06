@@ -65,6 +65,8 @@ import { useShallow } from "zustand/react/shallow";
 import { createMessageMacroResolver } from "../../lib/chat-macros";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { getDefaultChatTextColor, useUIStore } from "../../stores/ui.store";
+import { readingGateKey } from "../../lib/reading-gate";
+import { ReadingGate } from "./ReadingGate";
 import { useChatStore } from "../../stores/chat.store";
 import { parseChatMetadata } from "../../lib/chat-display";
 import { useTranslate } from "../../hooks/use-translate";
@@ -2712,6 +2714,18 @@ export const ChatMessage = memo(function ChatMessage({
   // Render content with dialogue highlighting (or HTML rendering)
   const text = typeof displayContent === "string" ? displayContent : message.content;
   const isHtmlContent = containsChatHtml(text);
+  // Reading gate: only the newest finished roleplay reply, only prose (HTML cards
+  // have no paragraphs to split), never while editing or streaming.
+  const readingGateEnabled = useUIStore((s) => s.readingGate);
+  const readingGateActive =
+    readingGateEnabled &&
+    isRoleplay &&
+    !isUser &&
+    !!isLastAssistantMessage &&
+    !isStreaming &&
+    !isHtmlContent &&
+    !editing;
+  const readingGateKeyValue = readingGateKey(message.id, message.activeSwipeIndex);
   const htmlScopeClass = useMemo(() => {
     const suffix = message.id.replace(/[^a-zA-Z0-9_-]/g, "");
     return `mari-html-message-${suffix || "content"}`;
@@ -2987,6 +3001,8 @@ export const ChatMessage = memo(function ChatMessage({
               <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
             ) : showTranslationOnly ? (
               renderedTranslation
+            ) : readingGateActive ? (
+              <ReadingGate gateKey={readingGateKeyValue} text={text} render={renderStreamingText} />
             ) : (
               renderedContent
             )}
@@ -3126,6 +3142,8 @@ export const ChatMessage = memo(function ChatMessage({
                       <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
                     ) : showTranslationOnly ? (
                       renderedTranslation
+                    ) : readingGateActive ? (
+                      <ReadingGate gateKey={readingGateKeyValue} text={text} render={renderStreamingText} />
                     ) : (
                       renderedContent
                     )}
@@ -3915,6 +3933,8 @@ export const ChatMessage = memo(function ChatMessage({
                         <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
                       ) : showTranslationOnly ? (
                         renderedTranslation
+                      ) : readingGateActive ? (
+                        <ReadingGate gateKey={readingGateKeyValue} text={text} render={renderStreamingText} />
                       ) : (
                         renderedContent
                       )}
