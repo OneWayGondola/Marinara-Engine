@@ -1871,14 +1871,24 @@ export const ChatMessage = memo(function ChatMessage({
     [textStrokeWidth, textStrokeColor],
   );
   const textShadowStr = textStrokeWidth > 0 ? `0px 0px ${textStrokeWidth}px ${textStrokeColor}` : "";
+  // Reading measure: `1ch` is the advance of "0"; the mean advance of English prose in the
+  // chat font measured 0.786ch (Lexend 16px, 170-char sample, 2026-09-06), so N characters
+  // per line is N * 0.786ch. Roleplay assistant prose only; user bubbles keep their width.
+  const readingMeasureCpl = useUIStore((s) => s.readingMeasureCpl);
+  const readingMeasureActive = isRoleplay && !isUser && readingMeasureCpl > 0;
+  const readingMeasureStyle = useMemo<React.CSSProperties>(
+    () => (readingMeasureActive ? { maxWidth: `${(readingMeasureCpl * 0.786).toFixed(1)}ch` } : {}),
+    [readingMeasureActive, readingMeasureCpl],
+  );
   const messageTextStyle = useMemo<React.CSSProperties>(
     () => ({
       fontSize: chatFontSize,
       lineHeight: 1.5,
       ...(chatFontColor ? { color: chatFontColor } : {}),
       ...textStrokeStyle,
+      ...readingMeasureStyle,
     }),
-    [chatFontSize, chatFontColor, textStrokeStyle],
+    [chatFontSize, chatFontColor, textStrokeStyle, readingMeasureStyle],
   );
   const roleplayAvatarScaleStyle = useMemo<React.CSSProperties>(
     () => ({ "--roleplay-avatar-scale": roleplayAvatarScale }) as React.CSSProperties,
@@ -3577,6 +3587,10 @@ export const ChatMessage = memo(function ChatMessage({
                   // an inline `background` so card CSS can override the bubble
                   // (inline styles beat every selector). Applied by `.mari-rp-bubble`.
                   "--mari-rp-bubble-bg": roleplayBubbleBg,
+                  // The bubble shrink-wraps the capped prose (measured: the flex wrapper alone
+                  // does not propagate the content max-width in WebKit), so a narrow measure
+                  // does not leave an empty bubble to its right.
+                  ...(readingMeasureActive && !editing ? { maxWidth: "fit-content" } : {}),
                 } as React.CSSProperties
               }
             >
