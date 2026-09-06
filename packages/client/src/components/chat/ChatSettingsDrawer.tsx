@@ -5191,7 +5191,9 @@ export function ChatSettingsDrawer({
                 <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatsettingsdrawer.partyCharacters")}
                 </label>
-                {chatCharIds.length === 0 ? (
+                {/* Only count IDs that resolve to a real card — the list below skips
+                    unresolvable IDs, so a stale ID would leave an empty container. */}
+                {chatCharIds.filter((cid) => characters.some((ch) => ch.id === cid)).length === 0 ? (
                   <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.chat.chatsettingsdrawer.noCharactersInPartyYet")}
                   </p>
@@ -5621,11 +5623,16 @@ export function ChatSettingsDrawer({
               style={{ order: CHAT_SETTINGS_ORDER.characters }}
               label={localizeUi("navigation.topbar.characters")}
               icon={<Users size="0.875rem" />}
-              count={chatCharIds.length}
+              // Count only IDs that resolve to a real character card. The list below
+              // skips unresolvable IDs, so a stale ID from a deleted card would
+              // otherwise inflate this count above the number of visible rows.
+              count={chatCharIds.filter((cid) => characters.some((ch) => ch.id === cid)).length}
               help={localizeUi("ui.chat.chatsettingsdrawer.charactersInThisChatEachCharacterHasTheirOwn")}
             >
               {/* Active characters */}
-              {chatCharIds.length === 0 ? (
+              {/* Match the count above: if no ID resolves to a real card, show the
+                  empty-state message rather than an empty container. */}
+              {chatCharIds.filter((cid) => characters.some((ch) => ch.id === cid)).length === 0 ? (
                 <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatsettingsdrawer.noCharactersAddedToThisChat")}
                 </p>
