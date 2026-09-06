@@ -740,6 +740,12 @@ interface UIState {
    * nothing can be skipped, and Send waits for the last paragraph. Off by default.
    */
   readingGate: boolean;
+  /**
+   * Reading measure (roleplay replies): approximate characters per line for assistant prose,
+   * 40..100. WCAG 2.1 SC 1.4.8 caps at 80; Dyson & Haselgrove (2001) found 55 read with better
+   * comprehension than 100. Default 60. Applied as max-width in `ch`, so it follows the chat font.
+   */
+  readingMeasureCpl: number;
   /** `${messageId}:${swipeIndex}` keys already read to the end (bounded), so a reload does not re-gate. */
   readingGateReadThrough: string[];
   /** Replies read through, times the gate was switched off, per-reply reveal durations (bounded). */
@@ -1129,6 +1135,7 @@ interface UIState {
   setShowPaidAgentConnectionWarning: (v: boolean) => void;
   setStreamingSpeed: (v: number) => void;
   setReadingGate: (v: boolean) => void;
+  setReadingMeasureCpl: (v: number) => void;
   markReadingGateReadThrough: (key: string, durationMs: number) => void;
   setReadingGateOpenKey: (key: string | null) => void;
   releaseReadingGateOpenKey: (key: string) => void;
@@ -1360,6 +1367,7 @@ export function pickSyncedSettings(state: UIState) {
     enableStreaming: state.enableStreaming,
     streamingSpeed: state.streamingSpeed,
     readingGate: state.readingGate,
+    readingMeasureCpl: state.readingMeasureCpl,
     readingGateReadThrough: state.readingGateReadThrough,
     readingGateStats: state.readingGateStats,
     showPaidAgentConnectionWarning: state.showPaidAgentConnectionWarning,
@@ -1570,6 +1578,7 @@ export function pickPersistedUIState(state: UIState) {
     readingGate: state.readingGate,
     readingGateReadThrough: state.readingGateReadThrough,
     readingGateStats: state.readingGateStats,
+    readingMeasureCpl: state.readingMeasureCpl,
     gameInstantTextReveal: state.gameInstantTextReveal,
     gameMiddleMouseNav: state.gameMiddleMouseNav,
     gameDialogueDisplayMode: state.gameDialogueDisplayMode,
@@ -1815,6 +1824,7 @@ export const useUIStore = create<UIState>()(
         showPaidAgentConnectionWarning: true,
         streamingSpeed: 50,
       readingGate: false,
+      readingMeasureCpl: 60,
       readingGateReadThrough: [],
       readingGateStats: { readThrough: 0, switchedOff: 0, durationsMs: [] },
       readingGateOpenKey: null,
@@ -2597,6 +2607,8 @@ export const useUIStore = create<UIState>()(
               ? { ...state.readingGateStats, switchedOff: state.readingGateStats.switchedOff + 1 }
               : state.readingGateStats,
         })),
+      setReadingMeasureCpl: (v) =>
+        set({ readingMeasureCpl: Math.min(100, Math.max(40, Math.round(Number.isFinite(v) ? v : 60))) }),
       markReadingGateReadThrough: (key, durationMs) =>
         set((state) => {
           if (state.readingGateReadThrough.includes(key)) return {};

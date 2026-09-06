@@ -69,10 +69,11 @@ export function ReadingGate({ gateKey, text, render }: ReadingGateProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [gated, advance]);
 
-  // Keep the newly opened paragraph in view: it sits directly above the edge.
+  // Pin the newly opened paragraph to the bottom edge, the way a visual-novel textbox
+  // sits at the bottom of the screen: the reading position never moves.
   const edgeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (gated && revealed > 1) edgeRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (gated && revealed > 1) edgeRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [gated, revealed]);
 
   if (!gated) return <>{render(text)}</>;
