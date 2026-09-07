@@ -63,6 +63,7 @@ import type {
   LorebookEntryTimingState,
   ChatSummaryEntry,
   ChatMode,
+  DiceRollResult,
   ResolvedSpatialTravel,
   ThinkingTagPair,
 } from "@marinara-engine/shared";
@@ -492,6 +493,7 @@ import { createAgentLorebookTriggerResolver } from "../services/generation/agent
 import { addInventoryEntry, addLocationEntry, upsertQuest, addNpcEntry } from "../services/game/journal.service.js";
 import { updateJournal } from "../services/generation/game-journal-runtime.js";
 import { buildGmFormatReminder } from "../services/game/gm-prompts.js";
+import { parseRollDiceToolResult } from "../services/game/dice.service.js";
 import {
   applyMapUpdateCommand,
   getGameMapsFromMeta,
@@ -534,6 +536,7 @@ import {
 import { resolveAgentPipelineAgents, resolveEffectiveAgentSettings } from "../services/generation/agent-resolution.js";
 import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
 import {
+  GAME_MODE_AUTO_ATTACH_TOOL_NAMES,
   resolveGenerationTools,
   resolveMainGenerationToolChoice,
 } from "../services/generation/tool-resolution-runtime.js";
@@ -4869,6 +4872,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
         const {
           enableChatTools,
+          toolsAttached,
           chatResolvedToolNames,
           toolDefs,
           baseToolExecutionContext,
@@ -4893,6 +4897,11 @@ export async function generateRoutes(app: FastifyInstance) {
           gameSpotifyMusicEnabled,
           agentContext,
           emitMetadataPatch: (patch) => sendSseEvent(reply, { type: "metadata_patch", data: patch }),
+          // Game Mode rolls its dice for real. This does not turn the chat's tool toggle on —
+          // only roll_dice is attached, and everything keyed on enableChatTools stays quiet.
+          // Impersonation writes the player's own line rather than GM narration, so it is left
+          // out: there is nothing for the GM to resolve and no turn for the card to belong to.
+          autoAttachToolNames: chatMode === "game" && !input.impersonate ? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : [],
         });
         const eligiblePipelineAgents: typeof pipelineAgents = [];
         for (const agent of pipelineAgents) {
@@ -6352,6 +6361,9 @@ export async function generateRoutes(app: FastifyInstance) {
             await writeContentChunked(assistantPrefill);
           }
           let geminiResponseParts: unknown[] | null = null;
+          // The last roll_dice this turn produced, saved on the message so the animated
+          // dice card renders the same way a /roll does.
+          let toolDiceRollResult: DiceRollResult | null = null;
           let chatCompletionsReasoning: Record<string, unknown> | null = null;
           const rememberChatCompletionsReasoning = (metadata: Record<string, unknown>) => {
             chatCompletionsReasoning = readChatCompletionsReasoningMetadata(metadata) ?? metadata;
@@ -6432,7 +6444,7 @@ export async function generateRoutes(app: FastifyInstance) {
             });
           };
 
-          if (enableChatTools && provider.chatComplete) {
+          if (toolsAttached && provider.chatComplete) {
             const maxToolRounds = getMaxToolRounds();
             let loopMessages: ChatMessage[] = initialProviderMessages;
             // Stream tokens in real-time via onToken callback.
@@ -6525,6 +6537,12 @@ export async function generateRoutes(app: FastifyInstance) {
                 await writeContentChunked(result.content);
               }
 
+              // Gemini thought signatures reach this branch as providerMetadata rather than
+              // through onResponseParts, which is only wired on the no-tools path. Without
+              // this the saved message loses its parts and Gemini 3 rejects the replay.
+              const roundGeminiParts = result.providerMetadata?.geminiParts;
+              if (Array.isArray(roundGeminiParts)) geminiResponseParts = roundGeminiParts;
+
               // Accumulate usage across tool rounds
               if (result.usage) {
                 if (!usage) {
@@ -6587,9 +6605,23 @@ export async function generateRoutes(app: FastifyInstance) {
                 .filter((toolResult): toolResult is NonNullable<typeof toolResult> => toolResult != null);
 
               for (const tr of toolResults) {
+                // A dice roll the GM asked for is player-facing, not a debug trace: carry the
+                // parsed result on the event so the client can show the card while the turn is
+                // still running, and remember it for the saved message. The raw tool result the
+                // model reads is untouched.
+                const rolled =
+                  chatMode === "game" && !input.impersonate && tr.name === "roll_dice" && tr.success
+                    ? parseRollDiceToolResult(tr.result)
+                    : null;
+                if (rolled) toolDiceRollResult = rolled;
                 sendSseEvent(reply, {
                   type: "tool_result",
-                  data: { name: tr.name, result: tr.result, success: tr.success },
+                  data: {
+                    name: tr.name,
+                    result: tr.result,
+                    success: tr.success,
+                    ...(rolled ? { diceRollResult: rolled } : {}),
+                  },
                 });
 
                 // Persist update_game_state tool calls to the game state DB
@@ -6728,6 +6760,8 @@ export async function generateRoutes(app: FastifyInstance) {
                 if (finalResult.content && fullResponse.length === prevLen) {
                   await writeContentChunked(finalResult.content);
                 }
+                const finalGeminiParts = finalResult.providerMetadata?.geminiParts;
+                if (Array.isArray(finalGeminiParts)) geminiResponseParts = finalGeminiParts;
                 if (finalResult.usage) {
                   if (!usage) {
                     usage = { ...finalResult.usage };
@@ -7542,6 +7576,10 @@ export async function generateRoutes(app: FastifyInstance) {
               chatMode === "conversation" && !input.impersonate ? conversationCommandContent : null;
             extraUpdate.generationReplay = buildGenerationReplay(input);
             extraUpdate.startsNewAssistantBubble = startsNewAssistantBubble;
+            // Same message-extra /roll writes, so a GM-called roll keeps its card in the
+            // transcript instead of living only in the live overlay. Cleared when this swipe
+            // rolled nothing, so a reroll of a swipe that did cannot leave its card behind.
+            extraUpdate.diceRollResult = toolDiceRollResult;
             // Cache the final prompt (what was actually sent to the model) for Peek Prompt
             extraUpdate.cachedPrompt = finalPromptSent.map((m) => ({
               role: m.role,
