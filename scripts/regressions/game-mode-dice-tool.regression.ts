@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import type { AgentContext } from "@marinara-engine/shared";
 import type { LLMToolDefinition } from "../../packages/server/src/services/llm/base-provider.js";
 import {
   GAME_MODE_AUTO_ATTACH_TOOL_NAMES,
   resolveChatToolDefs,
   resolveGenerationTools,
+  resolveMainGenerationToolChoice,
   type ResolveGenerationToolsArgs,
 } from "../../packages/server/src/services/generation/tool-resolution-runtime.js";
+import { appendRoundGeminiParts } from "../../packages/server/src/services/generation/generation-parameters.js";
 import {
   executeToolCalls,
   PERSISTED_GAME_STATE_UPDATE_TYPES,
@@ -18,9 +21,10 @@ import { updateGameStateToolManifest } from "../../packages/shared/src/features/
 // Game Mode rolls real dice by attaching roll_dice to every game turn through a channel that
 // is deliberately NOT the chat's "Enable Tool Use" toggle — flipping that would also arm the
 // rest of the default tool set, the Spotify credential lookup, and the local-endpoint
-// <available_functions> injection. These checks pin the four things that make that honest:
-// which tools a turn resolves, the roll's message-extra shape, the narrowed
-// update_game_state enum, and the GM prompt line without which the tool is never called.
+// <available_functions> injection. These checks pin what makes that honest: which tools a turn
+// resolves, that a hidden Force To Call cannot ride the new channel, that a multi-round turn is
+// saved as one message, the roll's message-extra shape, the narrowed update_game_state enum,
+// the GM prompt line without which the tool is never called, and the route lines that wire it.
 
 // ── 1. Auto-attach resolution ──────────────────────────────────────────────
 
@@ -198,7 +202,75 @@ assert.ok(
   "turning tool use on must still resolve the rest of the default-on tools",
 );
 
-// ── 3. The message-extra shape a rolled die is saved as ────────────────────
+// ── 3. Force To Call must not reach a tool the engine attached by itself ───
+// The checkbox is hidden while "Enable Tool Use" is off, so a game chat can hold a stale
+// forceToolCall the user can neither see nor clear. It was inert here until the dice tool
+// gave a toggle-off chat a tool loop to enter; forcing it would open every game turn with
+// a roll before a word of prose.
+
+assert.equal(
+  resolveMainGenerationToolChoice({
+    chatMetadata: { forceToolCall: true },
+    enableChatTools: gameTurn.enableChatTools,
+    round: 0,
+  }),
+  "auto",
+  "a stale Force To Call must not force the auto-attached dice tool on a game turn",
+);
+assert.equal(
+  resolveMainGenerationToolChoice({
+    chatMetadata: { forceToolCall: true },
+    enableChatTools: gameTurnWithToolsOn.enableChatTools,
+    round: 0,
+  }),
+  "required",
+  "with tool use actually on, Force To Call must still do what the checkbox says",
+);
+
+// ── 4. A multi-round tool turn is still one saved message ──────────────────
+// The saved content is every round's text joined together, and formatGoogleContents replays
+// stored Gemini parts INSTEAD of that content — so parts from the last round alone would read
+// back to the model as half the turn the player saw, with nothing in the transcript to show it.
+
+const preRollParts = [
+  { text: "You lunge for the rail", thoughtSignature: "sig-0" },
+  { functionCall: { name: "roll_dice", args: { notation: "1d20+3" } }, thoughtSignature: "sig-call" },
+];
+const postRollParts = [{ text: " and the timber holds. 17.", thoughtSignature: "sig-1" }];
+
+let savedParts = appendRoundGeminiParts(null, { geminiParts: preRollParts });
+savedParts = appendRoundGeminiParts(savedParts, { geminiParts: postRollParts });
+assert.equal(
+  (savedParts ?? []).map((part) => (part as { text?: string }).text ?? "").join(""),
+  "You lunge for the rail and the timber holds. 17.",
+  "the parts replayed to the model must be the whole turn the player read, not its last round",
+);
+assert.deepEqual(
+  (savedParts ?? []).map((part) => (part as { thoughtSignature?: string }).thoughtSignature),
+  ["sig-0", "sig-1"],
+  "each round keeps its own thought signature: Gemini 3 rejects a part whose signature moved",
+);
+assert.ok(
+  (savedParts ?? []).every((part) => !(part as { functionCall?: unknown }).functionCall),
+  "a functionCall must never be saved: nothing persists its functionResponse, and Gemini rejects the orphan",
+);
+assert.equal(
+  appendRoundGeminiParts(null, { geminiParts: [preRollParts[1]] }),
+  null,
+  "a round that produced only a tool call leaves nothing to replay",
+);
+assert.equal(
+  appendRoundGeminiParts(savedParts, undefined),
+  savedParts,
+  "a provider that reports no parts must not disturb the parts already saved",
+);
+assert.equal(
+  appendRoundGeminiParts(savedParts, { geminiParts: "not an array" }),
+  savedParts,
+  "a malformed metadata payload must not disturb the parts already saved",
+);
+
+// ── 5. The message-extra shape a rolled die is saved as ────────────────────
 
 const [rolled] = await executeToolCalls([
   { id: "call-1", type: "function", function: { name: "roll_dice", arguments: JSON.stringify({ notation: "2d6+3" }) } },
@@ -227,8 +299,13 @@ assert.equal(refused?.success, false, "the tool still rejects notation it cannot
 assert.equal(parseRollDiceToolResult(refused!.result), null, "a refusal must never render as a dice card");
 assert.equal(parseRollDiceToolResult("not json"), null);
 assert.equal(parseRollDiceToolResult(JSON.stringify({ notation: "1d20", rolls: [], modifier: 0, total: 4 })), null);
+assert.equal(
+  parseRollDiceToolResult(JSON.stringify({ notation: "1d20", rolls: [4], modifier: 0, total: "17" })),
+  null,
+  "a total the card cannot do arithmetic on must not reach the card",
+);
 
-// ── 4. update_game_state narrowed to the two types that persist ────────────
+// ── 6. update_game_state narrowed to the two types that persist ────────────
 // The other four were answered with `applied: true` and then dropped on the floor.
 // Whether these two should persist at all is issue #5898's question, not this one's.
 
@@ -285,12 +362,16 @@ assert.equal(
   "an update type that is written back may still report that it applied",
 );
 
-// ── 5. The GM prompt line, without which the tool is attached and never used ──
+// ── 7. The GM prompt line, without which the tool is attached and never used ──
 
 const reminder = buildGmFormatReminder({ hasSceneModel: false, turnNumber: 1 } as Parameters<
   typeof buildGmFormatReminder
 >[0]);
-assert.match(reminder, /roll_dice/, "every game turn's format reminder must teach the GM to call the dice tool");
+assert.match(
+  reminder,
+  /- roll_dice is a real die you can throw\. Call it/,
+  "every game turn's format reminder must teach the GM to call the dice tool",
+);
 assert.match(reminder, /Never invent a die result/i, "the prompt must forbid inventing the number");
 assert.match(
   reminder,
@@ -307,6 +388,47 @@ assert.match(
   playerRolledReminder,
   /Use their roll rather than calling the tool again/,
   "a turn the player already rolled for must not ask the GM to re-roll it",
+);
+
+// ── 8. The route wiring no importable helper can reach ─────────────────────
+// Who is offered the tool, the live card, and the saved card are three lines in the route.
+// Every check above passes with all three deleted, so anchor them against the source the way
+// maintenance-lifecycle.regression.ts anchors this same file.
+
+const generateRouteSource = readFileSync(
+  new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+  "utf8",
+);
+
+assert.match(
+  generateRouteSource,
+  /autoAttachToolNames: chatMode === "game" && !input\.impersonate \? GAME_MODE_AUTO_ATTACH_TOOL_NAMES : \[\]/u,
+  "only a game turn the GM is narrating may auto-attach the dice tool",
+);
+assert.match(
+  generateRouteSource,
+  /toolChoice: resolveMainGenerationToolChoice\(\{ chatMetadata: chatMeta, enableChatTools, round \}\)/u,
+  "the tool choice must be told whether the user's toggle is on, not just what the chat metadata holds",
+);
+assert.match(
+  generateRouteSource,
+  /\.\.\.\(rolled \? \{ diceRollResult: rolled \} : \{\}\)/u,
+  "the tool_result event must carry the parsed roll, or no card can show while the turn runs",
+);
+assert.match(
+  generateRouteSource,
+  /extraUpdate\.diceRollResult = toolDiceRollResult;/u,
+  "the roll must be saved on the message extra, or it is gone the moment the page reloads",
+);
+assert.match(
+  generateRouteSource,
+  /geminiResponseParts = appendRoundGeminiParts\(geminiResponseParts, result\.providerMetadata\)/u,
+  "every tool round must fold its Gemini parts into the ones the message is saved with",
+);
+assert.match(
+  generateRouteSource,
+  /geminiResponseParts = appendRoundGeminiParts\(geminiResponseParts, finalResult\.providerMetadata\)/u,
+  "the final tool follow-up must fold its parts in too, rather than replacing the rounds before it",
 );
 
 console.info("Game Mode dice-tool regression passed.");

@@ -531,8 +531,9 @@ function rollDice(args: Record<string, unknown>): Record<string, unknown> {
 
 // The only two update types the generation route writes back to the game state.
 // Everything else this tool used to accept was answered with `applied: true` and
-// then silently dropped; the manifest no longer offers those, and this guard is
-// the readable refusal for anything that still reaches the executor.
+// then silently dropped. The manifest enum is what the model is actually held to —
+// argument validation rejects a dead type before the executor runs — so the guard
+// below is defence in depth for any caller that reaches it without that schema.
 export const PERSISTED_GAME_STATE_UPDATE_TYPES = ["location_change", "time_advance"] as const;
 
 function updateGameState(args: Record<string, unknown>, _gameState?: Record<string, unknown>): Record<string, unknown> {

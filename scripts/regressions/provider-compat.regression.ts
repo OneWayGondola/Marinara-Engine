@@ -1618,10 +1618,29 @@ assert.equal(isOpenRouterApiUrl("https://openrouter.ai/api/v1"), true);
 assert.equal(isOpenRouterApiUrl("https://api.openrouter.ai/v1"), true);
 assert.equal(isOpenRouterApiUrl("https://openrouter.ai.example.com/v1"), false);
 assert.equal(isOpenRouterApiUrl("not a URL"), false);
-assert.equal(resolveMainGenerationToolChoice({ forceToolCall: true }, 0), "required");
-assert.equal(resolveMainGenerationToolChoice({ forceToolCall: "true" }, 0), "required");
-assert.equal(resolveMainGenerationToolChoice({ forceToolCall: true }, 1), "auto");
-assert.equal(resolveMainGenerationToolChoice({ forceToolCall: false }, 0), "auto");
+assert.equal(
+  resolveMainGenerationToolChoice({ chatMetadata: { forceToolCall: true }, enableChatTools: true, round: 0 }),
+  "required",
+);
+assert.equal(
+  resolveMainGenerationToolChoice({ chatMetadata: { forceToolCall: "true" }, enableChatTools: true, round: 0 }),
+  "required",
+);
+assert.equal(
+  resolveMainGenerationToolChoice({ chatMetadata: { forceToolCall: true }, enableChatTools: true, round: 1 }),
+  "auto",
+);
+assert.equal(
+  resolveMainGenerationToolChoice({ chatMetadata: { forceToolCall: false }, enableChatTools: true, round: 0 }),
+  "auto",
+);
+// Force To Call is a Function Calling panel setting and the panel hides it while tool use is
+// off, so a chat can hold one the user cannot see or clear. It must not reach a tool the
+// engine attached on its own.
+assert.equal(
+  resolveMainGenerationToolChoice({ chatMetadata: { forceToolCall: true }, enableChatTools: false, round: 0 }),
+  "auto",
+);
 assert.equal(normalizeCohereOpenAIBaseUrl("https://api.cohere.com"), "https://api.cohere.ai/compatibility/v1");
 assert.equal(normalizeCohereOpenAIBaseUrl("https://api.cohere.ai/"), "https://api.cohere.ai/compatibility/v1");
 assert.equal(normalizeCohereOpenAIBaseUrl("https://api.cohere.com/v1"), "https://api.cohere.ai/compatibility/v1");

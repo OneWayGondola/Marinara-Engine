@@ -514,6 +514,7 @@ import {
   type GenerationPromptMessage,
 } from "../services/generation/prompt-message-scope.js";
 import {
+  appendRoundGeminiParts,
   collectPastReasoningMetadata,
   limitPastReasoningMetadata,
   readChatCompletionsReasoningMetadata,
@@ -6491,7 +6492,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     minP: minP || undefined,
                     stop: stopSequences.length ? stopSequences : undefined,
                     tools: toolDefs,
-                    toolChoice: resolveMainGenerationToolChoice(chatMeta, round),
+                    toolChoice: resolveMainGenerationToolChoice({ chatMetadata: chatMeta, enableChatTools, round }),
                     enableCaching: conn.enableCaching === "true",
                     anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
                     cachingAtDepth: conn.cachingAtDepth ?? 5,
@@ -6540,8 +6541,9 @@ export async function generateRoutes(app: FastifyInstance) {
               // Gemini thought signatures reach this branch as providerMetadata rather than
               // through onResponseParts, which is only wired on the no-tools path. Without
               // this the saved message loses its parts and Gemini 3 rejects the replay.
-              const roundGeminiParts = result.providerMetadata?.geminiParts;
-              if (Array.isArray(roundGeminiParts)) geminiResponseParts = roundGeminiParts;
+              // Rounds accumulate: the saved content is every round's text, so the saved
+              // parts have to be every round's parts.
+              geminiResponseParts = appendRoundGeminiParts(geminiResponseParts, result.providerMetadata);
 
               // Accumulate usage across tool rounds
               if (result.usage) {
@@ -6609,11 +6611,14 @@ export async function generateRoutes(app: FastifyInstance) {
                 // parsed result on the event so the client can show the card while the turn is
                 // still running, and remember it for the saved message. The raw tool result the
                 // model reads is untouched.
-                const rolled =
-                  chatMode === "game" && !input.impersonate && tr.name === "roll_dice" && tr.success
-                    ? parseRollDiceToolResult(tr.result)
-                    : null;
+                const cardEligible = chatMode === "game" && !input.impersonate && tr.name === "roll_dice" && tr.success;
+                const rolled = cardEligible ? parseRollDiceToolResult(tr.result) : null;
                 if (rolled) toolDiceRollResult = rolled;
+                // A roll the model was handed but the player never sees cannot be diagnosed
+                // from the transcript alone, so say when a card is dropped.
+                if (cardEligible && !rolled) {
+                  logger.warn("roll_dice succeeded but its result could not be read back as a dice card");
+                }
                 sendSseEvent(reply, {
                   type: "tool_result",
                   data: {
@@ -6760,8 +6765,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 if (finalResult.content && fullResponse.length === prevLen) {
                   await writeContentChunked(finalResult.content);
                 }
-                const finalGeminiParts = finalResult.providerMetadata?.geminiParts;
-                if (Array.isArray(finalGeminiParts)) geminiResponseParts = finalGeminiParts;
+                geminiResponseParts = appendRoundGeminiParts(geminiResponseParts, finalResult.providerMetadata);
                 if (finalResult.usage) {
                   if (!usage) {
                     usage = { ...finalResult.usage };
@@ -7576,9 +7580,11 @@ export async function generateRoutes(app: FastifyInstance) {
               chatMode === "conversation" && !input.impersonate ? conversationCommandContent : null;
             extraUpdate.generationReplay = buildGenerationReplay(input);
             extraUpdate.startsNewAssistantBubble = startsNewAssistantBubble;
-            // Same message-extra /roll writes, so a GM-called roll keeps its card in the
-            // transcript instead of living only in the live overlay. Cleared when this swipe
-            // rolled nothing, so a reroll of a swipe that did cannot leave its card behind.
+            // Same message-extra /roll writes, so a GM-called roll survives a reload wherever
+            // the chat surfaces render it. The Game surface itself still draws its card from
+            // the live store, exactly as it does for /roll, so dismissing it there still
+            // dismisses it. Only the last roll of a multi-roll turn is kept. Cleared when this
+            // swipe rolled nothing, so a reroll of a swipe that did cannot leave its card behind.
             extraUpdate.diceRollResult = toolDiceRollResult;
             // Cache the final prompt (what was actually sent to the model) for Peek Prompt
             extraUpdate.cachedPrompt = finalPromptSent.map((m) => ({

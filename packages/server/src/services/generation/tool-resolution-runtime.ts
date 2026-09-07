@@ -205,11 +205,20 @@ function booleanFalseText(value: unknown): boolean {
   return value === false || value === "false" || value === "0" || value === 0;
 }
 
-export function resolveMainGenerationToolChoice(
-  chatMetadata: Record<string, unknown>,
-  round: number,
-): "auto" | "required" {
-  return round === 0 && booleanText(chatMetadata.forceToolCall) ? "required" : "auto";
+/**
+ * Force To Call is a Function Calling panel setting, and the panel hides it whenever
+ * "Enable Tool Use" is off — so a chat can hold a stale `forceToolCall` the user can
+ * neither see nor clear. It only means anything while that toggle is on: a tool the
+ * engine attached by itself (Game Mode's dice) must never be forced by it, or every
+ * game turn would open with a roll the scene did not ask for.
+ */
+export function resolveMainGenerationToolChoice(args: {
+  chatMetadata: Record<string, unknown>;
+  enableChatTools: boolean;
+  round: number;
+}): "auto" | "required" {
+  const forced = args.round === 0 && args.enableChatTools && booleanText(args.chatMetadata.forceToolCall);
+  return forced ? "required" : "auto";
 }
 
 function isSpotifyMusicAgent(agent: ResolvedAgent): boolean {
