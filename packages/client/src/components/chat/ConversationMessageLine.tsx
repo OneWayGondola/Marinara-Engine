@@ -17,6 +17,7 @@ import {
   ConversationMessageTranslation,
   ConversationMessageSwipes,
   ConversationMessageName,
+  diceRollReplacesMessageContent,
   formatTimestamp,
   type MessageRenderContext,
 } from "./ConversationMessageShared";
@@ -221,18 +222,23 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
                       </div>
                     ))}
                   </div>
-                ) : extra.diceRollResult ? (
+                ) : diceRollReplacesMessageContent(message.role, extra.diceRollResult) ? (
                   <DiceMessageContent diceRollResult={extra.diceRollResult} createdAt={message.createdAt} />
                 ) : (
-                  <MessageContent
-                    content={renderedContent}
-                    mentionNames={mentionNames}
-                    emojiMap={emojiMap}
-                    stickerMap={stickerMap}
-                    onImageOpen={(url) => onImageOpen(url)}
-                    selfCharacterId={selfCharacterId}
-                    galleryIndex={galleryIndex}
-                  />
+                  <>
+                    {extra.diceRollResult ? (
+                      <DiceMessageContent diceRollResult={extra.diceRollResult} createdAt={message.createdAt} />
+                    ) : null}
+                    <MessageContent
+                      content={renderedContent}
+                      mentionNames={mentionNames}
+                      emojiMap={emojiMap}
+                      stickerMap={stickerMap}
+                      onImageOpen={(url) => onImageOpen(url)}
+                      selfCharacterId={selfCharacterId}
+                      galleryIndex={galleryIndex}
+                    />
+                  </>
                 )}
                 {isStreaming && (
                   <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-[var(--foreground)]/50" />

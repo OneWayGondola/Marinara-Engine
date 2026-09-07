@@ -14,8 +14,8 @@ import { useChatGalleryFilenameIndex } from "../../hooks/use-characters";
 import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { PendingTypingDots } from "./PendingTypingDots";
 import { ChatImagePreview } from "./ChatImagePreview";
-import { isDiceRollResult } from "../dice/AnimatedDiceRoll";
-import { DiceMessageContent } from "./ConversationMessageShared";
+import { isDiceRollResult } from "../../lib/dice-roll-result";
+import { DiceMessageContent, diceRollReplacesMessageContent } from "./ConversationMessageShared";
 import {
   User,
   Bot,
@@ -2175,6 +2175,7 @@ export const ChatMessage = memo(function ChatMessage({
   const reasoningDurationMs = readPositiveNumber(extra.generationInfo?.reasoningDurationMs);
   const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
   const diceRollResult = isDiceRollResult(extra.diceRollResult) ? extra.diceRollResult : null;
+  const diceReplacesContent = diceRollReplacesMessageContent(message.role, diceRollResult);
   const canCreateNextSwipe = Boolean(onRegenerate && !isUser);
   const rewriteVersions = resolveMessageRewriteVersions(message.content, extra, isUser);
   const proseGuardianOriginalText = rewriteVersions.originalText;
@@ -2983,11 +2984,8 @@ export const ChatMessage = memo(function ChatMessage({
           <>
             {diceRollResult ? (
               <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
-            ) : showTranslationOnly ? (
-              renderedTranslation
-            ) : (
-              renderedContent
-            )}
+            ) : null}
+            {diceReplacesContent ? null : showTranslationOnly ? renderedTranslation : renderedContent}
             {isStreaming && (
               <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-blue-400" />
             )}
@@ -3122,11 +3120,8 @@ export const ChatMessage = memo(function ChatMessage({
                   >
                     {diceRollResult ? (
                       <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
-                    ) : showTranslationOnly ? (
-                      renderedTranslation
-                    ) : (
-                      renderedContent
-                    )}
+                    ) : null}
+                    {diceReplacesContent ? null : showTranslationOnly ? renderedTranslation : renderedContent}
                   </div>
                 )}
               </div>
@@ -3911,11 +3906,8 @@ export const ChatMessage = memo(function ChatMessage({
                     <>
                       {diceRollResult ? (
                         <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
-                      ) : showTranslationOnly ? (
-                        renderedTranslation
-                      ) : (
-                        renderedContent
-                      )}
+                      ) : null}
+                      {diceReplacesContent ? null : showTranslationOnly ? renderedTranslation : renderedContent}
                       {isStreaming && (
                         <span className="ml-0.5 inline-block h-4 w-[0.125rem] animate-pulse rounded-full bg-white/70" />
                       )}
