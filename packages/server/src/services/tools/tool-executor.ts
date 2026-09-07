@@ -41,12 +41,18 @@ function createToolArgumentsValidator(
   if ("$async" in validate && validate.$async === true) {
     throw new Error("Async tool parameter schemas are not supported");
   }
-  return (args) =>
-    validate(args)
-      ? null
-      : ajv.errorsText(validate.errors, {
-          dataVar: "arguments",
-        });
+  return (args) => {
+    if (validate(args)) return null;
+    const errors = validate.errors ?? [];
+    const text = ajv.errorsText(errors, { dataVar: "arguments" });
+    // "must be equal to one of the allowed values" does not say which, and the model has to
+    // guess. Name them, so a refusal is something it can act on in the next round.
+    const allowed = errors
+      .filter((error) => error.keyword === "enum")
+      .map((error) => (error.params as { allowedValues?: unknown[] }).allowedValues)
+      .find((values): values is unknown[] => Array.isArray(values) && values.length > 0);
+    return allowed ? `${text} (${allowed.join(", ")})` : text;
+  };
 }
 
 export interface ToolExecutionResult {
@@ -523,7 +529,22 @@ function rollDice(args: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+// The only two update types the generation route writes back to the game state.
+// Everything else this tool used to accept was answered with `applied: true` and
+// then silently dropped; the manifest no longer offers those, and this guard is
+// the readable refusal for anything that still reaches the executor.
+export const PERSISTED_GAME_STATE_UPDATE_TYPES = ["location_change", "time_advance"] as const;
+
 function updateGameState(args: Record<string, unknown>, _gameState?: Record<string, unknown>): Record<string, unknown> {
+  const type = String(args.type ?? "");
+  if (!(PERSISTED_GAME_STATE_UPDATE_TYPES as readonly string[]).includes(type)) {
+    return {
+      error: `update_game_state cannot apply "${type}".`,
+      hint: "Only location_change and time_advance are stored. Describe stat, inventory and quest changes in the narration instead.",
+      supportedTypes: [...PERSISTED_GAME_STATE_UPDATE_TYPES],
+    };
+  }
+
   // Returns the update instruction — the client/agent pipeline applies it
   return {
     applied: true,
