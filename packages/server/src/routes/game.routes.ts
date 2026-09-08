@@ -121,7 +121,7 @@ import {
 } from "../services/game/checkpoint.service.js";
 import { resolveChatSkillCheck } from "../services/game/skill-check-resolution.service.js";
 import { applyAllSegmentEdits, stripGmCommandTags } from "../services/game/segment-edits.js";
-import { processLorebooks } from "../services/lorebook/index.js";
+import { processLorebooks, type LorebookScanResult } from "../services/lorebook/index.js";
 import {
   GAME_LOREBOOK_KEEPER_SOURCE_ID,
   resolveLorebookScopeExclusions,
@@ -185,6 +185,7 @@ import {
   isTerminal as isTacticalTerminal,
   TERRAIN_DATA,
   extractLeadingThinkingBlocks,
+  LIMITS,
   type RPGStatsConfig,
 } from "@marinara-engine/shared";
 import {
@@ -10741,6 +10742,35 @@ export async function gameRoutes(app: FastifyInstance) {
   // dedicated rate-limit class and the per-chat asset-generation lock bound the
   // spend. Modeled on /game/scene-wrap, with the illustrator's repair
   // round-trip instead of a blind retry.
+  //
+  // Token ceiling for the player's own lorebook selection, and it is the FIRST of
+  // two walls rather than the only one.
+  //
+  // This one is the lorebook service's current-location budget, which defaults to
+  // 2,048 tokens — sized for the lore a location carries by itself, not for a
+  // selection somebody made by hand against a budget readout — and silently
+  // keeping 5 of 8 picked entries is the invisible-budget failure this feature
+  // exists to avoid. 3,000 is the picker's own 12,000-character figure at the
+  // service's ceil(len/4) estimate, and this route is the only caller that raises
+  // it; every other one keeps 2,048.
+  //
+  // The SECOND wall is each lorebook's own tokenBudget, applied after this one in
+  // trySelectBudgetedLorebookEntry and not overridable by any caller — it belongs
+  // to whoever owns the book. Its schema default is 2,048 (db/schema/lorebooks.ts),
+  // which sits BELOW the number raised here, so inside a single book left on that
+  // default this override buys nothing: eight 350-token entries clear 3,000 and
+  // then five of them fit 2,048. Raising this does not make the player's whole
+  // selection arrive; what it does is stop the FIRST wall from cutting a selection
+  // that the book itself would have carried. The drops are reported either way,
+  // with blockedBy naming which wall bound, so the response never lies about it —
+  // and the picker budgets per book, against the book's own figure, for the same
+  // reason. Both walls are pinned in experience-lore-entries.regression.ts.
+  //
+  // forcedEntriesOnly skips both ordinary and recursive activation so constant
+  // entries cannot re-enter after being reported as skipped. Legacy /setup and
+  // spatial callers keep their existing scan behavior, tracked separately in #5943.
+  const EXPERIENCE_LORE_TOKEN_BUDGET = 3_000;
+
   const experienceGenerationSchema = z.object({
     /** The package's guidance: what to produce, the schema description, vocabularies. */
     instructions: z.string().min(1).max(16_000),
@@ -10777,6 +10807,15 @@ export async function gameRoutes(app: FastifyInstance) {
     connectionId: z.string().optional(),
     /** Optional tightening of the stored max-output-token parameter; never a raise. */
     maxTokens: z.number().int().min(256).max(8_192).optional(),
+    /** Lorebook ENTRIES the player picked for this generation — never whole books.
+     *  Omitted or empty is the default and changes nothing: no lookup runs, the
+     *  outbound messages are the ones this route has always sent, and the reply
+     *  carries no lorebook key. Non-empty ALWAYS comes back with that key, even
+     *  when nothing survived the gates — see the protocol note at the return site.
+     *  The ceiling is the same LIMITS.MAX_LOREBOOK_ENTRIES the lorebook service
+     *  already truncates to twice on this path, so the wire cannot promise more
+     *  than the server accepts. */
+    lorebookEntryIds: z.array(z.string()).max(LIMITS.MAX_LOREBOOK_ENTRIES).optional(),
   });
 
   app.post<{ Params: { chatId: string } }>(
@@ -10804,8 +10843,127 @@ export async function gameRoutes(app: FastifyInstance) {
       const gameGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
       const provider = await createGameMainProvider(connections, conn, baseUrl);
 
+      // ── Player-selected lorebook entries ──────────────────────────────────
+      // Default-off. Absent or empty runs nothing at all — no storage read, no
+      // macro context, no append — so the messages below stay the ones this
+      // route has always sent and every existing package is unaffected.
+      //
+      // Non-empty resolves the player's own per-entry picks through the same
+      // machinery /setup's opening-scene block uses (:6691), because a
+      // package-side re-assembly would silently disagree with the Engine's own
+      // lore in the same chat. The package selects; the server assembles.
+      // Entries are named by id and the storage layer still refuses a disabled
+      // entry, a disabled book and an effectively-disabled folder, so a picker
+      // cannot smuggle anything past the safeguards.
+      //
+      // This same flag decides whether the reply carries the lorebook key; the
+      // protocol note at the return site is the whole of that contract.
+      const lorebookSelectionRequested = (input.lorebookEntryIds?.length ?? 0) > 0;
+      let lorebookContext: string | undefined;
+      let lorebookSkippedEntries: LorebookScanResult["budgetSkippedEntries"] = [];
+      let lorebookIncludedEntries = 0;
+      if (lorebookSelectionRequested) {
+        const characters = createCharactersStorage(app.db);
+        const experienceSetupConfig = (meta.gameSetupConfig as GameSetupConfig | null) ?? null;
+        const lorePersonaId = chat.personaId || experienceSetupConfig?.personaId || null;
+        const lorePersona = lorePersonaId ? await characters.getPersona(lorePersonaId) : null;
+        const lorePersonaFields = {
+          description: lorePersona?.description ?? "",
+          personality: lorePersona?.personality ?? "",
+          backstory: lorePersona?.backstory ?? "",
+          appearance: lorePersona?.appearance ?? "",
+          scenario: lorePersona?.scenario ?? "",
+        };
+        const loreChatCharacterIds = parseChatCharacterIds(chat.characterIds);
+        const loreCharacterIds = experienceSetupConfig
+          ? getStoredPartyCharacterIds(meta, experienceSetupConfig, loreChatCharacterIds)
+          : loreChatCharacterIds;
+        const lorePromptMacroContext = await buildPromptMacroContext({
+          db: app.db,
+          characterIds: loreCharacterIds,
+          personaName: lorePersona?.name ?? "User",
+          personaDescription: lorePersonaFields.description,
+          personaFields: lorePersonaFields,
+          variables: {},
+          chatId: req.params.chatId,
+          lastGenerationType: "game_setup",
+          idleDuration: "0 seconds",
+        });
+        const resolveLoreMacrosForFinal = (value: string, lorebookEntryCounts?: Readonly<Record<string, number>>) => {
+          setLorebookEntryCounts(lorePromptMacroContext, lorebookEntryCounts);
+          return resolveMacrosWithVariableSnapshot(value, lorePromptMacroContext);
+        };
+        const loreScopeExclusions = resolveLorebookScopeExclusions("game", meta);
+        const lorebookResult = await processLorebooks(app.db, [], null, {
+          chatId: req.params.chatId,
+          characterIds: loreCharacterIds,
+          personaId: lorePersonaId,
+          excludedLorebookIds: loreScopeExclusions.excludedLorebookIds,
+          excludedSourceAgentIds: loreScopeExclusions.excludedSourceAgentIds,
+          forcedEntryIds: input.lorebookEntryIds,
+          // The selection is exact. Without this the ordinary scope-based scan runs
+          // beside it and every global book — plus anything bound to the party, the
+          // persona or the chat — joins in, constants first, with no messages needed
+          // to activate them. That is right for a chat turn and wrong here: the
+          // player ticked a list, the readout reconciles against that list, and
+          // unpicked content would also spend the budget the list needs.
+          forcedEntriesOnly: true,
+          // ScanOptions defaults these to ["chat"], which would silently refuse
+          // an entry its author filtered to game_setup — the player would tick a
+          // settlement and never learn why the world had not heard of it.
+          generationTriggers: ["game_setup", "game"],
+          // Raises the FIRST of the two walls above: the 2,048-token
+          // current-location default is sized for a location's own attached lore,
+          // not for a deliberate selection. The book's own tokenBudget still
+          // applies after it and no caller can move that one.
+          currentLocationTokenBudget: EXPERIENCE_LORE_TOKEN_BUDGET,
+          // A ticked entry is a selection, not a dice roll: probability: 25 would
+          // otherwise drop it three times in four, silently and unreproducibly.
+          // Every other gate still bites, including enabled and the filters.
+          ignoreForcedEntryProbability: true,
+          resolveContent: resolveLoreMacrosForFinal,
+        });
+        const combinedLore = [
+          lorebookResult.worldInfoBefore,
+          ...lorebookResult.depthEntries.map((entry) => entry.content),
+          lorebookResult.worldInfoAfter,
+        ]
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join("\n\n");
+        lorebookSkippedEntries = lorebookResult.budgetSkippedEntries;
+        lorebookIncludedEntries = lorebookResult.totalEntries;
+        if (combinedLore) {
+          lorebookContext = combinedLore;
+          logger.info(
+            "[game/experience-generation] Injecting %d selected lorebook entries (%d skipped by budget)",
+            lorebookResult.totalEntries,
+            lorebookSkippedEntries.length,
+          );
+        } else {
+          // An answered selection that kept nothing is a real outcome the reply now
+          // reports as includedEntries: 0, so it gets a line of its own rather than
+          // reading as "the lore block never ran" in the log.
+          logger.info(
+            "[game/experience-generation] Selection of %d lorebook entries produced no content (%d reported by budget)",
+            input.lorebookEntryIds?.length ?? 0,
+            lorebookSkippedEntries.length,
+          );
+        }
+      }
+
       const baseMessages: ChatMessage[] = [
-        { role: "system", content: input.instructions },
+        {
+          role: "system",
+          // The system slot, never userContent: the lore must not compete with the
+          // player's own preferences against that field's separate 8,000 cap. The
+          // append happens AFTER experienceGenerationSchema.parse because only the
+          // server can resolve macros, so the lore never passes the 16,000-char
+          // `instructions` cap — the budgets above are the ones that bind it.
+          content: lorebookContext
+            ? `${input.instructions}\n\n## Lorebook entries selected for this world\n\n${lorebookContext}`
+            : input.instructions,
+        },
         {
           role: "user",
           content:
@@ -10961,7 +11119,44 @@ export async function gameRoutes(app: FastifyInstance) {
           }
           try {
             const data = parseJSON(raw);
-            return { ok: true, data };
+            // PROTOCOL — the lorebook key is a PRESENCE contract, not a content
+            // one: it is on every reply to a request that carried a non-empty
+            // lorebookEntryIds, and off every reply to one that did not. Key
+            // present means THIS ENGINE ANSWERED THE SELECTION. Key absent means
+            // this Engine predates the feature, and means nothing else.
+            //
+            // A selection where nothing survived therefore answers
+            // { includedEntries: 0, skippedEntries: [...] } instead of going quiet.
+            // Emitting only when something survived made those two cases the same
+            // bytes on the wire, and the package half reads that shape as "every id
+            // was refused" — a console warning plus a line stored with the seal
+            // forever, on an Engine that had simply never been asked.
+            //
+            // skippedEntries is whatever skip records the gates happened to
+            // produce, and is NOT a census of the refusals: it is the Engine's own
+            // budget diagnostic (which is why a package reads it rather than
+            // computing a second count that would disagree), and every gate that
+            // runs BEFORE the budget leaves no record behind — a disabled entry, a
+            // book storage refuses, an id that no longer exists. Those are visible
+            // only as absence from includedEntries. includedEntries is the number
+            // that always holds, and included + skipped is the whole selection only
+            // when the budget was the only thing that bound.
+            return lorebookSelectionRequested
+              ? {
+                  ok: true,
+                  data,
+                  lorebook: {
+                    includedEntries: lorebookIncludedEntries,
+                    skippedEntries: lorebookSkippedEntries.map((entry) => ({
+                      id: entry.id,
+                      name: entry.name,
+                      lorebookName: entry.lorebookName,
+                      estimatedTokens: entry.estimatedTokens,
+                      blockedBy: entry.blockedBy,
+                    })),
+                  },
+                }
+              : { ok: true, data };
           } catch {
             if (isLikelyTruncatedJsonResponse(raw, finishReason ?? undefined)) {
               return reply.code(422).send({
