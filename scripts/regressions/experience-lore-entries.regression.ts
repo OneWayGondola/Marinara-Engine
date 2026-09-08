@@ -534,7 +534,11 @@ try {
       activeLorebookIds: [book.id],
       currentLocationTokenBudget: 0,
     });
-    assert.equal(automatic.totalEntries, 5, "Ordinary location callers retain the book's automatic token budget");
+    assert.equal(
+      automatic.activatedEntryIds.filter((id) => ids.includes(id)).length,
+      5,
+      "Ordinary location callers retain the book's automatic token budget",
+    );
   }
 
   // Exact selections keep every selected constant without inviting ambient recursion.
