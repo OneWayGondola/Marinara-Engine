@@ -529,6 +529,12 @@ try {
     );
     assert.equal(res.json().lorebook.includedEntries, 8);
     assert.deepEqual(res.json().lorebook.skippedEntries, []);
+    const automatic = await processLorebooks(db, [], null, {
+      forcedEntryIds: ids,
+      activeLorebookIds: [book.id],
+      currentLocationTokenBudget: 0,
+    });
+    assert.equal(automatic.totalEntries, 5, "Ordinary location callers retain the book's automatic token budget");
   }
 
   // Exact selections keep every selected constant without inviting ambient recursion.
