@@ -51,6 +51,7 @@ import { normalizeSpriteExpressionKey, resolveSpriteExpression } from "../../lib
 import { DIALOGUE_QUOTE_CAPTURE_GROUP_PATTERN_SOURCE, stripSurroundingDialogueQuotes } from "../../lib/dialogue-quotes";
 import type { SpriteInfo } from "../../hooks/use-characters";
 import { useTranslate } from "../../hooks/use-translate";
+import { useTranslationStore } from "../../stores/translation.store";
 import { useTTSConfig } from "../../hooks/use-tts";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
@@ -65,6 +66,7 @@ import { getDefaultChatTextColor, useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { parseChatMetadata } from "../../lib/chat-display";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
+import { isMessageHiddenFromUser } from "../../lib/chat-message-visibility";
 import { estimateGameSessionHistoryTokens } from "../../lib/game-session-history";
 import { createMessageMacroResolver, findCharacterByName } from "../../lib/chat-macros";
 import { animateTextHtml } from "./AnimatedText";
@@ -296,6 +298,26 @@ const SYNTHETIC_GAME_START_MESSAGE_RE = /^\s*\[start(?:\s+the)?\s+game\]\s*$/i;
 
 function isSyntheticGameStartMessage(message: Pick<NarrationMessage, "role" | "content">): boolean {
   return message.role === "user" && SYNTHETIC_GAME_START_MESSAGE_RE.test(message.content || "");
+}
+
+// A GM turn that leaves no prose behind — a command-only turn, or one that was
+// nothing but GM verb tags (#5798) — is still saved, as a hidden empty anchor its
+// writes can hang on. Roleplay and Conversation drop those rows while mapping the
+// transcript (`ChatRoleplaySurface`, `ConversationView`); the game surface reads a
+// single "latest GM turn" instead of mapping, so the same filter has to sit where
+// that row is picked or the anchor blanks the narration area. Same triple the
+// server uses to decide a message is worth previewing: visible content, not
+// hidden, not command-only.
+//
+// The commandOnly test is defensive redundancy, not a live filter: the server writes
+// that flag in exactly one place (`generate.routes.ts` empty-response branch) and
+// always sets hiddenFromUser in the same call, so no row the server produces today
+// reaches here on commandOnly alone. It stays for the day one of them is written
+// without the other, and because the server's own preview gate carries both.
+function isNarratableGmMessage(message: NarrationMessage): boolean {
+  if (isMessageHiddenFromUser(message)) return false;
+  if (parseMessageExtraRecord(message.extra).commandOnly === true) return false;
+  return !!message.content?.trim();
 }
 
 function hasExactCachedPrompt(message: Pick<Message, "extra"> | null): boolean {
@@ -1021,7 +1043,7 @@ export function GameNarration({
 }: GameNarrationProps) {
   const { t: localizeUi } = useUiTranslation();
   useRenderTimer("game-narration"); // [#3104 diagnostic]
-  const { translate, translations, translationSources, translating } = useTranslate();
+  const { translate, translations, translationSources, translating, config: translationConfig } = useTranslate();
   const { applyToAIOutput } = useApplyRegex();
   // Parse the chat metadata in a memo (not the store selector) so streaming ticks
   // don't re-parse the whole metadata object on every update.
@@ -1340,10 +1362,57 @@ export function GameNarration({
     // recent turn" — segment edits, voice resolution, log builders, etc.
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i]!;
-      if (msg.role === "assistant" || msg.role === "narrator") return msg;
+      if (msg.role !== "assistant" && msg.role !== "narrator") continue;
+      if (!isNarratableGmMessage(msg)) continue;
+      return msg;
     }
     return null;
   }, [messages]);
+
+  const lastAutoTranslation = useRef<{ id: string; source: string } | null>(null);
+  useEffect(() => {
+    if (!parsedActiveChatMetadata.autoTranslate || isStreaming || !latestAssistant || generationFailed) return;
+    if (
+      translationConfig.chatId !== latestAssistant.chatId ||
+      translationConfig.outputTargetLanguage !==
+        (parsedActiveChatMetadata.translationOutputTargetLang?.trim() ||
+          parsedActiveChatMetadata.translationTargetLang?.trim() ||
+          "en") ||
+      translationConfig.provider !== (parsedActiveChatMetadata.translationProvider || "google")
+    )
+      return;
+    if (useTranslationStore.getState().hiddenTranslationIds[latestAssistant.id]) return;
+    const source = getGameTranslationSource(latestAssistant);
+    if (!source || translating[latestAssistant.id]) return;
+    const extra = parseMessageExtraRecord(latestAssistant.extra);
+    if (
+      typeof extra.translation === "string" &&
+      gameTranslationMatchesMessage(
+        latestAssistant,
+        typeof extra.translationSource === "string" ? extra.translationSource : latestAssistant.content,
+      )
+    )
+      return; // The parent seeds saved translations (including hidden ones); do not request them again.
+    if (lastAutoTranslation.current?.id === latestAssistant.id && lastAutoTranslation.current.source === source) return;
+    // Try each completed source once; failures stay manually retryable, not an API retry loop.
+    lastAutoTranslation.current = { id: latestAssistant.id, source };
+    if (
+      translations[latestAssistant.id] &&
+      gameTranslationMatchesMessage(latestAssistant, translationSources[latestAssistant.id])
+    )
+      return;
+    void translate(latestAssistant.id, source, latestAssistant.chatId, [latestAssistant.content]);
+  }, [
+    parsedActiveChatMetadata.autoTranslate,
+    isStreaming,
+    generationFailed,
+    latestAssistant,
+    translate,
+    translating,
+    translations,
+    translationSources,
+    translationConfig,
+  ]);
 
   // Wheel-nav builds a flat chronological list of log entries — one per visible
   // segment (parsed narration segments for assistant turns + a single player-dialogue
@@ -1384,6 +1453,7 @@ export function GameNarration({
         continue;
       }
       if (msg.role !== "assistant" && msg.role !== "narrator") continue;
+      if (!isNarratableGmMessage(msg)) continue;
       const segs = parseNarrationSegments(msg, speakerColors);
       for (let si = 0; si < segs.length; si++) {
         const seg = segs[si]!;
@@ -3328,6 +3398,8 @@ export function GameNarration({
 
   const renderTranslationPanel = useCallback(
     (message: NarrationMessage | null, translatedText?: string, isTranslating = false, className?: string) => {
+      if (message && !gameTranslationMatchesMessage(message, translationSources[message.id]))
+        translatedText = undefined;
       if (!message || (!translatedText && !isTranslating)) return null;
       return (
         <div className={cn("rounded-xl border border-sky-400/15 bg-sky-500/8 px-3 py-2.5", className)}>
@@ -3347,7 +3419,7 @@ export function GameNarration({
         </div>
       );
     },
-    [gameTextEffectsEnabled, localizeUi],
+    [gameTextEffectsEnabled, localizeUi, translationSources],
   );
 
   const playClickSfx = useCallback(() => {
@@ -3970,6 +4042,34 @@ export function GameNarration({
         {copiedMessageKey === activeCopyKey ? <Check size={11} /> : <Copy size={11} />}
       </button>
     ) : null;
+  const activeTranslateButton =
+    editingContent === null && activeSourceMessage && activeSourceMessage.role !== "system" && !isStreaming ? (
+      <button
+        type="button"
+        onClick={() =>
+          void translate(
+            activeSourceMessage.id,
+            getGameTranslationSource(activeSourceMessage),
+            activeSourceMessage.chatId,
+            [activeSourceMessage.content],
+          )
+        }
+        disabled={activeIsTranslating}
+        className={ACTIVE_SEGMENT_ACTION_BTN}
+        title={localizeUi(
+          activeTranslatedText && gameTranslationMatchesMessage(activeSourceMessage, activeTranslationSource)
+            ? "ui.chat.chatmessage.hideTranslation"
+            : "ui.chat.chatmessage.translate",
+        )}
+        aria-label={localizeUi(
+          activeTranslatedText && gameTranslationMatchesMessage(activeSourceMessage, activeTranslationSource)
+            ? "ui.chat.chatmessage.hideTranslation"
+            : "ui.chat.chatmessage.translate",
+        )}
+      >
+        {activeIsTranslating ? <Loader2 size={11} className="animate-spin" /> : <Languages size={11} />}
+      </button>
+    ) : null;
   const activeEditButton =
     activeCanEditSegment && editingContent === null ? (
       <button
@@ -3993,7 +4093,7 @@ export function GameNarration({
       </button>
     ) : null;
   const activeSegmentActionButtons =
-    activeSaveButton || activeBranchButton || activeCopyButton || activeEditButton ? (
+    activeSaveButton || activeBranchButton || activeCopyButton || activeTranslateButton || activeEditButton ? (
       <div
         onPointerDown={(event) => event.stopPropagation()}
         onPointerUp={(event) => event.stopPropagation()}
@@ -4003,6 +4103,7 @@ export function GameNarration({
           <>
             {activeBranchButton}
             {activeCopyButton}
+            {activeTranslateButton}
             {activeEditButton}
           </>
         )}
@@ -5116,7 +5217,7 @@ export function GameNarration({
                   ref={activeSegmentScrollRef}
                   className={cn(
                     "relative game-narration-prose max-h-40 overflow-y-auto rounded-xl border border-amber-400/20 bg-amber-950/20 px-3 py-2.5 sm:max-h-48",
-                    activeCopyKey && "pr-9",
+                    (activeCopyButton || activeTranslateButton) && "pr-16",
                   )}
                 >
                   <div
@@ -5131,18 +5232,16 @@ export function GameNarration({
                       __html: animateTextHtml(formatNarration(activeVisibleContent, false), gameTextEffectsEnabled),
                     }}
                   />
-                  {activeCopyKey && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleCopyMessage(activeCopyKey, activeCopyText);
-                      }}
-                      className="absolute right-1.5 top-1.5 rounded p-1 text-amber-200/45 transition-colors hover:bg-amber-100/10 hover:text-amber-100/70"
-                      title={localizeUi("lorebook.editor.batch.copy")}
-                      aria-label={localizeUi("lorebook.editor.batch.copy")}
+                  {(activeCopyButton || activeTranslateButton) && (
+                    <div
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onPointerUp={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                      className="absolute right-1.5 top-1.5 flex items-center gap-1"
                     >
-                      {copiedMessageKey === activeCopyKey ? <Check size={11} /> : <Copy size={11} />}
-                    </button>
+                      {activeCopyButton}
+                      {activeTranslateButton}
+                    </div>
                   )}
                 </div>
 

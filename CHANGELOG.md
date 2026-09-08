@@ -4,6 +4,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Documented Capability API 1.14 tracker surfaces, prompt placement and agent lifecycle hooks, plus API 1.15 embedding-configuration refresh for package authors (#5900).
+
+- Dice notation is now read by one shared grammar in the four places that read it as a command — the `roll_dice` tool, the server and client sides of `/roll`, and the GM skill-check tag — instead of four private copies, so `roll_dice` accepts a bare `d20` like the other three already did. Notation whose roll could not be totalled exactly is now rejected as invalid instead of reporting a total that cannot be trusted — both a modifier too large for the engine to count exactly, and a countable modifier whose dice would push the total past that same limit. An oversized custom roll from the Game Mode dice menu is still trimmed and rolled rather than refused, but its card and its narrator line now name the dice actually thrown, so asking for `500d6` reads `100d6` instead of claiming five hundred dice over a hundred (a typed `/roll 500d6` refuses, as it always has). The `{{roll:XdY}}` macro and the dice-roll animation keep their own parsing and are unchanged.
 - Added a storage API that lets a downloaded capability package register and persist its own file tables, with strict table-name validation. No caller is wired to it yet.
 - Removed the unfinished Slurp creator-feed material from the Noodle guides.
 - Updated the timeout reference in `.env.example` to use Slurp consistently.
@@ -38,7 +41,14 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Advanced Parameters now offers Apply, Don't Apply, and Single User Message history formatting while keeping the leading system prompt separate (#5915).
+- NanoGPT connections can use the existing Default, Flex, and Priority service-tier controls. Language connections can configure validated, non-secret custom HTTP headers (#5909, #5910).
+- `/illustrate [prompt]` generates the requested subject without scene or character references; bare `/illustrate` keeps its current behavior (#5914).
+
+- UX feedback sweep: background selection during Roleplay setup and in Roleplay/Game chat settings, scrollable App/Conversation/Roleplay/Game Appearance categories, desktop sidebar widths, and an optional daily Character Library home widget (#5916).
 - Support Diagnostics includes local client build and recovery events to investigate mobile reloads and black screens without collecting chat content or changing appearance settings (#5870).
+- An Agent package can now describe a short list of Game Master actions it wants the GM to be able to take, as a `gm-verbs.json` file shipped inside the package, and the Engine checks that description: an action cannot borrow the name of a built-in Game tag, and the chat setting an action writes has to belong to the package that asked for it (#5798).
+- Capability API 1.16: the Engine now reads those Game Master actions and runs them. Each one becomes a line the GM can use during a Game turn; when the GM uses it, the Engine checks the values, takes the action out of the visible story text, and either saves it into the chat setting the package owns or hands it to the package live while you play. A package needs the `chat-write` permission for any of this, and today no released Agent describes any actions, so nothing changes in an existing game until one does (#5798).
 - Advanced Parameters can keep a chosen number of eligible past assistant reasoning blocks when exclusion is off (default 1; 0 keeps all), preserving provider-native reasoning and local custom-tag thinking. The allowance follows the target-character context; prompt previews, strict role formatting, reasoning-only turns, and encrypted tool-round continuation retain the correct reasoning. Plain-text and structured replay payloads count toward the context estimate; a provider session avoids resending rejected encrypted items without deleting saved thoughts (#5785).
 - Added example text to Assistant Reasoning Prefill without changing saved values (#5864).
 - Illustrator accepts Run Interval 0 for manual-only generation, including typed and stepped cadence in record-based editors, preserving Gallery actions while stopping automatic runs (Marinara-Agents #629).
@@ -78,6 +88,29 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Roleplay Chat Summary can now generate multiple explicit message ranges sequentially, keeping each result as its own chronological batch entry with per-range progress and retry status.
 
 ### Fixed
+
+- Game narration has a Translate action and rejects stale translations after rerolls; automatic translation can start with the first response when enabled during setup. Delayed translations stay with their original chat when switching chats (#5888).
+- Push Story uses the current Director result with or without a preset marker, and Mari consolidates system context for local chat templates (#5931, #5932).
+- Storyboards accept more than six frames (up to the existing 200-section request safety ceiling) and retry unusable local planner output once without reasoning before falling back (#5886).
+- General Settings can place error messages and other notifications at the top or bottom, using the existing saved preferences (#5933).
+
+- Connection test messages honor saved generation parameter overrides and output limits (#5908).
+- Clearing Roleplay trackers asks for confirmation before removing their state (#5911).
+- Update checks read the installed release channel without waiting for GitHub, so staging does not appear as Stable before a check or when the check fails (#5912).
+- Browser regression fixtures disable random Chibi Mari surprise overlays so unrelated controls remain reachable during tests (#5928).
+- Grouped lorebook entries remain selected for their configured Sticky Messages duration (#5913).
+- Lorebook Keeper respects an explicitly selected target during automatic runs, retries, and approval, while retaining automatic destination routing when no target is selected (#5907).
+- Game NPC portraits no longer borrow unrelated same-name library cards or overwrite an existing portrait; legacy loopback avatar links resolve correctly for LAN clients (#5885, #5887).
+
+- Mari's database CLI can address generated IDs beginning with `--` without treating them as options; exact option-name IDs can use the standard `--` separator, and mutation approval/cascade safeguards remain enforced (#5895).
+- Browser regressions share the UI store's typed persistence contract instead of stale preference names/versions, and live Roleplay tests stop their stream before deleting fixtures (#5897, #5928).
+- Narrow desktop windows switch to the existing overlay navigation when the configured sidebar widths leave too little room for topbar buttons. Desktop Roleplay connection/persona pickers match the other input menus, Background drawers include help, and Achievements retain inner padding on desktop and mobile (#5916).
+- Editors now show their sections in one continuous form, track the section being read, and save unsaved character, persona, lorebook and preset fields before leaving; failed saves keep the editor open. Media/library sections load when approached, pending saves honor the latest navigation, and newly added lorebook entries scroll into view (#5916).
+- Background Library search and actions fit mobile screens, Default uses the accent color, and the selection marker no longer overlaps the drag handle. Settings mode options use the current rounded-square styling (#5916).
+- Background choices save without a cancellable debounce and stay ordered, so a delayed earlier pick cannot undo a newer choice or Clear selection (#5916).
+- Home Character Library previews use equal-sized cards without scrolling or extra action buttons. A card opens its full-library details; the widget body opens the library, and the Recent Chats widget body opens Chats without interfering with drag handles or individual chat cards (#5916).
+- Hidden sidebar and Settings panels suspend their effects without discarding local state, mobile panel reopening no longer remounts every previously visited panel, and iOS library/sidebar overlays avoid live backdrop blur while keeping covered text behind opaque themed surfaces. Modals release their entry transform after opening to reduce retained compositing work; physical iPhone crash confirmation remains necessary (#5916).
+- A Game turn that leaves no story text behind no longer blanks the narration panel (#5798). When the GM's reply was nothing but actions, or the game saved one of its hidden bookkeeping rows, the panel dropped the scene you were reading and fell back to its empty "send an action to begin the scene" state. The last turn you can actually read now stays on screen and the turn passes silently, the way a command-only turn already does in Conversation.
 
 - Restored Character Editor sections to the same desktop topbar row as the name, avatar, and actions. Editor section buttons adapt their size and spacing before falling back to the existing compact menu on narrow layouts (#5905).
 
