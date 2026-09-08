@@ -581,6 +581,8 @@ function getBudgetSkipReason(exceedsLorebookBudget: boolean, exceedsGlobalBudget
 }
 
 function normalizeLorebookEntryLimit(value: unknown): number {
+  // Exact selections supply an unbounded in-memory limit; persisted limits still normalize below.
+  if (value === Number.POSITIVE_INFINITY) return value;
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return LIMITS.LOREBOOK_ENTRY_LIMIT_DEFAULT;
   return Math.max(LIMITS.LOREBOOK_ENTRY_LIMIT_MIN, Math.min(LIMITS.LOREBOOK_ENTRY_LIMIT_MAX, Math.trunc(parsed)));
@@ -1018,7 +1020,8 @@ export async function processLorebooks(
      *  not run at all, so no global book, no party/persona/chat-bound book and no
      *  constant entry can join the result. For a caller whose ids are a person's own
      *  selection rather than a turn's context — ambient additions there are content
-     *  nobody asked for, and they would also spend the budget the selection needs.
+     *  nobody asked for. Exact player selections bypass automatic token/count
+     *  budgets; the caller must check the completed prompt against model context.
      *  Omitted keeps the ordinary scan, so every existing caller is unchanged. */
     forcedEntriesOnly?: boolean;
     /** Token ceiling for the forced entries alone. Omitted keeps the 2,048-token
@@ -1079,8 +1082,10 @@ export async function processLorebooks(
   // BEFORE it consults activeLorebookIds, so an empty list is not a refusal.
   const forcedEntriesOnly = options?.forcedEntriesOnly === true;
   const allLorebooks = (await storage.list()) as unknown as Lorebook[];
-  const requestedForcedEntryIds = uniqueStrings(options?.forcedEntryIds ?? []).slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
+  const forcedIds = uniqueStrings(options?.forcedEntryIds ?? []);
+  const requestedForcedEntryIds = forcedEntriesOnly ? forcedIds : forcedIds.slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
   let forcedEntries = (await storage.listEligibleEntriesByIds(requestedForcedEntryIds, {
+    unlimited: forcedEntriesOnly,
     excludedLorebookIds: options?.excludedLorebookIds,
     excludedSourceAgentIds: options?.excludedSourceAgentIds,
   })) as unknown as LorebookEntry[];
@@ -1094,9 +1099,14 @@ export async function processLorebooks(
       ]),
     ).values(),
   );
-  const relevantLorebooksById = new Map(effectiveLorebooks.map((lorebook) => [lorebook.id, lorebook]));
+  const relevantLorebooksById = new Map(
+    effectiveLorebooks.map((lorebook) => [
+      lorebook.id,
+      forcedEntriesOnly ? { ...lorebook, tokenBudget: 0, entryLimit: Number.POSITIVE_INFINITY } : lorebook,
+    ]),
+  );
 
-  // Forced entries bypass normal ownership scope, but share the same active-entry safeguards and budgets.
+  // Forced entries bypass ownership scope while retaining active-entry safeguards.
   // Under an exact selection there is no ordinary set to merge with: allEntries is
   // the forced entries alone, which is what keeps unpicked content out of the
   // keyword scan, out of the recursion pool and out of the budgets below.
@@ -1164,7 +1174,7 @@ export async function processLorebooks(
     resolveContent = (value) => originalResolver(value, lorebookEntryCounts);
   }
 
-  const tokenBudget = options?.tokenBudget ?? LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET;
+  const tokenBudget = forcedEntriesOnly ? 0 : (options?.tokenBudget ?? LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET);
   const timingStates = toTimingStateMap(options?.entryTimingStates);
   const currentMessageIndex = messages.length;
   const matchingContext = await buildLorebookMatchingContext(
@@ -1235,7 +1245,7 @@ export async function processLorebooks(
   const locationBudgetResult = applyCurrentLocationLoreBudget(
     forcedActivatedEntries,
     relevantLorebooksById,
-    options?.currentLocationTokenBudget,
+    forcedEntriesOnly ? 0 : options?.currentLocationTokenBudget,
   );
   // Emptying the scan's INPUTS is not the same as skipping the scan: under an exact
   // selection `allEntries` is the selection itself, and a constant entry activates

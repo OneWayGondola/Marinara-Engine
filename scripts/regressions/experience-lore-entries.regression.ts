@@ -1,54 +1,6 @@
-// Pixelforge 0.16.2 slice 3 regression: player-selected lorebook ENTRIES reaching
-// POST /api/game/:chatId/experience-generation.
-//
-// A game-surface Experience writes its world in one host-run call. Before this
-// change no lorebook content reached that call in any form, so a player who had
-// already written the history of a place got a world that had never heard of it.
-// The route now takes a list of ENTRY ids — never whole books — and resolves them
-// through the same lorebook machinery the /setup opening-scene block uses.
-//
-// Pinned behaviors:
-//   1. DEFAULT-OFF, and this is the headline. An absent key and an explicit empty
-//      list both produce the exact outbound messages the route sent before, and a
-//      response with no lorebook key at all. Nothing is looked up.
-//   2. D-13: an entry the player ticked bypasses the probability roll, and ONLY
-//      the roll. enabled, the character/tag filters, the generation-trigger filter
-//      and sticky/cooldown/delay timing all still bite.
-//   3. D-13 leak guard: ignoreProbability is read by passesForcedEntryActivationGates
-//      and nowhere else, so an ordinary keyword match still rolls in the same call
-//      and the shared probabilityDecisions map is never seeded behind its back.
-//   4. D-12: the forced-entry location budget is the caller's to set. The route
-//      spends the picker's own 3,000-token figure instead of the 2,048-token
-//      current-location default, so a selection the player was shown as affordable
-//      arrives whole.
-//   5. D-14: when a selection DOES overrun, whole entries are dropped following the
-//      mechanism's own order — constants first, then position in the lorebook — and
-//      never the end of the supplied id list. No entry is half-included.
-//   6. budgetSkippedEntries is the single source of the omitted count: the number
-//      the response reports equals the number of entries actually absent from the
-//      prompt, and names them.
-//   7. The wire count ceiling is LIMITS.MAX_LOREBOOK_ENTRIES — 101 ids is a clean
-//      400 rather than a silent truncation.
-//   8. A disabled entry cannot be smuggled in by ticking it.
-//   9. EXACT SELECTION. A selection is the whole of what this call carries. A global
-//      lorebook's constant entry activates with no messages at all, so without this
-//      the player's one tick would drag in every constant in the product; this is a
-//      world-writing request, not a chat turn. Pinned in three directions: absent
-//      here; still present for every OTHER lorebook caller; and still present for a
-//      caller that passes forced ids WITHOUT asking for an exact selection, which is
-//      what every pre-existing forced-entry caller does.
-//  10. The ROUTE is what supplies the game generation triggers. ScanOptions defaults
-//      to ["chat"], so a route that forgets them refuses a game_setup entry with no
-//      error anyone could see. Part 1 pins the gate; this pins the caller.
-//  11. There are TWO walls, and the second one is the one the route cannot move. The
-//      per-book tokenBudget defaults to 2,048 and applies after the location budget,
-//      so inside an ordinary book the raised 3,000-token override buys nothing.
-//  12. A reported drop is a REAL drop. The exact-selection rule has to skip the
-//      ordinary scan rather than empty its inputs, and has to suppress the book
-//      filter rather than only the entry list — otherwise a picked CONSTANT the
-//      location budget dropped is re-activated (directly, or through the recursion a
-//      stray global book switches on) and the response names as set aside an entry
-//      it actually sent.
+// Real-route proof for exact world-generation lore selections. Automatic token/count
+// budgets must not discard selected entries; scope/disabled gates still apply.
+// Oversized initial and repair prompts fail explicitly before their provider call.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import Fastify from "../../packages/server/node_modules/fastify/fastify.js";
@@ -205,13 +157,14 @@ let previousMainFallbackId: string | null = null;
 
 const VALID_BRIEF = JSON.stringify({ version: 1, settlementName: "Meridian Base" });
 let upstreamBodies: Array<Record<string, unknown>> = [];
+let providerContent = VALID_BRIEF;
 
 const mockProvider = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   upstreamBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ choices: [{ message: { content: VALID_BRIEF }, finish_reason: "stop" }] }));
+  response.end(JSON.stringify({ choices: [{ message: { content: providerContent }, finish_reason: "stop" }] }));
 });
 await new Promise<void>((resolve) => mockProvider.listen(0, "127.0.0.1", resolve));
 const mockAddress = mockProvider.address();
@@ -308,10 +261,7 @@ try {
     assert.equal(Object.prototype.hasOwnProperty.call(empty.json(), "lorebook"), false);
   }
 
-  // ── 2. D-12: the budget the player was shown is the budget the server spends ──
-  // Eight entries of 1,400 characters = 350 tokens each = 2,800 total. The route's
-  // 3,000-token override takes all eight. The 2,048-token default it replaces would
-  // take five and silently drop three — the invisible-budget failure this exists for.
+  // Exact selections include complete entries, including explicitly picked outlets.
   {
     const book = await createBook("Kanto", { tokenBudget: 4_000 });
     const ids: string[] = [];
@@ -320,6 +270,7 @@ try {
         lorebookId: book.id,
         name: `Route ${index}`,
         content: loreContent(`LOREMARK${index}`, 1_400),
+        ...(index === 7 ? { position: 7, outletName: "world" } : {}),
         order: 100 + index,
       } as Parameters<typeof lorebooks.createEntry>[0]);
       assert.ok(entry);
@@ -333,22 +284,14 @@ try {
 
     const prompt = systemPromptOf();
     for (let index = 0; index < 8; index += 1) {
-      assert.ok(
-        prompt.includes(`LOREMARK${index}`),
-        `Entry ${index} must survive the location budget the route raised (D-12)`,
-      );
+      assert.ok(prompt.includes(`LOREMARK${index}`), `Selected entry ${index} must reach the model`);
     }
     assert.ok(prompt.startsWith(INSTRUCTIONS), "The lore is appended to the package's instructions, not spliced in");
     assert.deepEqual(res.json().lorebook.skippedEntries, [], "A selection inside the budget skips nothing");
     assert.equal(res.json().lorebook.includedEntries, 8);
   }
 
-  // ── 3. D-14 + the omitted count: drops follow the mechanism, and are reported ──
-  // Ten entries of 1,600 characters = 400 tokens each = 4,000 total against a
-  // 3,000-token ceiling, so three must go. The entry placed LAST in the book is a
-  // constant: under lorebookSelectionOrder it sorts first and survives, while three
-  // entries EARLIER in the book do not. That is the order the plan promises to
-  // describe rather than override.
+  // Explicit picks bypass the old location budget and retain whole entries.
   {
     const book = await createBook("Johto", { tokenBudget: 8_000 });
     const ids: string[] = [];
@@ -374,8 +317,8 @@ try {
     const present = [...Array(10).keys()].filter((index) => prompt.includes(`DROPMARK${index}`));
     assert.deepEqual(
       present,
-      [0, 1, 2, 3, 4, 5, 9],
-      "D-14: the constant survives from the END of the book while entries earlier in it drop",
+      [...Array(10).keys()],
+      "Every explicitly selected entry survives regardless of automatic selection order",
     );
     assert.ok(prompt.includes(`DROPMARK9`), "The constant wins the selection order outright");
 
@@ -391,14 +334,8 @@ try {
     // The count the package shows reads the Engine's own diagnostic, so it cannot
     // disagree with what actually happened.
     const skipped = res.json().lorebook.skippedEntries as Array<{ name: string; blockedBy: string }>;
-    assert.equal(skipped.length, 3, "budgetSkippedEntries reports exactly the three that were dropped");
-    assert.equal(res.json().lorebook.includedEntries, 7);
-    assert.deepEqual(
-      skipped.map((entry) => entry.name).sort(),
-      ["Town 6", "Town 7", "Town 8"],
-      "...and names them, so the omitted line never invents a second count",
-    );
-    for (const entry of skipped) assert.equal(entry.blockedBy, "location", "Dropped by the location budget");
+    assert.deepEqual(skipped, []);
+    assert.equal(res.json().lorebook.includedEntries, 10);
   }
 
   // ── 4. A ticked entry is not a dice roll, through the route (D-13) ──
@@ -564,13 +501,7 @@ try {
     assert.equal(res.json().lorebook.includedEntries, 1);
   }
 
-  // ── 7. The second wall: the per-book budget, which the route cannot move ──
-  // This book carries the schema's own 2,048-token default because its owner never
-  // changed it, which is the ordinary case. The route's 3,000-token override gets
-  // all eight entries past the FIRST wall (8 × 350 = 2,800); the per-book budget
-  // then takes five and reports three, naming itself as the cause. This is the case
-  // the D-12 comment must not promise away: the override raises the location wall
-  // and nothing else.
+  // A book's default automatic budget does not shrink a player's selection.
   {
     const book = await createBook("Default-budget book");
     const ids: string[] = [];
@@ -593,39 +524,14 @@ try {
     const prompt = systemPromptOf();
     assert.deepEqual(
       [...Array(8).keys()].filter((index) => prompt.includes(`WALLMARK${index}`)),
-      [0, 1, 2, 3, 4],
-      "Inside a default book the per-book 2,048 binds below the raised location budget: 5 of 8, not 8 of 8",
+      [...Array(8).keys()],
+      "The book budget only governs automatic activation",
     );
-    assert.equal(res.json().lorebook.includedEntries, 5);
-
-    const skipped = res.json().lorebook.skippedEntries as Array<{ name: string; blockedBy: string }>;
-    assert.deepEqual(
-      skipped.map((entry) => entry.name).sort(),
-      ["Ward 5", "Ward 6", "Ward 7"],
-      "...and the three that did not fit are named",
-    );
-    for (const entry of skipped) {
-      assert.equal(
-        entry.blockedBy,
-        "lorebook",
-        "The response names the wall that actually bound — the book's own budget, not the location one",
-      );
-    }
+    assert.equal(res.json().lorebook.includedEntries, 8);
+    assert.deepEqual(res.json().lorebook.skippedEntries, []);
   }
 
-  // ── 8. A reported drop is a real drop, and no global book can undo it ──
-  // Ten CONSTANT entries of 400 tokens each against the 3,000-token location wall,
-  // with the book's own budget raised out of the way so only that wall can bind.
-  //
-  // Two failures share this shape. Emptying the ordinary scan's INPUTS is not the
-  // same as skipping the scan: allEntries is the selection itself here, a constant
-  // needs no messages to activate, so a picked constant the location budget had
-  // just dropped came back through the ordinary scan one line later — while its
-  // skip record stayed on the response. Included plus skipped came to thirteen for
-  // a ten-id selection, which is exactly the disagreement the exact-selection rule
-  // exists to remove. Repeat with recursion enabled on the selected book itself:
-  // neither that setting nor an ambient recursive book may re-scan an exact
-  // selection and readmit its excluded constants.
+  // Exact selections keep every selected constant without inviting ambient recursion.
   for (const recursiveScanning of [false, true]) {
     await createBook("Ambient recursive globals", { isGlobal: true, recursiveScanning: true });
     const book = await createBook("Kalos", { tokenBudget: 8_000, recursiveScanning });
@@ -650,21 +556,13 @@ try {
     const prompt = systemPromptOf();
     assert.deepEqual(
       [...Array(10).keys()].filter((index) => prompt.includes(`HOLDMARK${index}`)),
-      [0, 1, 2, 3, 4, 5, 6],
-      "Seven 400-token constants fit the 3,000-token wall and the other three stay out — a constant is not exempt from the budget it overran",
+      [...Array(10).keys()],
+      "Every selected constant is preserved",
     );
 
     const skipped = res.json().lorebook.skippedEntries as Array<{ name: string; blockedBy: string }>;
-    assert.deepEqual(skipped.map((entry) => entry.name).sort(), ["Vault 7", "Vault 8", "Vault 9"]);
-    for (const entry of skipped) assert.equal(entry.blockedBy, "location");
-    for (const index of [7, 8, 9]) {
-      assert.equal(
-        prompt.includes(`HOLDMARK${index}`),
-        false,
-        `Vault ${index} is reported as set aside, so it must actually be absent — the response is not allowed to name an entry it sent`,
-      );
-    }
-    assert.equal(res.json().lorebook.includedEntries, 7);
+    assert.deepEqual(skipped, []);
+    assert.equal(res.json().lorebook.includedEntries, 10);
     assert.equal(
       (res.json().lorebook.includedEntries as number) + skipped.length,
       ids.length,
@@ -672,21 +570,64 @@ try {
     );
   }
 
-  // ── 9. The wire count ceiling is a clean refusal, not a silent truncation ──
+  // More than 100 entries from one default-budget book reach the model.
   {
-    const chat = await createExperienceChat("count ceiling");
-    const overflow = Array.from({ length: LIMITS.MAX_LOREBOOK_ENTRIES + 1 }, (_, index) => `missing-${index}`);
-    assert.equal(
-      (await post(chat.id, { ...BASE_BODY, lorebookEntryIds: overflow })).statusCode,
-      400,
-      `More than ${LIMITS.MAX_LOREBOOK_ENTRIES} ids is a clean 400 rather than a quietly trimmed selection`,
+    const book = await createBook("Large selection");
+    const ids: string[] = [];
+    for (let index = 0; index <= LIMITS.MAX_LOREBOOK_ENTRIES; index++) {
+      const entry = await lorebooks.createEntry({
+        lorebookId: book.id,
+        name: `Place ${index}`,
+        content: `COUNTMARK${index}.`,
+      } as Parameters<typeof lorebooks.createEntry>[0]);
+      assert.ok(entry);
+      ids.push(entry.id);
+    }
+    const chat = await createExperienceChat("Uncapped count");
+    upstreamBodies = [];
+    const response = await post(chat.id, { ...BASE_BODY, lorebookEntryIds: ids });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().lorebook.includedEntries, ids.length);
+    assert.ok(systemPromptOf().includes(`COUNTMARK${LIMITS.MAX_LOREBOOK_ENTRIES}.`));
+
+    const hugeContent = "Ancient history. ".repeat(50000);
+    const huge = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Ancient world",
+      content: hugeContent,
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    assert.ok(huge);
+    await connections.update(conn.id, { maxContext: 500000 });
+    upstreamBodies = [];
+    const large = await post(chat.id, { ...BASE_BODY, lorebookEntryIds: [huge.id] });
+    assert.equal(large.statusCode, 200, large.body);
+    assert.ok(
+      systemPromptOf().includes(hugeContent.trim()),
+      `A roughly 200k-token selection must arrive whole: input=${hugeContent.length}, prompt=${systemPromptOf().length}, included=${large.json().lorebook.includedEntries}, tail=${systemPromptOf().slice(-60)}`,
     );
-    assert.equal(
-      (await post(chat.id, { ...BASE_BODY, lorebookEntryIds: overflow.slice(0, LIMITS.MAX_LOREBOOK_ENTRIES) }))
-        .statusCode,
-      200,
-      "...and the ceiling itself is accepted",
-    );
+
+    await connections.update(conn.id, { maxContext: 1024 });
+    for (const lorebookEntryIds of [undefined, [huge.id]]) {
+      upstreamBodies = [];
+      const rejected = await post(chat.id, {
+        ...BASE_BODY,
+        instructions: "World instructions. ".repeat(600),
+        lorebookEntryIds,
+      });
+      assert.equal(rejected.statusCode, 422, rejected.body);
+      assert.equal(rejected.json().code, "context_limit");
+      assert.equal(rejected.json().truncated, false);
+      assert.equal(upstreamBodies.length, 0, "Oversized selections and instructions must never reach the provider");
+      if (lorebookEntryIds) assert.match(rejected.json().error, /lorebook entries/);
+    }
+    upstreamBodies = [];
+    providerContent = "invalid response ".repeat(300);
+    const repair = await post(chat.id, BASE_BODY);
+    assert.equal(repair.statusCode, 422, repair.body);
+    assert.equal(repair.json().code, "context_limit");
+    assert.equal(upstreamBodies.length, 1, "The repair's added history must be checked before a second provider call");
+    providerContent = VALID_BRIEF;
+    await connections.update(conn.id, { maxContext: 32768 });
   }
 
   // ── 10. PROTOCOL: a selection is always answered, even when nothing survives ──
@@ -743,12 +684,7 @@ try {
     );
   }
 
-  // ── 11. ...and it reports the refusals the gates did record ──
-  // Two entries, each larger on its own than the 3,000-token location wall, with the
-  // book's own budget raised out of the way so only that wall can bind. Included is
-  // 0 and both are named: the shape a package reads for its omitted-entry line is
-  // the same at zero included as it is at seven, so nothing about the empty case is
-  // special-cased on the way out.
+  // Whole entries above the former location ceiling are included together.
   {
     const book = await createBook("Orre", { tokenBudget: 20_000 });
     const ids: string[] = [];
@@ -768,19 +704,10 @@ try {
     const res = await post(chat.id, { ...BASE_BODY, lorebookEntryIds: ids });
     assert.equal(res.statusCode, 200, res.body);
 
-    assert.equal(
-      systemPromptOf(),
-      INSTRUCTIONS,
-      "A 4,000-token entry does not fit a 3,000-token wall on its own, and neither does the second",
-    );
-    assert.equal(res.json().lorebook.includedEntries, 0);
-    const skipped = res.json().lorebook.skippedEntries as Array<{ name: string; blockedBy: string }>;
-    assert.deepEqual(
-      skipped.map((entry) => entry.name).sort(),
-      ["Colosseum 0", "Colosseum 1"],
-      "An empty inclusion still names every entry the budget turned away",
-    );
-    for (const entry of skipped) assert.equal(entry.blockedBy, "location");
+    assert.ok(systemPromptOf().includes("OVERMARK0"));
+    assert.ok(systemPromptOf().includes("OVERMARK1"));
+    assert.equal(res.json().lorebook.includedEntries, 2);
+    assert.deepEqual(res.json().lorebook.skippedEntries, []);
   }
 } catch (error) {
   scenarioFailed = true;
