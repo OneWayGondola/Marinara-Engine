@@ -17,8 +17,19 @@ const requests: Record<string, unknown>[] = [];
 const provider = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+  const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+  requests.push(body);
   response.writeHead(200, { "content-type": "application/json" });
+  if (typeof body.model === "string" && body.model.startsWith("glm-5.3")) {
+    // An always-reasoning model that spent its whole budget thinking (#5963).
+    response.end(
+      JSON.stringify({
+        choices: [{ message: { content: "", reasoning_content: "…" }, finish_reason: "length" }],
+        usage: { prompt_tokens: 13, completion_tokens: 1024, completion_tokens_details: { reasoning_tokens: 1023 } },
+      }),
+    );
+    return;
+  }
   response.end(JSON.stringify({ choices: [{ message: { content: "hello" } }] }));
 });
 try {
@@ -70,6 +81,29 @@ try {
     if (defaults.stopSequences) assert.deepEqual(sent.stop, defaults.stopSequences);
     assert.deepEqual(sent.messages, [{ role: "user", content: "hi" }]);
   }
+
+  // GLM 5.3 always reasons: the test gives it 1024 tokens instead of 200, and an
+  // empty reply names the spent budget instead of showing a blank success (#5963).
+  const glm = await app.inject({
+    method: "POST",
+    url: "/api/connections",
+    payload: {
+      name: "GLM test fixture",
+      provider: "custom",
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      apiKey: "",
+      model: "glm-5.3",
+      defaultParameters: {},
+    },
+  });
+  assert.equal(glm.statusCode, 200, glm.body);
+  const glmTested = await app.inject({ method: "POST", url: `/api/connections/${glm.json().id}/test-message` });
+  assert.equal(glmTested.json().success, true, glmTested.body);
+  assert.equal(requests.at(-1)!.max_tokens, 1024);
+  assert.equal(
+    glmTested.json().response,
+    "The model used its whole output budget (1024 of 1024 output tokens, 1023 of them reasoning) before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.",
+  );
 } finally {
   try {
     try {
