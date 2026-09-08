@@ -23,6 +23,7 @@ import { resetProfessorMariNavigator } from "../lib/professor-mari-navigation";
 import { DEFAULT_APP_LANGUAGE, type AppLanguage } from "../localization/locale-types";
 import { deferEditorLeave } from "../lib/editor-leave";
 import { UI_PERSISTENCE } from "../lib/ui-persistence";
+import type { ChatWizardDefaults, ChatWizardMode } from "../lib/chat-wizard-defaults";
 
 export type Panel =
   | "chat"
@@ -567,6 +568,8 @@ export type MariPanelSortMode = "az" | "za" | "newest" | "oldest";
 export type MariEditViewMode = "easy" | "raw";
 
 interface UIState {
+  /** Transient: the initial cross-device settings fetch has settled. */
+  settingsSyncReady: boolean;
   showHomeBrowserAddressBar: boolean;
   showHomeBrowserDesktopBookmarksOnOtherTabs: boolean;
   showHomeBrowserMobileBookmarksOnOtherTabs: boolean;
@@ -895,6 +898,7 @@ interface UIState {
   gameNotificationSound: boolean;
   notificationSoundsOnlyWhenUnfocused: boolean;
   notificationPosition: "top" | "bottom";
+  chatWizardDefaults: Partial<Record<ChatWizardMode, ChatWizardDefaults>>;
   conversationBrowserNotifications: boolean;
   conversationMobileNotifications: boolean;
   generationBrowserNotifications: boolean;
@@ -1188,6 +1192,7 @@ interface UIState {
   setGameNotificationSound: (v: boolean) => void;
   setNotificationSoundsOnlyWhenUnfocused: (v: boolean) => void;
   setNotificationPosition: (v: "top" | "bottom") => void;
+  setChatWizardDefaults: (mode: ChatWizardMode, defaults: ChatWizardDefaults | null) => void;
   setConversationBrowserNotifications: (v: boolean) => void;
   setConversationMobileNotifications: (v: boolean) => void;
   setGenerationBrowserNotifications: (v: boolean) => void;
@@ -1424,6 +1429,7 @@ export function pickSyncedSettings(state: UIState) {
     gameNotificationSound: state.gameNotificationSound,
     notificationSoundsOnlyWhenUnfocused: state.notificationSoundsOnlyWhenUnfocused,
     notificationPosition: state.notificationPosition,
+    chatWizardDefaults: state.chatWizardDefaults,
     conversationBrowserNotifications: state.conversationBrowserNotifications,
     conversationMobileNotifications: state.conversationMobileNotifications,
     generationBrowserNotifications: state.generationBrowserNotifications,
@@ -1629,6 +1635,7 @@ export function pickPersistedUIState(state: UIState) {
     gameNotificationSound: state.gameNotificationSound,
     notificationSoundsOnlyWhenUnfocused: state.notificationSoundsOnlyWhenUnfocused,
     notificationPosition: state.notificationPosition,
+    chatWizardDefaults: state.chatWizardDefaults,
     conversationBrowserNotifications: state.conversationBrowserNotifications,
     conversationMobileNotifications: state.conversationMobileNotifications,
     generationBrowserNotifications: state.generationBrowserNotifications,
@@ -1657,6 +1664,7 @@ export const useUIStore = create<UIState>()(
         if (!deferEditorLeave(state, patch, apply)) apply();
       };
       return {
+        settingsSyncReady: false,
         showHomeBrowserAddressBar: true,
         showHomeBrowserDesktopBookmarksOnOtherTabs: true,
         showHomeBrowserMobileBookmarksOnOtherTabs: true,
@@ -1849,6 +1857,7 @@ export const useUIStore = create<UIState>()(
         gameNotificationSound: true,
         notificationSoundsOnlyWhenUnfocused: false,
         notificationPosition: "top",
+        chatWizardDefaults: {},
         conversationBrowserNotifications: false,
         conversationMobileNotifications: false,
         generationBrowserNotifications: false,
@@ -2754,6 +2763,13 @@ export const useUIStore = create<UIState>()(
         setGameNotificationSound: (v) => set({ gameNotificationSound: v }),
         setNotificationSoundsOnlyWhenUnfocused: (v) => set({ notificationSoundsOnlyWhenUnfocused: v }),
         setNotificationPosition: (v) => set({ notificationPosition: v === "bottom" ? "bottom" : "top" }),
+        setChatWizardDefaults: (mode, defaults) =>
+          set((state) => {
+            const next = { ...state.chatWizardDefaults };
+            if (defaults) next[mode] = defaults;
+            else delete next[mode];
+            return { chatWizardDefaults: next };
+          }),
         setConversationBrowserNotifications: (v) => set({ conversationBrowserNotifications: v }),
         setConversationMobileNotifications: (v) => set({ conversationMobileNotifications: v }),
         setGenerationBrowserNotifications: (v) => set({ generationBrowserNotifications: v }),

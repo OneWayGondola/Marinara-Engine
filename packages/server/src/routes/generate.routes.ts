@@ -2573,6 +2573,7 @@ export async function generateRoutes(app: FastifyInstance) {
           );
 
           const assemblerInput: AssemblerInput = {
+            agentHistoryMessageId: input.regenerateMessageId ?? undefined,
             deferMessagePostProcessing: true,
             db: app.db,
             preset: preset as any,
@@ -4108,6 +4109,13 @@ export async function generateRoutes(app: FastifyInstance) {
           chatMode,
           wrapFormat,
           recentMessages: recentMsgs,
+          loadPreviousOutput: (agentId) =>
+            agentsStore.getPreviousOutput(
+              agentId,
+              input.chatId,
+              recentMsgs.at(-1)?.id,
+              input.regenerateMessageId ?? undefined,
+            ),
           mainResponse: null,
           gameState,
           characters: charInfo,
@@ -4164,6 +4172,7 @@ export async function generateRoutes(app: FastifyInstance) {
           authorNotes: authorNotes || null,
           activatedLorebookEntries: lorebookScanSnapshot.activatedEntries.map((entry) => ({
             id: entry.id,
+            name: entry.name,
             content: entry.content,
           })),
           ...(customAgentVectorAccessEnabled
@@ -5336,7 +5345,9 @@ export async function generateRoutes(app: FastifyInstance) {
           const preGenRunMessageId = latestUserMessageForPreGenRun?.id ?? "";
           if (preGenRunMessageId) {
             for (const result of preGenResults) {
-              if (builtInAgentTypes.has(result.agentType)) continue;
+              // Successful custom output is anchored to the assistant swipe
+              // below; only failures need a user-message fallback here.
+              if (builtInAgentTypes.has(result.agentType) || result.success) continue;
               try {
                 await agentsStore.saveRun({
                   agentConfigId: result.agentId,
@@ -8199,7 +8210,7 @@ export async function generateRoutes(app: FastifyInstance) {
           !abortController.signal.aborted
         ) {
           const preGenSuccessful = pipeline.results.filter((r) => {
-            if (!r.success || r.agentType !== "director") return false;
+            if (!r.success || (builtInAgentTypes.has(r.agentType) && r.agentType !== "director")) return false;
             const cfg = pipelineAgents.find((a) => a.type === r.agentType);
             return cfg?.phase === "pre_generation";
           });
@@ -8215,7 +8226,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 result,
               });
             } catch (err) {
-              logger.warn(err, "[agents] Failed to persist Narrative Director run");
+              logger.warn(err, "[agents] Failed to persist pre-generation run");
             }
           }
           if (directorSecretPlotSuccessful.length > 0) {
