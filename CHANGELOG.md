@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- A game-surface Experience can now be handed specific lorebook entries to read before it writes your world, so a place you have already written history for comes out knowing it. You pick the entries, never whole books, and nothing else tags along — a lorebook you have switched on for every chat does not add itself to this one call. An entry you ticked arrives instead of being dropped by a chance roll — though a disabled entry stays disabled and every other filter on it still applies. If your selection is larger than the world-writing call can hold, whole entries are set aside rather than any of them being cut in half, and the reply says which ones. Whenever you pick anything at all, the reply answers your picks — including when none of them made it, which comes back as "none used" rather than as silence, so an Experience can tell that answer apart from an older engine that cannot read lorebook entries and does not mistake one for the other. Experiences that do not send a selection are unaffected.
+
 - Documented Capability API 1.14 tracker surfaces, prompt placement and agent lifecycle hooks, plus API 1.15 embedding-configuration refresh for package authors (#5900).
 
 - Dice notation is now read by one shared grammar in the four places that read it as a command — the `roll_dice` tool, the server and client sides of `/roll`, and the GM skill-check tag — instead of four private copies, so `roll_dice` accepts a bare `d20` like the other three already did. Notation whose roll could not be totalled exactly is now rejected as invalid instead of reporting a total that cannot be trusted — both a modifier too large for the engine to count exactly, and a countable modifier whose dice would push the total past that same limit. An oversized custom roll from the Game Mode dice menu is still trimmed and rolled rather than refused, but its card and its narrator line now name the dice actually thrown, so asking for `500d6` reads `100d6` instead of claiming five hundred dice over a hundred (a typed `/roll 500d6` refuses, as it always has). The `{{roll:XdY}}` macro and the dice-roll animation keep their own parsing and are unchanged.
@@ -92,6 +94,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Stopping a Gemini or Anthropic tool-streaming turn reports it as interrupted, and failed turns release their upstream connection (#5918).
 - Stabilized the swipe-control theme regression by comparing settled colors instead of WebKit transition values.
+- Experience lore selections respect their token limit even when a selected lorebook enables recursive scanning; entries reported as skipped stay out of the prompt (#5942).
+- Scoped the character-action browser fixture to its test character so unrelated catalog entries do not delay the check.
 
 - Game narration has a Translate action and rejects stale translations after rerolls; automatic translation can start with the first response when enabled during setup. Delayed translations stay with their original chat when switching chats (#5888).
 - Push Story uses the current Director result with or without a preset marker, and Mari consolidates system context for local chat templates (#5931, #5932).
