@@ -28,6 +28,8 @@ import { canRefreshLocalContext, fetchLocalContextLimit } from "../services/llm/
 import { resetMemoryRecallVectorizerCache } from "../services/memory-recall-embedding.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
+import { describeEmptyModelResponse } from "../services/generation/empty-response-reason.js";
+import { isGlm53MandatoryReasoningModel } from "../services/llm/providers/glm-request-compat.js";
 import { fetchOpenAIChatGPTModels, getOpenAIChatGPTAuth } from "../services/llm/openai-chatgpt-auth.js";
 import { fetchGrokCliModels } from "../services/llm/providers/grok-subscription.provider.js";
 import {
@@ -1544,27 +1546,41 @@ export async function connectionsRoutes(app: FastifyInstance) {
       );
 
       const storedOptions = resolveStoredChatOptions(conn.defaultParameters, conn.provider, model);
+      // Always-reasoning models (GLM 5.3) spend one output budget on thinking and
+      // on text. At 200 tokens the whole budget is thinking and the test reports
+      // success with nothing to show, so give them room for a one-line answer.
+      const maxTokens = resolveStoredMaxTokens(
+        conn.defaultParameters,
+        isGlm53MandatoryReasoningModel(model) ? 1024 : 200,
+      );
       let fullResponse = "";
-      for await (const chunk of provider.chat([{ role: "user", content: "hi" }], {
+      const generation = provider.chat([{ role: "user", content: "hi" }], {
         model,
         ...storedOptions,
         temperature: storedOptions.temperature ?? 0.7,
-        maxTokens: resolveStoredMaxTokens(conn.defaultParameters, 200),
+        maxTokens,
         stream: false,
-      })) {
-        fullResponse += chunk;
+      });
+      let step = await generation.next();
+      while (!step.done) {
+        fullResponse += step.value;
+        step = await generation.next();
       }
+      const usage = step.value || undefined;
+      const response = fullResponse.trim()
+        ? fullResponse.slice(0, 500)
+        : describeEmptyModelResponse({
+            finishReason: usage?.finishReason,
+            usage,
+            maxTokens,
+            hadThinking: (usage?.completionReasoningTokens ?? 0) > 0,
+          });
 
       const latencyMs = Date.now() - start;
-      debugLog(
-        "[connections/test-message] url=%s success in %dms: %s",
-        targetUrl,
-        latencyMs,
-        fullResponse.slice(0, 500),
-      );
+      debugLog("[connections/test-message] url=%s success in %dms: %s", targetUrl, latencyMs, response);
       return {
         success: true,
-        response: fullResponse.slice(0, 500),
+        response,
         latencyMs,
         model: model || "Grok CLI default",
       };

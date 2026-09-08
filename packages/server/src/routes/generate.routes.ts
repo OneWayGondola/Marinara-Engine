@@ -394,6 +394,7 @@ import {
   tryClaimCustomLorebookReadBehindRun,
 } from "./generate/lorebook-keeper-utils.js";
 import { registerDryRunRoute } from "./generate/dry-run-route.js";
+import { describeEmptyModelResponse } from "../services/generation/empty-response-reason.js";
 import { registerRawRoute } from "./generate/raw-route.js";
 import { registerRetryAgentsRoute, type ActiveAgentRun } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
@@ -7853,6 +7854,16 @@ export async function generateRoutes(app: FastifyInstance) {
           // no surrounding prose, treat the commands as the useful output. Skip saving
           // a blank assistant bubble but still return the commands so they execute.
           if (!fullResponse.trim() && !roleplayActivity.length && !currentRoleplayMedia.length) {
+            // Say what the provider reported instead of a generic retry line. An
+            // always-reasoning model that spends its whole output budget thinking
+            // arrives here with finish_reason "length" and reasoning tokens at the
+            // cap; the fix is a setting, not a retry (#5963).
+            const emptyResponseMessage = describeEmptyModelResponse({
+              finishReason,
+              usage,
+              maxTokens: effectiveMaxTokensForSend,
+              hadThinking: providerThinking.trim().length > 0 || fullThinking.trim().length > 0,
+            });
             logger.warn(
               {
                 chatId: input.chatId,
@@ -7865,6 +7876,10 @@ export async function generateRoutes(app: FastifyInstance) {
                 contentReplaced,
                 chatMode,
                 groupChatMode,
+                finishReason: finishReason ?? null,
+                completionTokens: usage?.completionTokens ?? null,
+                completionReasoningTokens: usage?.completionReasoningTokens ?? null,
+                maxTokens: effectiveMaxTokensForSend ?? null,
               },
               "[generate] Empty response after post-processing",
             );
@@ -7964,11 +7979,10 @@ export async function generateRoutes(app: FastifyInstance) {
                 characterId: targetCharId,
               };
             }
-            logger.warn(`[generate] Empty response from model for chat ${input.chatId} (char: ${targetCharId})`);
-            sendSseEvent(reply, {
-              type: "error",
-              data: "The AI returned an empty response. Try sending your message again.",
-            });
+            logger.warn(
+              `[generate] Empty response from model for chat ${input.chatId} (char: ${targetCharId}): ${emptyResponseMessage}`,
+            );
+            sendSseEvent(reply, { type: "error", data: emptyResponseMessage });
             return null;
           }
 

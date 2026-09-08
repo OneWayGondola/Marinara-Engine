@@ -15,6 +15,10 @@ import {
   isNativeGlmEndpoint,
 } from "../../packages/server/src/services/llm/providers/glm-request-compat.js";
 import {
+  describeEmptyModelResponse,
+  GENERIC_EMPTY_RESPONSE_MESSAGE,
+} from "../../packages/server/src/services/generation/empty-response-reason.js";
+import {
   applyAnthropicToolChoice,
   AnthropicProvider,
   supportsAnthropicThinkingDisable,
@@ -1560,6 +1564,50 @@ assert.deepEqual(
   { thinking: { type: "enabled" } },
   "no configured effort leaves Z.AI's own default (max) in place",
 );
+
+// An empty reply says what the provider reported (#5963).
+assert.equal(
+  describeEmptyModelResponse({
+    finishReason: "length",
+    usage: { completionTokens: 8192, completionReasoningTokens: 8190 },
+    maxTokens: 8192,
+    hadThinking: true,
+  }),
+  "The model used its whole output budget (8192 of 8192 output tokens, 8190 of them reasoning) before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.",
+);
+assert.equal(
+  describeEmptyModelResponse({ finishReason: "length", hadThinking: false }),
+  "The model used its whole output budget before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.",
+  "finish_reason alone is enough to name the cap",
+);
+assert.equal(
+  describeEmptyModelResponse({
+    finishReason: "stop",
+    usage: { completionTokens: 4096, completionReasoningTokens: 4000 },
+    maxTokens: 4096,
+    hadThinking: true,
+  }),
+  "The model used its whole output budget (4096 of 4096 output tokens, 4000 of them reasoning) before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.",
+  "completion at the cap with hidden thinking is the cap even when finish says stop",
+);
+assert.equal(
+  describeEmptyModelResponse({ finishReason: "sensitive", hadThinking: true }),
+  'The provider stopped the reply for content policy (finish reason "sensitive") and returned no text.',
+);
+assert.equal(
+  describeEmptyModelResponse({
+    finishReason: "stop",
+    usage: { completionTokens: 700, completionReasoningTokens: 700 },
+    maxTokens: 8192,
+    hadThinking: true,
+  }),
+  'The model finished reasoning (700 reasoning tokens, finish reason "stop") but returned no visible text. Try again, or lower Reasoning Effort.',
+);
+assert.equal(
+  describeEmptyModelResponse({ finishReason: "stop", hadThinking: false }),
+  'The AI returned an empty response (finish reason "stop"). Try sending your message again.',
+);
+assert.equal(describeEmptyModelResponse({ hadThinking: false }), GENERIC_EMPTY_RESPONSE_MESSAGE);
 
 const nanogptMandatoryGlmBody: Record<string, unknown> = {};
 applyGlmThinkingParameters(nanogptMandatoryGlmBody, {
