@@ -3238,6 +3238,56 @@ try {
     );
     assert.deepEqual(geminiTokens, ["You rolled a 17."], "the round after a tool result streams too");
 
+    // Provider-issued ids must pair each result with its call, even when two calls
+    // use the same function. Cover both raw-part replay and the fallback serializer.
+    const identifiedParts = ["roll-first", "roll-second"].map((id) => ({
+      functionCall: { id, name: "roll_dice", args: { notation: "1d20" } },
+      thoughtSignature: `signature-${id}`,
+    }));
+    geminiStreamFrames = [
+      { candidates: [{ content: { parts: identifiedParts }, finishReason: "STOP" }] },
+    ];
+    const identifiedResult = await gemini.chatComplete([{ role: "user", content: "roll twice" }], {
+      model: "gemini-2.0-flash",
+      tools: [rollDiceTool],
+      onToken: () => {},
+    });
+    geminiStreamFrames = [
+      { candidates: [{ content: { parts: [{ text: "Both rolls landed." }] }, finishReason: "STOP" }] },
+    ];
+    for (const replayMetadata of [true, false]) {
+      await gemini.chatComplete(
+        [
+          { role: "user", content: "roll twice" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: identifiedResult.toolCalls,
+            ...(replayMetadata ? { providerMetadata: identifiedResult.providerMetadata } : {}),
+          },
+          ...identifiedResult.toolCalls.map((call, index): ChatMessage => ({
+            role: "tool",
+            tool_call_id: call.id,
+            content: JSON.stringify({ total: 17 + index }),
+          })),
+        ],
+        { model: "gemini-2.0-flash", tools: [rollDiceTool], onToken: () => {} },
+      );
+      const contents = geminiRequestBodies.at(-1)!.contents as Array<{ parts: unknown[] }>;
+      assert.deepEqual(
+        contents[1]!.parts,
+        replayMetadata ? identifiedParts : identifiedParts.map(({ functionCall }) => ({ functionCall })),
+        "both serialization paths must retain the provider's function-call ids",
+      );
+      assert.deepEqual(
+        contents.slice(2).map(({ parts }) => parts),
+        ["roll-first", "roll-second"].map((id, index) => [
+          { functionResponse: { id, name: "roll_dice", response: { total: 17 + index } } },
+        ]),
+        "each functionResponse must include the matching provider-issued id",
+      );
+    }
+
     // Two calls in one response with no ids of their own: the synthesized fallback ids are
     // built from a running index, so they must not collide.
     geminiStreamFrames = [

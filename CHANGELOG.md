@@ -93,6 +93,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- The Home lifecycle regression waits for chat initialization during warm-up, so one-time loading is not mistaken for retained navigation memory.
+- Gemini tool replies preserve the provider's call identifiers, keeping parallel calls to the same function correctly paired (#5918).
 - Assistant dice cards stay visible beside split Conversation text and survive continuations. Auto-attached Game tools receive local-model guidance, and location/time updates no longer require unused target fields (#5950).
 - Gemini and Anthropic tool requests expose their final provider prompt when chat or agent debug logging is enabled (#5918).
 
