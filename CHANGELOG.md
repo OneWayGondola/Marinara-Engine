@@ -100,6 +100,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 ### Fixed
 
 - World generation preserves all explicitly selected lorebook entries instead of applying automatic lore token/count budgets, and reports a clear context-limit error before sending an oversized prompt or repair to the model.
+- Professor Mari now executes a frame's edits before checking its completion claim, recovers common command formats, and repairs unrecognized commands instead of silently dropping them. Requested lorebook edits use the real save/review path; explicit previews remain read-only (#5966, #5967).
 
 - Command-only regenerations now save a swipe on the original turn instead of appending hidden rows. Game narration, storyboards, turn progress, and logs consistently skip hidden or empty turns; regenerating prose from a command anchor makes the new swipe visible (#5926, #5927).
 
