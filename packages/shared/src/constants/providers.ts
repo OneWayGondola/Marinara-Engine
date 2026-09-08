@@ -164,6 +164,17 @@ export const PROVIDERS: Record<APIProvider, ProviderDefinition> = {
     usesAuthHeader: true,
     apiKeyHeader: null,
   },
+  zai: {
+    id: "zai",
+    name: "Z.AI",
+    // Pay-as-you-go endpoint. The Coding Plan endpoint (/api/coding/paas/v4)
+    // is licensed for Z.AI's listed tools only, so it is not the default here.
+    defaultBaseUrl: "https://api.z.ai/api/paas/v4",
+    modelsEndpoint: "/models",
+    supportsStreaming: true,
+    usesAuthHeader: true,
+    apiKeyHeader: null,
+  },
   custom: {
     id: "custom",
     name: "Custom (OAI-Compatible)",

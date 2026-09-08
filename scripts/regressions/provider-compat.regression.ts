@@ -1517,6 +1517,50 @@ assert.equal(glm53CustomGatewayReasoningEffort("z-ai/glm-5.3", "http://192.168.1
 assert.equal(glm53CustomGatewayReasoningEffort("some-model", "https://gateway.example.com/v1", "none"), null);
 assert.equal(glm53CustomGatewayReasoningEffort("z-ai/glm-5.2", "https://gateway.example.com/v1", "none"), null);
 
+// Native Z.AI provider (#5963): the shared resolver promotes a Maximum preset
+// to "max" for GLM 5.2 / 5.3 instead of lowering it to "high" on the way to
+// glm53ReasoningEffort. Only the named provider is promoted -- the resolver has
+// no base URL, so a Custom connection to api.z.ai keeps its previous behavior.
+assert.equal(resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.3", reasoningEffort: "maximum" }), "max");
+assert.equal(
+  resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.3-flash", reasoningEffort: "maximum" }),
+  "max",
+);
+assert.equal(resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.2", reasoningEffort: "maximum" }), "max");
+assert.equal(resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.1", reasoningEffort: "maximum" }), "high");
+assert.equal(resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.3", reasoningEffort: "high" }), "high");
+assert.equal(resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.3", reasoningEffort: "low" }), "low");
+assert.equal(resolveProviderReasoningEffort({ provider: "zai", model: "glm-5.3", reasoningEffort: undefined }), null);
+assert.equal(
+  resolveProviderReasoningEffort({ provider: "custom", model: "glm-5.3", reasoningEffort: "maximum" }),
+  "high",
+  "a Custom connection is not promoted by the resolver",
+);
+assert.equal(findKnownModel("zai", "glm-5.3")?.context, 1000000);
+assert.equal(findKnownModel("zai", "glm-5.3-flash")?.maxOutput, 128000);
+
+const zaiGlm53MaxBody: Record<string, unknown> = {};
+applyGlmThinkingParameters(zaiGlm53MaxBody, {
+  model: "glm-5.3",
+  baseUrl: "https://api.z.ai/api/paas/v4",
+  providerKind: "zai",
+  reasoningEffort: "max",
+});
+assert.deepEqual(zaiGlm53MaxBody, { thinking: { type: "enabled" }, reasoning_effort: "max" });
+
+const zaiGlm53DefaultBody: Record<string, unknown> = {};
+applyGlmThinkingParameters(zaiGlm53DefaultBody, {
+  model: "glm-5.3-flash",
+  baseUrl: "https://api.z.ai/api/paas/v4",
+  providerKind: "zai",
+  reasoningEffort: undefined,
+});
+assert.deepEqual(
+  zaiGlm53DefaultBody,
+  { thinking: { type: "enabled" } },
+  "no configured effort leaves Z.AI's own default (max) in place",
+);
+
 const nanogptMandatoryGlmBody: Record<string, unknown> = {};
 applyGlmThinkingParameters(nanogptMandatoryGlmBody, {
   model: "glm-5.3-flash",
