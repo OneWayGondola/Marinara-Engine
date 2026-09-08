@@ -636,7 +636,7 @@ export class GoogleProvider extends BaseLLMProvider {
 
     const response = await llmFetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
+      headers: { ...this.customRequestHeaders, "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify(body),
       ...(options.signal ? { signal: options.signal } : {}),
     });
@@ -777,11 +777,12 @@ export class GoogleProvider extends BaseLLMProvider {
       }
     } finally {
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
+      await reader.cancel().catch(() => {});
     }
 
     // A tools round may legitimately carry no prose at all — only the functionCall — so the
     // empty-content guard has to clear on tool calls too.
-    if (!responseText && toolCalls.length === 0) {
+    if (!responseText && toolCalls.length === 0 && !options.signal?.aborted) {
       const finishError = geminiFinishReasonError(lastFinishReason, false);
       if (finishError) throw new Error(finishError);
       if (!sawCandidate)
@@ -806,7 +807,11 @@ export class GoogleProvider extends BaseLLMProvider {
     return {
       content: responseText || null,
       toolCalls,
-      finishReason: toolCalls.length > 0 ? "tool_calls" : normalizeGeminiFinishReason(lastFinishReason),
+      finishReason: options.signal?.aborted
+        ? "abort"
+        : toolCalls.length > 0
+          ? "tool_calls"
+          : normalizeGeminiFinishReason(lastFinishReason),
       usage: streamUsage,
       ...(responseParts.length > 0 ? { providerMetadata: { geminiParts: responseParts } } : {}),
     };
@@ -931,6 +936,7 @@ export class GoogleProvider extends BaseLLMProvider {
     const response = await llmFetch(url, {
       method: "POST",
       headers: {
+        ...this.customRequestHeaders,
         "Content-Type": "application/json",
         ...authHeaders,
       },
@@ -1120,7 +1126,7 @@ export class GoogleProvider extends BaseLLMProvider {
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const response = await llmFetch(`${base}/models/${requestModel}:batchEmbedContents`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { ...this.customRequestHeaders, "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({
           requests: texts.map((text) => ({
             model: `models/${requestModel}`,
@@ -1147,7 +1153,7 @@ export class GoogleProvider extends BaseLLMProvider {
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const response = await llmFetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { ...this.customRequestHeaders, "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({
           content: geminiEmbeddingContent(text),
         }),

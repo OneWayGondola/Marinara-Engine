@@ -2950,6 +2950,103 @@ try {
   const sseFrames = (frames: Array<Record<string, unknown>>) =>
     frames.map((frame) => `data: ${JSON.stringify(frame)}\n`).join("\n");
 
+  // Keep the upstream body open: errors and cancellation must release it without
+  // waiting for the provider/proxy to finish sending the turn.
+  for (const providerName of ["Gemini", "Anthropic"] as const) {
+    for (const outcome of ["provider-error", "sink-error", "abort"] as const) {
+      let upstreamClosed = false;
+      let closed!: () => void;
+      const closeReceived = new Promise<void>((resolve) => {
+        closed = resolve;
+      });
+      const server = createServer(async (request, response) => {
+        for await (const _chunk of request) {
+          /* Drain the request before replying. */
+        }
+        response.on("close", () => {
+          upstreamClosed = true;
+          closed();
+        });
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        const frames =
+          outcome === "provider-error"
+            ? [{ type: "error", error: { type: "api_error", message: "upstream failed" } }]
+            : providerName === "Gemini"
+              ? [
+                  {
+                    candidates: [
+                      {
+                        content: {
+                          parts: [
+                            { functionCall: { name: "roll_dice", args: { notation: "1d20" } } },
+                            { text: "Partial turn." },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                ]
+              : [
+                  {
+                    type: "content_block_start",
+                    index: 0,
+                    content_block: { type: "tool_use", id: "toolu_abort", name: "roll_dice" },
+                  },
+                  {
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: { type: "input_json_delta", partial_json: '{"notation":"1d20"}' },
+                  },
+                  { type: "content_block_start", index: 1, content_block: { type: "text" } },
+                  { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Partial turn." } },
+                ];
+        response.write(sseFrames(frames));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const controller = new AbortController();
+      let closeTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        const baseUrl = `http://127.0.0.1:${address.port}`;
+        const provider =
+          providerName === "Gemini" ? new GoogleProvider(baseUrl, "test") : new AnthropicProvider(baseUrl, "test");
+        const completion = provider.chatComplete([{ role: "user", content: "roll" }], {
+          model: providerName === "Gemini" ? "gemini-2.0-flash" : "claude-opus-5",
+          tools: [rollDiceTool],
+          signal: controller.signal,
+          onToken: async () => {
+            if (outcome === "sink-error") throw new Error("sink failed");
+            controller.abort();
+          },
+        });
+        if (outcome === "abort") {
+          const result = await completion;
+          assert.equal(
+            result.finishReason,
+            "abort",
+            `${providerName}: stopping a partial tool turn must not report success`,
+          );
+          assert.equal(result.content, "Partial turn.");
+        } else {
+          await assert.rejects(completion, outcome === "sink-error" ? /sink failed/ : /upstream failed/);
+        }
+        await Promise.race([
+          closeReceived,
+          new Promise<void>((resolve) => {
+            closeTimeout = setTimeout(resolve, 1000);
+          }),
+        ]);
+        assert.ok(upstreamClosed, `${providerName}: ${outcome} must cancel the still-open upstream stream`);
+      } finally {
+        clearTimeout(closeTimeout);
+        controller.abort();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      }
+    }
+  }
+
   // ── Gemini ──
   let geminiStreamFrames: Array<Record<string, unknown>> = [];
   const geminiBufferedBody = {
@@ -3310,8 +3407,16 @@ try {
         index: 1,
         content_block: { type: "tool_use", id: "toolu_b", name: "roll_dice" },
       },
-      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"notation":"2d6"}' } },
-      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"notation":"1d20"}' } },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"notation":"2d6"}' },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"notation":"1d20"}' },
+      },
       { type: "content_block_stop", index: 0 },
       { type: "content_block_stop", index: 1 },
       { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
@@ -3345,7 +3450,11 @@ try {
         index: 0,
         content_block: { type: "tool_use", id: "toolu_c", name: "roll_dice" },
       },
-      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"notation":"1d4"}' } },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"notation":"1d4"}' },
+      },
       { type: "content_block_stop", index: 0 },
       { type: "message_stop" },
     ];
