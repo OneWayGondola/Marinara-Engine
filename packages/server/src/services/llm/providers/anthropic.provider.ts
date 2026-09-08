@@ -621,9 +621,9 @@ export class AnthropicProvider extends BaseLLMProvider {
       }
     } finally {
       if (options.signal) options.signal.removeEventListener("abort", onAbort);
-      // message_stop ends the turn, so the loop leaves before the body reports `done`.
-      // Release the socket rather than waiting on a proxy that holds the stream open.
-      if (finished) await reader.cancel().catch(() => {});
+      // Release the upstream socket on early completion, provider errors, and
+      // rejected token callbacks, not only when the body reaches its end.
+      await reader.cancel().catch(() => {});
     }
 
     const toolCalls: LLMToolCall[] = [];
@@ -648,7 +648,7 @@ export class AnthropicProvider extends BaseLLMProvider {
     return {
       content: content || null,
       toolCalls,
-      finishReason: toolCalls.length > 0 ? "tool_calls" : finishReason,
+      finishReason: options.signal?.aborted ? "abort" : toolCalls.length > 0 ? "tool_calls" : finishReason,
       usage:
         inputTokens || outputTokens || cachedTokens || cacheWriteTokens
           ? {
