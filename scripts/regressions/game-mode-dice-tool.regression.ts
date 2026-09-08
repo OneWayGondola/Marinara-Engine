@@ -15,6 +15,7 @@ import {
   PERSISTED_GAME_STATE_UPDATE_TYPES,
 } from "../../packages/server/src/services/tools/tool-executor.js";
 import { parseRollDiceToolResult } from "../../packages/server/src/services/game/dice.service.js";
+import { resolveSkillCheckTagsInContent } from "../../packages/server/src/services/game/skill-check-resolution.service.js";
 import { buildGmFormatReminder } from "../../packages/server/src/services/game/gm-prompts.js";
 import { updateGameStateToolManifest } from "../../packages/shared/src/features/function-calls/tools/update-game-state/manifest.js";
 
@@ -160,9 +161,7 @@ function baseArgs(overrides: Partial<ResolveGenerationToolsArgs>): ResolveGenera
   };
 }
 
-const gameTurn = await resolveGenerationTools(
-  baseArgs({ autoAttachToolNames: GAME_MODE_AUTO_ATTACH_TOOL_NAMES }),
-);
+const gameTurn = await resolveGenerationTools(baseArgs({ autoAttachToolNames: GAME_MODE_AUTO_ATTACH_TOOL_NAMES }));
 assert.equal(gameTurn.enableChatTools, false, "auto-attach must not turn the chat's tool toggle on");
 assert.equal(gameTurn.toolsAttached, true, "a game turn must take the tool-calling branch");
 assert.deepEqual(names(gameTurn.toolDefs), ["roll_dice"], "a game turn must send exactly the dice tool");
@@ -292,8 +291,14 @@ assert.equal(
   "the card must show the number the model was given, not a re-roll",
 );
 
-const [refused] = await executeToolCalls([
+const [bareDie] = await executeToolCalls([
   { id: "call-2", type: "function", function: { name: "roll_dice", arguments: JSON.stringify({ notation: "d20" }) } },
+]);
+assert.equal(bareDie?.success, true, "the shared dice grammar accepts a bare d20");
+assert.equal(parseRollDiceToolResult(bareDie!.result)?.rolls.length, 1);
+
+const [refused] = await executeToolCalls([
+  { id: "call-3", type: "function", function: { name: "roll_dice", arguments: JSON.stringify({ notation: "1d0" }) } },
 ]);
 assert.equal(refused?.success, false, "the tool still rejects notation it cannot parse");
 assert.equal(parseRollDiceToolResult(refused!.result), null, "a refusal must never render as a dice card");
@@ -373,6 +378,22 @@ assert.match(
   "every game turn's format reminder must teach the GM to call the dice tool",
 );
 assert.match(reminder, /Never invent a die result/i, "the prompt must forbid inventing the number");
+assert.match(
+  reminder,
+  /override the sparse-check instructions above/,
+  "a tool-resolved check must not request a second roll",
+);
+assert.match(reminder, /Use the sparse form only when no roll result is available/);
+const toolResolvedCheck =
+  '[skill_check: skill="Athletics" dc="15" rolls="17" modifier="3" total="20" result="success" resolution="sum" dice="1d20+3"]';
+const preservedCheck = await resolveSkillCheckTagsInContent(toolResolvedCheck, {
+  chatId: "native-dice-integration",
+  loadContext: async () => {
+    throw new Error("An already resolved tool roll must not load modifiers or reroll");
+  },
+});
+assert.equal(preservedCheck.content, toolResolvedCheck);
+assert.equal(preservedCheck.resolved, 0);
 assert.match(
   reminder,
   /\[skill_check: \.\.\.\] tag above/,

@@ -809,6 +809,7 @@ export function buildGmFormatReminder(
     `DICE:`,
     `- roll_dice is a real die you can throw. Call it the moment you need an actual number before you can keep writing - an attack, a save, damage, a random outcome the scene then reacts to - passing the notation (for example "1d20+3") and a short reason.`,
     `- Never invent a die result. Wait for the number the tool gives you, then narrate what it means, once, in this same turn.`,
+    `- If roll_dice has already returned a skill check's roll, override the sparse-check instructions above: write a complete [skill_check: skill="Skill Name" dc="chosen DC" rolls="actual tool rolls joined with |" modifier="tool modifier" total="tool total" result="critical_success|success|failure|critical_failure" resolution="sum" dice="tool notation"] record using that result. Do not request another engine roll or stop at the attempt; narrate its consequence in this same turn. Use the sparse form only when no roll result is available.`,
     ctx.playerDiceRollSubmitted
       ? `- The player already threw for this turn. Use their roll rather than calling the tool again for the same action.`
       : `- A skill check is still written down with the [skill_check: ...] tag above. roll_dice is how you get a number your narration needs in hand; it does not replace that record.`,

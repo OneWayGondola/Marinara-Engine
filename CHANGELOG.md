@@ -91,6 +91,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Game dice-tool guidance distinguishes an already rolled check from the sparse fallback, and Function Calling no longer claims every function is disabled while Game dice remain available (#5950).
+
 - Stopping a Gemini or Anthropic tool-streaming turn reports it as interrupted, and failed turns release their upstream connection (#5918).
 - Stabilized the swipe-control theme regression by comparing settled colors instead of WebKit transition values.
 

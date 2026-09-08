@@ -79,15 +79,12 @@ export function FunctionCallingSection({
           labelClassName="text-xs font-medium"
         />
         <p className="text-[0.625rem] text-[var(--muted-foreground)] px-1">
-          {enableTools
-            ? localizeUi("ui.chatSettings.functioncallingsection.ifEnabledThisChatCanUseGloballyEnabledTools")
-            : localizeUi("ui.chatSettings.functioncallingsection.ifDisabledNoFunctionsWillBeAvailable")}
+          {isGameMode
+            ? localizeUi("ui.chatSettings.functioncallingsection.gameChatsAlreadyRollRealDiceWithoutThis")
+            : enableTools
+              ? localizeUi("ui.chatSettings.functioncallingsection.ifEnabledThisChatCanUseGloballyEnabledTools")
+              : localizeUi("ui.chatSettings.functioncallingsection.ifDisabledNoFunctionsWillBeAvailable")}
         </p>
-        {isGameMode && (
-          <p className="text-[0.625rem] text-[var(--muted-foreground)] px-1">
-            {localizeUi("ui.chatSettings.functioncallingsection.gameChatsAlreadyRollRealDiceWithoutThis")}
-          </p>
-        )}
 
         {enableTools && (
           <>
