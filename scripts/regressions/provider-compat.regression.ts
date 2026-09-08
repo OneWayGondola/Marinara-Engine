@@ -24,6 +24,7 @@ import {
 } from "../../packages/server/src/services/llm/providers/claude-subscription.provider.js";
 import {
   applyGoogleFunctionCallingMode,
+  GoogleProvider,
   resolveGeminiThinkingConfig,
   resolveGoogleFunctionCallingMode,
 } from "../../packages/server/src/services/llm/providers/google.provider.js";
@@ -2911,6 +2912,638 @@ try {
   await new Promise<void>((resolve, reject) =>
     contentBlockToolServer.close((error) => (error ? reject(error) : resolve())),
   );
+}
+
+// ── Gemini and Anthropic stream while tools are attached ──
+// Both adapters used to buffer the whole generation the moment a tool was attached: Gemini
+// hardwired the `:generateContent` endpoint, Anthropic hardcoded `stream: false`. The tool
+// loop never asked for that — it passes onToken and no `stream` key — so a tools turn showed
+// nothing until the round finished. These cases pin the streamed shape of both adapters.
+{
+  const rollDiceTool = {
+    type: "function" as const,
+    function: {
+      name: "roll_dice",
+      description: "Roll dice",
+      parameters: { type: "object", properties: { notation: { type: "string" } } },
+    },
+  };
+  const sseFrames = (frames: Array<Record<string, unknown>>) =>
+    frames.map((frame) => `data: ${JSON.stringify(frame)}\n`).join("\n");
+
+  // Keep the upstream body open: errors and cancellation must release it without
+  // waiting for the provider/proxy to finish sending the turn.
+  for (const providerName of ["Gemini", "Anthropic"] as const) {
+    for (const outcome of ["provider-error", "sink-error", "abort"] as const) {
+      let upstreamClosed = false;
+      let closed!: () => void;
+      const closeReceived = new Promise<void>((resolve) => {
+        closed = resolve;
+      });
+      const server = createServer(async (request, response) => {
+        for await (const _chunk of request) {
+          /* Drain the request before replying. */
+        }
+        response.on("close", () => {
+          upstreamClosed = true;
+          closed();
+        });
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        const frames =
+          outcome === "provider-error"
+            ? [{ type: "error", error: { type: "api_error", message: "upstream failed" } }]
+            : providerName === "Gemini"
+              ? [
+                  {
+                    candidates: [
+                      {
+                        content: {
+                          parts: [
+                            { functionCall: { name: "roll_dice", args: { notation: "1d20" } } },
+                            { text: "Partial turn." },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                ]
+              : [
+                  {
+                    type: "content_block_start",
+                    index: 0,
+                    content_block: { type: "tool_use", id: "toolu_abort", name: "roll_dice" },
+                  },
+                  {
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: { type: "input_json_delta", partial_json: '{"notation":"1d20"}' },
+                  },
+                  { type: "content_block_start", index: 1, content_block: { type: "text" } },
+                  { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Partial turn." } },
+                ];
+        response.write(sseFrames(frames));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const controller = new AbortController();
+      let closeTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        const baseUrl = `http://127.0.0.1:${address.port}`;
+        const provider =
+          providerName === "Gemini" ? new GoogleProvider(baseUrl, "test") : new AnthropicProvider(baseUrl, "test");
+        const completion = provider.chatComplete([{ role: "user", content: "roll" }], {
+          model: providerName === "Gemini" ? "gemini-2.0-flash" : "claude-opus-5",
+          tools: [rollDiceTool],
+          signal: controller.signal,
+          onToken: async () => {
+            if (outcome === "sink-error") throw new Error("sink failed");
+            controller.abort();
+          },
+        });
+        if (outcome === "abort") {
+          const result = await completion;
+          assert.equal(
+            result.finishReason,
+            "abort",
+            `${providerName}: stopping a partial tool turn must not report success`,
+          );
+          assert.equal(result.content, "Partial turn.");
+        } else {
+          await assert.rejects(completion, outcome === "sink-error" ? /sink failed/ : /upstream failed/);
+        }
+        await Promise.race([
+          closeReceived,
+          new Promise<void>((resolve) => {
+            closeTimeout = setTimeout(resolve, 1000);
+          }),
+        ]);
+        assert.ok(upstreamClosed, `${providerName}: ${outcome} must cancel the still-open upstream stream`);
+      } finally {
+        clearTimeout(closeTimeout);
+        controller.abort();
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      }
+    }
+  }
+
+  // ── Gemini ──
+  let geminiStreamFrames: Array<Record<string, unknown>> = [];
+  const geminiBufferedBody = {
+    candidates: [
+      {
+        content: {
+          parts: [{ text: "Buffered narration." }, { functionCall: { name: "roll_dice", args: { notation: "1d20" } } }],
+        },
+        finishReason: "STOP",
+      },
+    ],
+    usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 },
+  };
+  const geminiRequestUrls: string[] = [];
+  const geminiRequestBodies: Array<Record<string, unknown>> = [];
+  const geminiServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    geminiRequestBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
+    const url = request.url ?? "";
+    geminiRequestUrls.push(url);
+    if (url.includes("streamGenerateContent")) {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(sseFrames(geminiStreamFrames));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(geminiBufferedBody));
+  });
+  await new Promise<void>((resolve) => geminiServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const geminiAddress = geminiServer.address();
+    assert.ok(geminiAddress && typeof geminiAddress === "object");
+    const gemini = new GoogleProvider(`http://127.0.0.1:${geminiAddress.port}`, "test");
+
+    // Prose streams live, then a functionCall arriving in a later frame is collected.
+    geminiStreamFrames = [
+      { candidates: [{ content: { parts: [{ text: "The die " }] } }] },
+      { candidates: [{ content: { parts: [{ text: "leaves your hand." }] } }] },
+      {
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: { name: "roll_dice", args: { notation: "1d20" } },
+                  thoughtSignature: "sig-1",
+                },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: { promptTokenCount: 11, candidatesTokenCount: 4, totalTokenCount: 15 },
+      },
+    ];
+    let geminiTokens: string[] = [];
+    let geminiResult = await gemini.chatComplete([{ role: "user", content: "roll" }], {
+      model: "gemini-2.0-flash",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        geminiTokens.push(chunk);
+      },
+    });
+    assert.match(
+      geminiRequestUrls.at(-1) ?? "",
+      /:streamGenerateContent\?alt=sse$/,
+      "a Gemini tools round with a token sink must use the SSE streaming endpoint",
+    );
+    assert.deepEqual(
+      geminiTokens,
+      ["The die ", "leaves your hand."],
+      "Gemini prose must reach onToken per frame, not once after the whole generation",
+    );
+    assert.equal(geminiResult.content, "The die leaves your hand.");
+    assert.equal(geminiResult.finishReason, "tool_calls");
+    assert.deepEqual(
+      geminiResult.toolCalls.map((call) => [call.function.name, call.function.arguments]),
+      [["roll_dice", '{"notation":"1d20"}']],
+      "a functionCall part arriving in its own SSE frame must survive",
+    );
+    assert.deepEqual(
+      geminiResult.providerMetadata?.geminiParts,
+      [
+        { text: "The die leaves your hand." },
+        { functionCall: { name: "roll_dice", args: { notation: "1d20" } }, thoughtSignature: "sig-1" },
+      ],
+      "the streamed tools round must return replayable parts, signature attached to the call",
+    );
+    assert.equal(geminiResult.usage?.totalTokens, 15);
+
+    // Round two, assembled exactly as the tool loop assembles it (generate.routes.ts:6549-6554
+    // then :6677-6683). The assistant message carries both the stored parts and the tool calls,
+    // and formatGoogleContents returns early on the stored parts — so the call id → name map
+    // has to be filled before that branch. Gemini pairs a functionResponse to its functionCall
+    // by name; a result labelled "tool_result" reads as a reply from a function nobody called.
+    geminiStreamFrames = [
+      { candidates: [{ content: { parts: [{ text: "You rolled a 17." }] }, finishReason: "STOP" }] },
+    ];
+    geminiTokens = [];
+    await gemini.chatComplete(
+      [
+        { role: "user", content: "roll" },
+        {
+          role: "assistant",
+          content: geminiResult.content ?? "",
+          tool_calls: geminiResult.toolCalls,
+          ...(geminiResult.providerMetadata ? { providerMetadata: geminiResult.providerMetadata } : {}),
+        },
+        { role: "tool", content: '{"total":17}', tool_call_id: geminiResult.toolCalls[0]!.id },
+      ],
+      {
+        model: "gemini-2.0-flash",
+        tools: [rollDiceTool],
+        onToken: (chunk) => {
+          geminiTokens.push(chunk);
+        },
+      },
+    );
+    const replayedContents = (geminiRequestBodies.at(-1)?.contents ?? []) as Array<{
+      role: string;
+      parts: Array<Record<string, unknown>>;
+    }>;
+    assert.deepEqual(
+      replayedContents.at(-2)?.parts,
+      geminiResult.providerMetadata?.geminiParts,
+      "the assistant turn must replay its stored parts verbatim, thought signatures included",
+    );
+    assert.deepEqual(
+      replayedContents.at(-1)?.parts,
+      [{ functionResponse: { name: "roll_dice", response: { total: 17 } } }],
+      "a tool result must be named for the function that produced it, never `tool_result`",
+    );
+    assert.deepEqual(geminiTokens, ["You rolled a 17."], "the round after a tool result streams too");
+
+    // Two calls in one response with no ids of their own: the synthesized fallback ids are
+    // built from a running index, so they must not collide.
+    geminiStreamFrames = [
+      {
+        candidates: [
+          {
+            content: {
+              parts: [
+                { functionCall: { name: "roll_dice", args: { notation: "1d20" } } },
+                { functionCall: { name: "roll_dice", args: { notation: "2d6" } } },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+      },
+    ];
+    geminiResult = await gemini.chatComplete([{ role: "user", content: "roll twice" }], {
+      model: "gemini-2.0-flash",
+      tools: [rollDiceTool],
+      onToken: () => {},
+    });
+    // Asserted on the index suffix rather than plain inequality: the fallback id also carries
+    // Date.now(), which would usually differ on its own and let a fixed index pass by luck.
+    assert.deepEqual(
+      geminiResult.toolCalls.map((call) => call.id.replace(/^gemini_tool_\d+/, "")),
+      ["_0", "_1"],
+      "id-less parallel functionCall parts must get distinct synthesized ids from the running index",
+    );
+    assert.deepEqual(
+      geminiResult.toolCalls.map((call) => call.function.arguments),
+      ['{"notation":"1d20"}', '{"notation":"2d6"}'],
+    );
+
+    // A tool-only round carries no prose at all. chat()'s `!responseText` guard, ported as-is,
+    // would have ended it: this path clears the guard on tool calls instead.
+    geminiStreamFrames = [
+      {
+        candidates: [
+          {
+            content: { parts: [{ functionCall: { name: "roll_dice", args: { notation: "2d6" } } }] },
+            finishReason: "STOP",
+          },
+        ],
+      },
+    ];
+    geminiTokens = [];
+    geminiResult = await gemini.chatComplete([{ role: "user", content: "roll" }], {
+      model: "gemini-2.0-flash",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        geminiTokens.push(chunk);
+      },
+    });
+    assert.equal(geminiResult.content, null, "a text-free Gemini tools round must not be an error");
+    assert.deepEqual(geminiTokens, []);
+    assert.deepEqual(
+      geminiResult.toolCalls.map((call) => call.function.name),
+      ["roll_dice"],
+    );
+    assert.equal(geminiResult.finishReason, "tool_calls");
+
+    // Tools attached, none called: the turn still streams.
+    geminiStreamFrames = [
+      { candidates: [{ content: { parts: [{ text: "No roll " }] } }] },
+      { candidates: [{ content: { parts: [{ text: "needed." }] }, finishReason: "STOP" }] },
+    ];
+    geminiTokens = [];
+    geminiResult = await gemini.chatComplete([{ role: "user", content: "talk" }], {
+      model: "gemini-2.0-flash",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        geminiTokens.push(chunk);
+      },
+    });
+    assert.deepEqual(geminiTokens, ["No roll ", "needed."], "an unused tool must not re-buffer the turn");
+    assert.equal(geminiResult.content, "No roll needed.");
+    assert.deepEqual(geminiResult.toolCalls, []);
+    assert.equal(geminiResult.finishReason, "stop");
+
+    // Thinking stays buffered: proxies strip thought parts from SSE but return them whole.
+    geminiTokens = [];
+    geminiResult = await gemini.chatComplete([{ role: "user", content: "roll" }], {
+      model: "gemini-2.5-flash",
+      reasoningEffort: "high",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        geminiTokens.push(chunk);
+      },
+    });
+    assert.match(
+      geminiRequestUrls.at(-1) ?? "",
+      /:generateContent$/,
+      "Gemini thinking turns must keep the buffered endpoint even with tools attached",
+    );
+    assert.deepEqual(
+      geminiTokens,
+      ["Buffered narration."],
+      "the buffered path still delivers its text in one onToken call",
+    );
+    assert.deepEqual(
+      geminiResult.providerMetadata?.geminiParts,
+      geminiBufferedBody.candidates[0]!.content.parts,
+      "the buffered tools round returns its raw parts for replay too",
+    );
+
+    // stream:true without a token sink (the agent tool loop) keeps the buffered path.
+    await gemini.chatComplete([{ role: "user", content: "roll" }], {
+      model: "gemini-2.0-flash",
+      stream: true,
+      tools: [rollDiceTool],
+    });
+    assert.match(
+      geminiRequestUrls.at(-1) ?? "",
+      /:generateContent$/,
+      "a tools call with no onToken must not be switched to streaming",
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => geminiServer.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  // ── Anthropic ──
+  let anthropicStreamFrames: Array<Record<string, unknown>> = [];
+  // When set, the stub writes only the leading frames, waits, then writes the rest — so a
+  // case can prove the provider saw the head before the body finished.
+  let anthropicTailGate: { headFrames: number; wait: () => Promise<void> } | null = null;
+  const anthropicToolRequestBodies: Array<Record<string, unknown>> = [];
+  const anthropicToolServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    anthropicToolRequestBodies.push(body);
+    if (body.stream !== true) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          content: [
+            { type: "text", text: "Buffered narration." },
+            { type: "tool_use", id: "toolu_buffered", name: "roll_dice", input: { notation: "1d20" } },
+          ],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 7, output_tokens: 3 },
+        }),
+      );
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    if (anthropicTailGate) {
+      const gate = anthropicTailGate;
+      response.write(sseFrames(anthropicStreamFrames.slice(0, gate.headFrames)));
+      await gate.wait();
+      response.end(sseFrames(anthropicStreamFrames.slice(gate.headFrames)));
+      return;
+    }
+    // Split the payload mid-line so the reader has to re-join a partial SSE frame.
+    const payload = sseFrames(anthropicStreamFrames);
+    const split = Math.floor(payload.length / 2);
+    response.write(payload.slice(0, split));
+    setTimeout(() => response.end(payload.slice(split)), 10);
+  });
+  await new Promise<void>((resolve) => anthropicToolServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const anthropicAddress = anthropicToolServer.address();
+    assert.ok(anthropicAddress && typeof anthropicAddress === "object");
+    const anthropic = new AnthropicProvider(`http://127.0.0.1:${anthropicAddress.port}`, "test");
+
+    // Prose streams live, then tool_use input arrives as input_json_delta fragments that
+    // split a JSON key across two frames.
+    anthropicStreamFrames = [
+      { type: "message_start", message: { usage: { input_tokens: 12, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Rolling" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " for you." } },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "toolu_1", name: "roll_dice" },
+      },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"notat' } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: 'ion":"1d20"}' } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 9 } },
+      { type: "message_stop" },
+    ];
+    let anthropicTokens: string[] = [];
+    let anthropicResult = await anthropic.chatComplete([{ role: "user", content: "roll" }], {
+      model: "claude-opus-5",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        anthropicTokens.push(chunk);
+      },
+    });
+    assert.equal(
+      anthropicToolRequestBodies.at(-1)?.stream,
+      true,
+      "an Anthropic tools round with a token sink must request a stream",
+    );
+    assert.deepEqual(
+      anthropicTokens,
+      ["Rolling", " for you."],
+      "Anthropic prose must reach onToken per delta, not once after the whole generation",
+    );
+    assert.equal(anthropicResult.content, "Rolling for you.");
+    assert.equal(anthropicResult.finishReason, "tool_calls");
+    assert.deepEqual(
+      anthropicResult.toolCalls.map((call) => [call.id, call.function.name, call.function.arguments]),
+      [["toolu_1", "roll_dice", '{"notation":"1d20"}']],
+      "input_json_delta fragments split across frames must reassemble into one argument object",
+    );
+    assert.deepEqual(anthropicResult.usage, { promptTokens: 12, completionTokens: 9, totalTokens: 21 });
+
+    // Two tool_use blocks open at once, deltas interleaved: accumulation must be index-keyed.
+    anthropicStreamFrames = [
+      { type: "message_start", message: { usage: { input_tokens: 4, output_tokens: 0 } } },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_a", name: "roll_dice" },
+      },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "toolu_b", name: "roll_dice" },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"notation":"2d6"}' },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"notation":"1d20"}' },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+      { type: "message_stop" },
+    ];
+    anthropicTokens = [];
+    anthropicResult = await anthropic.chatComplete([{ role: "user", content: "roll twice" }], {
+      model: "claude-opus-5",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        anthropicTokens.push(chunk);
+      },
+    });
+    assert.equal(anthropicResult.content, null, "a text-free Anthropic tools round must not be an error");
+    assert.deepEqual(anthropicTokens, []);
+    assert.deepEqual(
+      anthropicResult.toolCalls.map((call) => [call.id, call.function.arguments]),
+      [
+        ["toolu_a", '{"notation":"1d20"}'],
+        ["toolu_b", '{"notation":"2d6"}'],
+      ],
+      "interleaved parallel tool_use deltas must stay bound to their own content-block index",
+    );
+
+    // A tool-only round that never sends a message_delta: the empty-text guard has to clear
+    // on the collected tool calls, not lean on a stop_reason arriving to clear it first.
+    anthropicStreamFrames = [
+      { type: "message_start", message: { usage: { input_tokens: 6, output_tokens: 0 } } },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_c", name: "roll_dice" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"notation":"1d4"}' },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_stop" },
+    ];
+    anthropicResult = await anthropic.chatComplete([{ role: "user", content: "roll" }], {
+      model: "claude-opus-5",
+      tools: [rollDiceTool],
+      onToken: () => {},
+    });
+    assert.equal(anthropicResult.content, null);
+    assert.deepEqual(
+      anthropicResult.toolCalls.map((call) => [call.id, call.function.arguments]),
+      [["toolu_c", '{"notation":"1d4"}']],
+      "a tool call with no stop_reason behind it must be returned, not thrown away as empty",
+    );
+    assert.equal(anthropicResult.finishReason, "tool_calls");
+
+    // Delivery has to be progressive, not just parsed progressively: safeFetch's buffered
+    // mode drains the entire body before the provider reads a byte, so `bufferResponse` must
+    // follow `useStream` or the turn arrives in one lump with the SSE parser none the wiser.
+    // The stub holds the tail of the stream until the first token lands.
+    anthropicStreamFrames = [
+      { type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "First." } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " Second." } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } },
+      { type: "message_stop" },
+    ];
+    let firstTokenArrived = false;
+    let tailFollowedFirstToken = false;
+    let releaseTail = () => {};
+    const tailRelease = new Promise<void>((resolve) => {
+      releaseTail = resolve;
+    });
+    anthropicTailGate = {
+      headFrames: 3,
+      wait: async () => {
+        // Bounded, so a buffered read fails this assertion instead of hanging the lane.
+        await Promise.race([tailRelease, new Promise<void>((resolve) => setTimeout(resolve, 2000))]);
+        tailFollowedFirstToken = firstTokenArrived;
+      },
+    };
+    anthropicTokens = [];
+    try {
+      anthropicResult = await anthropic.chatComplete([{ role: "user", content: "talk" }], {
+        model: "claude-opus-5",
+        tools: [rollDiceTool],
+        onToken: (chunk) => {
+          anthropicTokens.push(chunk);
+          firstTokenArrived = true;
+          releaseTail();
+        },
+      });
+    } finally {
+      anthropicTailGate = null;
+    }
+    assert.ok(
+      tailFollowedFirstToken,
+      "a streamed tools round must reach onToken before the response body ends — bufferResponse must follow useStream",
+    );
+    assert.deepEqual(anthropicTokens, ["First.", " Second."]);
+    assert.equal(anthropicResult.content, "First. Second.");
+
+    // Tools attached, none called: the turn still streams.
+    anthropicStreamFrames = [
+      { type: "message_start", message: { usage: { input_tokens: 3, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "No roll " } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "needed." } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } },
+      { type: "message_stop" },
+    ];
+    anthropicTokens = [];
+    anthropicResult = await anthropic.chatComplete([{ role: "user", content: "talk" }], {
+      model: "claude-opus-5",
+      tools: [rollDiceTool],
+      onToken: (chunk) => {
+        anthropicTokens.push(chunk);
+      },
+    });
+    assert.deepEqual(anthropicTokens, ["No roll ", "needed."], "an unused tool must not re-buffer the turn");
+    assert.equal(anthropicResult.content, "No roll needed.");
+    assert.deepEqual(anthropicResult.toolCalls, []);
+    assert.equal(anthropicResult.finishReason, "end_turn");
+
+    // stream:true without a token sink (the agent tool loop) keeps the buffered path.
+    anthropicResult = await anthropic.chatComplete([{ role: "user", content: "roll" }], {
+      model: "claude-opus-5",
+      stream: true,
+      tools: [rollDiceTool],
+    });
+    assert.equal(
+      anthropicToolRequestBodies.at(-1)?.stream,
+      false,
+      "a tools call with no onToken must not be switched to streaming",
+    );
+    assert.equal(anthropicResult.content, "Buffered narration.");
+    assert.deepEqual(
+      anthropicResult.toolCalls.map((call) => call.id),
+      ["toolu_buffered"],
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      anthropicToolServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 }
 
 process.stdout.write("Provider compatibility regression passed.\n");

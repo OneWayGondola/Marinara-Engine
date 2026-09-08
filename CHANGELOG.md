@@ -92,6 +92,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Stopping a Gemini or Anthropic tool-streaming turn reports it as interrupted, and failed turns release their upstream connection (#5918).
+- Stabilized the swipe-control theme regression by comparing settled colors instead of WebKit transition values.
 - Experience lore selections respect their token limit even when a selected lorebook enables recursive scanning; entries reported as skipped stay out of the prompt (#5942).
 - Scoped the character-action browser fixture to its test character so unrelated catalog entries do not delay the check.
 
@@ -122,6 +124,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Professor Mari's shell sandbox closes its two remaining supply-chain gaps (#5892). Installed-package folders (`node_modules` and the pnpm stores, nested ones included) are now read-only inside the sandbox - a command can no longer plant ready-made package code there - while build-tool cache folders inside them stay writable so builds keep working. And stopping a sandboxed command now takes its whole process tree with it, so a background process it left behind can no longer keep writing after the safety scan has run.
 
+- Gemini and Anthropic replies no longer go silent whenever a tool is attached. Both connections held the whole reply back on a tool-using turn - the bubble stayed empty for the entire generation and then filled all at once. Text now arrives as the model writes it, and tool calls are read out of the live stream, including a reply that is nothing but a tool call. Gemini connections with thinking enabled still send the reply in one piece, for the separate, older reason they always did.
 - Professor Mari's self-check now audits every step of a longer job, not just the last thing she says (#5819). In a batch - "I created the first character, now doing the second" - each claim is checked against the work done since her previous checked claim, so skipping a step gets caught immediately instead of riding an earlier success. When a step is missing she is told to look first and only redo work a check shows is truly absent, never blindly.
 - Mari can answer "did you finish?" truthfully again (#5830). A run that only reported on earlier work could never satisfy the old check - her honest recap was challenged twice and then replaced with an error. A recap backed by a fresh look at the actual state now passes, a wrap-up right after checked work needs nothing extra, and "I've verified..." (describing a check, not a change) no longer trips the detector at all. A claim with nothing behind it whatsoever is still challenged, and a change the store observed failing still blocks every later claim until a retry proves it saved.
 

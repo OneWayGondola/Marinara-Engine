@@ -5849,6 +5849,11 @@ test("Conversation swipe controls match Roleplay sizing and chat-chrome colors",
           await expect(control).toBeVisible();
           const input = control.getByRole("textbox");
           await expect(input).toHaveValue("1");
+          // Compare the settled theme color, not WebKit's retained Oklab
+          // serialization from the color transition between test themes.
+          await input.evaluate((element) => {
+            element.style.transition = "none";
+          });
           const metrics = await control.evaluate((element) => {
             const button = element.querySelector("button")!;
             const field = element.querySelector("input")!;
