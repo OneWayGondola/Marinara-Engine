@@ -5003,7 +5003,7 @@ export async function generateRoutes(app: FastifyInstance) {
             );
           }
         }
-        if (enableChatTools && toolDefs && toolDefs.length > 0 && conn.treatAsLocalEndpoint === "true") {
+        if (toolsAttached && toolDefs && toolDefs.length > 0 && conn.treatAsLocalEndpoint === "true") {
           const toolLines = toolDefs.map(
             (t) =>
               `- ${t.function.name}: ${t.function.description}\n  Parameters: ${JSON.stringify(t.function.parameters)}`,
@@ -6509,6 +6509,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     stop: stopSequences.length ? stopSequences : undefined,
                     tools: toolDefs,
                     toolChoice: resolveMainGenerationToolChoice({ chatMetadata: chatMeta, enableChatTools, round }),
+                    debugMode: requestDebug,
                     enableCaching: conn.enableCaching === "true",
                     anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
                     cachingAtDepth: conn.cachingAtDepth ?? 5,
@@ -7738,7 +7739,8 @@ export async function generateRoutes(app: FastifyInstance) {
             // the live store, exactly as it does for /roll, so dismissing it there still
             // dismisses it. Only the last roll of a multi-roll turn is kept. Cleared when this
             // swipe rolled nothing, so a reroll of a swipe that did cannot leave its card behind.
-            extraUpdate.diceRollResult = toolDiceRollResult;
+            // A continuation still contains the original roll, unless this extension replaces it.
+            if (toolDiceRollResult || !input.continueMessageId) extraUpdate.diceRollResult = toolDiceRollResult;
             // Cache the final prompt (what was actually sent to the model) for Peek Prompt
             extraUpdate.cachedPrompt = finalPromptSent.map((m) => ({
               role: m.role,

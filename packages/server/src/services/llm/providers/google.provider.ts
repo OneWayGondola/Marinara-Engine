@@ -15,7 +15,8 @@ import {
   type LLMUsage,
 } from "../base-provider.js";
 import { shouldSuppressUnknownModelParameters } from "@marinara-engine/shared";
-import { getEmbeddingRequestTimeoutMs } from "../../../config/runtime-config.js";
+import { getEmbeddingRequestTimeoutMs, isDebugAgentsEnabled } from "../../../config/runtime-config.js";
+import { logDebugOverride } from "../../../lib/logger.js";
 import { decodePossiblyCompressedBody } from "../../../utils/security.js";
 
 /** A single Gemini response part (text, thought summary, or signature-only). */
@@ -627,6 +628,11 @@ export class GoogleProvider extends BaseLLMProvider {
 
     this.applyCustomParameters(body, options);
     applyGoogleFunctionCallingMode(body, options.toolChoice);
+    logDebugOverride(
+      options.debugMode === true || isDebugAgentsEnabled(),
+      "[debug/gemini] final tool request:\n%j",
+      body,
+    );
     const authHeaders =
       this.providerKind === "google_vertex"
         ? await googleAuthHeadersForVertex(this.apiKey)

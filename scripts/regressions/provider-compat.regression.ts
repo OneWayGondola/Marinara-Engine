@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { logger } from "../../packages/server/src/lib/logger.js";
 import {
   findKnownModel,
   isClaudeAdaptiveOnlyNoSamplingModel,
@@ -2949,6 +2950,61 @@ try {
   };
   const sseFrames = (frames: Array<Record<string, unknown>>) =>
     frames.map((frame) => `data: ${JSON.stringify(frame)}\n`).join("\n");
+
+  // Explicit debug logs the final serialized provider body, but not auth headers.
+  const priorWarn = logger.warn;
+  const priorLevel = logger.level;
+  const priorDebugAgents = process.env.DEBUG_AGENTS;
+  const promptLogs: unknown[][] = [];
+  let sentBody: unknown;
+  const loggingServer = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    sentBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    const frames =
+      request.url === "/messages"
+        ? [
+            { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done" } },
+            { type: "message_stop" },
+          ]
+        : [{ candidates: [{ content: { parts: [{ text: "Done" }] }, finishReason: "STOP" }] }];
+    response.end(sseFrames(frames));
+  });
+  await new Promise<void>((resolve) => loggingServer.listen(0, "127.0.0.1", resolve));
+  try {
+    logger.level = "warn";
+    logger.warn = ((...args: unknown[]) => {
+      promptLogs.push(args);
+    }) as typeof logger.warn;
+    const address = loggingServer.address();
+    if (!address || typeof address === "string") throw new Error("Prompt logging fixture did not bind");
+    for (const Provider of [AnthropicProvider, GoogleProvider]) {
+      const provider = new Provider(`http://127.0.0.1:${address.port}`, "synthetic-auth-marker");
+      for (const debug of ["off", "ui", "agents"]) {
+        process.env.DEBUG_AGENTS = debug === "agents" ? "true" : "false";
+        promptLogs.length = 0;
+        await provider.chatComplete([{ role: "user", content: "Synthetic tool prompt" }], {
+          model: Provider === AnthropicProvider ? "claude-sonnet-4-20250514" : "gemini-2.0-flash",
+          tools: [rollDiceTool],
+          debugMode: debug === "ui",
+          customParameters: { temperature: 0.42 },
+          onToken: () => {},
+        });
+        assert.equal(promptLogs.length, debug === "off" ? 0 : 1);
+        if (debug !== "off") {
+          assert.deepEqual(promptLogs[0]![1], sentBody, "debug logs include final parameter/tool shaping");
+          assert.ok(!JSON.stringify(promptLogs).includes("synthetic-auth-marker"), "auth headers are not prompt data");
+        }
+      }
+    }
+  } finally {
+    logger.warn = priorWarn;
+    logger.level = priorLevel;
+    if (priorDebugAgents === undefined) delete process.env.DEBUG_AGENTS;
+    else process.env.DEBUG_AGENTS = priorDebugAgents;
+    await new Promise<void>((resolve) => loggingServer.close(() => resolve()));
+  }
 
   // Keep the upstream body open: errors and cancellation must release it without
   // waiting for the provider/proxy to finish sending the turn.

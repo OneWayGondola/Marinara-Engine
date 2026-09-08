@@ -93,6 +93,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Assistant dice cards stay visible beside split Conversation text and survive continuations. Auto-attached Game tools receive local-model guidance, and location/time updates no longer require unused target fields (#5950).
+- Gemini and Anthropic tool requests expose their final provider prompt when chat or agent debug logging is enabled (#5918).
+
 - Game dice-tool guidance distinguishes an already rolled check from the sparse fallback, and Function Calling no longer claims every function is disabled while Game dice remain available (#5950).
 
 - Stopping a Gemini or Anthropic tool-streaming turn reports it as interrupted, and failed turns release their upstream connection (#5918).

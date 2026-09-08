@@ -559,7 +559,7 @@ function updateGameState(args: Record<string, unknown>, _gameState?: Record<stri
       value: args.value,
       description: args.description ?? "",
     },
-    display: `📊 ${args.type}: ${args.target} — ${args.key} → ${args.value}`,
+    display: `📊 ${type}${args.target || args.key ? `: ${[args.target, args.key].filter(Boolean).join(" — ")}` : ""} → ${args.value}`,
   };
 }
 

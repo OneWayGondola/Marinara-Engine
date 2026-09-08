@@ -206,38 +206,40 @@ export function ConversationMessageLine({ ctx }: { ctx: MessageRenderContext }) 
               <PendingTypingDots dotClassName="bg-[var(--muted-foreground)]/60" />
             ) : (
               <>
-                {renderedContentParts ? (
-                  <div className="space-y-1.5">
-                    {renderedContentParts.map((part, i) => (
-                      <div key={i} className="animate-[fadeSlideIn_0.4s_ease-out]">
-                        <MessageContent
-                          content={part}
-                          mentionNames={mentionNames}
-                          emojiMap={emojiMap}
-                          stickerMap={stickerMap}
-                          onImageOpen={(url) => onImageOpen(url)}
-                          selfCharacterId={selfCharacterId}
-                          galleryIndex={galleryIndex}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ) : diceRollReplacesMessageContent(message.role, extra.diceRollResult) ? (
+                {diceRollReplacesMessageContent(message.role, extra.diceRollResult) ? (
                   <DiceMessageContent diceRollResult={extra.diceRollResult} createdAt={message.createdAt} />
                 ) : (
                   <>
                     {extra.diceRollResult ? (
                       <DiceMessageContent diceRollResult={extra.diceRollResult} createdAt={message.createdAt} />
                     ) : null}
-                    <MessageContent
-                      content={renderedContent}
-                      mentionNames={mentionNames}
-                      emojiMap={emojiMap}
-                      stickerMap={stickerMap}
-                      onImageOpen={(url) => onImageOpen(url)}
-                      selfCharacterId={selfCharacterId}
-                      galleryIndex={galleryIndex}
-                    />
+                    {renderedContentParts ? (
+                      <div className="space-y-1.5">
+                        {renderedContentParts.map((part, i) => (
+                          <div key={i} className="animate-[fadeSlideIn_0.4s_ease-out]">
+                            <MessageContent
+                              content={part}
+                              mentionNames={mentionNames}
+                              emojiMap={emojiMap}
+                              stickerMap={stickerMap}
+                              onImageOpen={(url) => onImageOpen(url)}
+                              selfCharacterId={selfCharacterId}
+                              galleryIndex={galleryIndex}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <MessageContent
+                        content={renderedContent}
+                        mentionNames={mentionNames}
+                        emojiMap={emojiMap}
+                        stickerMap={stickerMap}
+                        onImageOpen={(url) => onImageOpen(url)}
+                        selfCharacterId={selfCharacterId}
+                        galleryIndex={galleryIndex}
+                      />
+                    )}
                   </>
                 )}
                 {isStreaming && (

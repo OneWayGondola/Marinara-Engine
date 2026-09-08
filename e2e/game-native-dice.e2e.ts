@@ -14,6 +14,7 @@ for (const theme of ["dark", "light"] as const) {
     const providerRequests: Array<Record<string, unknown>> = [];
     let finishFollowup: (() => void) | undefined;
     let returnedTotal = 0;
+    let textOnly = false;
     const provider = createServer(async (incoming, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
@@ -22,6 +23,12 @@ for (const theme of ["dark", "light"] as const) {
       response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
       const write = (delta: unknown, finishReason: string | null = null) =>
         response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+      if (textOnly) {
+        write({ content: "The path continues." });
+        write({}, "stop");
+        response.end("data: [DONE]\n\n");
+        return;
+      }
       const result = body.messages?.find((message: { role: string }) => message.role === "tool");
       if (result) {
         returnedTotal = JSON.parse(result.content).total;
@@ -68,6 +75,7 @@ for (const theme of ["dark", "light"] as const) {
           apiKey: "synthetic-test-key",
           model: "dice-fixture",
           maxContext: 32768,
+          treatAsLocalEndpoint: true,
         },
       });
       expect(connection.ok()).toBeTruthy();
@@ -150,9 +158,11 @@ for (const theme of ["dark", "light"] as const) {
       const firstRequest = providerRequests[0] as {
         tools: Array<{ function: { name: string } }>;
         tool_choice?: unknown;
+        messages: Array<{ role: string; content: string }>;
       };
       expect(firstRequest.tools.map((tool) => tool.function.name)).toEqual(["roll_dice"]);
       expect(firstRequest.tool_choice).not.toBe("required");
+      expect(firstRequest.messages.some((message) => message.content?.includes("<available_functions>"))).toBe(true);
       await expect(card).toHaveClass(/is-settled/);
       await testInfo.attach(`native-dice-${theme}-${testInfo.project.name}.png`, {
         body: await card.screenshot({ animations: "disabled" }),
@@ -182,6 +192,28 @@ for (const theme of ["dark", "light"] as const) {
         body: await section.screenshot({ animations: "disabled" }),
         contentType: "image/png",
       });
+      // A continuation extends the rolled message; a regeneration replaces it.
+      // Exercise both real persistence paths, without asking for another roll.
+      const rows = await (await request.get(`/api/chats/${chatId}/messages`)).json();
+      const savedMessageId = rows.at(-1).id;
+      textOnly = true;
+      const continued = await request.post("/api/generate", { data: { chatId, continueMessageId: savedMessageId } });
+      expect(continued.ok()).toBeTruthy();
+      const continuedRows = await (await request.get(`/api/chats/${chatId}/messages`)).json();
+      const continuedMessage = continuedRows.find((row: { id: string }) => row.id === savedMessageId);
+      expect(continuedMessage.content).toContain("The path continues.");
+      const continuedExtra =
+        typeof continuedMessage.extra === "string" ? JSON.parse(continuedMessage.extra) : continuedMessage.extra;
+      expect(continuedExtra.diceRollResult?.total).toBe(returnedTotal);
+      const regenerated = await request.post("/api/generate", {
+        data: { chatId, regenerateMessageId: savedMessageId },
+      });
+      expect(regenerated.ok()).toBeTruthy();
+      const regeneratedRows = await (await request.get(`/api/chats/${chatId}/messages`)).json();
+      const regeneratedMessage = regeneratedRows.find((row: { id: string }) => row.id === savedMessageId);
+      const regeneratedExtra =
+        typeof regeneratedMessage.extra === "string" ? JSON.parse(regeneratedMessage.extra) : regeneratedMessage.extra;
+      expect(regeneratedExtra.diceRollResult).toBeNull();
     } finally {
       finishFollowup?.();
       await page.close().catch(() => undefined);
@@ -192,3 +224,45 @@ for (const theme of ["dark", "light"] as const) {
     }
   });
 }
+
+test("Classic Conversation keeps an assistant dice card beside every content part", async ({ page, request }) => {
+  const response = await request.post("/api/chats", {
+    data: { name: "Split dice message proof", mode: "conversation", characterIds: [] },
+  });
+  expect(response.ok()).toBeTruthy();
+  const chat = await response.json();
+  try {
+    const message = await request.post(`/api/chats/${chat.id}/messages`, {
+      data: {
+        role: "assistant",
+        content: "First rolled paragraph.\n\nSecond consequence paragraph.",
+        extra: { diceRollResult: { notation: "1d20+3", rolls: [12], modifier: 3, total: 15 } },
+      },
+    });
+    expect(message.ok()).toBeTruthy();
+    await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      chatHelpSeenModes: ["conversation"],
+      conversationMessageStyle: "classic",
+    });
+    await page.addInitScript(
+      ({ id, version }) => {
+        localStorage.setItem("marinara-active-chat-id", id);
+        localStorage.setItem("marinara:whats-new:seen-version", version);
+      },
+      { id: chat.id, version },
+    );
+    await page.goto("/");
+    const content = page.locator('[data-component="ConversationMessage.Content"]');
+    await expect(content).toContainText("First rolled paragraph.");
+    await expect(content).toContainText("Second consequence paragraph.");
+    await expect(content.locator(".dice-roll-card")).toHaveCount(1);
+    await expect(content.locator(".dice-roll-total")).toHaveText("= 15");
+  } finally {
+    await page.close().catch(() => undefined);
+    await request.delete(`/api/chats/${chat.id}?force=true`);
+  }
+});

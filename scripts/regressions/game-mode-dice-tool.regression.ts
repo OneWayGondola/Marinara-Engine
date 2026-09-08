@@ -367,6 +367,19 @@ assert.equal(
   "an update type that is written back may still report that it applied",
 );
 
+for (const type of PERSISTED_GAME_STATE_UPDATE_TYPES) {
+  const value = type === "time_advance" ? "18:00" : "Riverwatch";
+  const [minimal] = await executeToolCalls([
+    {
+      id: `minimal-${type}`,
+      type: "function",
+      function: { name: "update_game_state", arguments: JSON.stringify({ type, value }) },
+    },
+  ]);
+  assert.equal(minimal?.success, true, `${type} does not use target or key`);
+  assert.equal(JSON.parse(minimal!.result).display, `📊 ${type} → ${value}`);
+}
+
 // ── 7. The GM prompt line, without which the tool is attached and never used ──
 
 const reminder = buildGmFormatReminder({ hasSceneModel: false, turnNumber: 1 } as Parameters<

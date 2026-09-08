@@ -16,10 +16,10 @@ export const updateGameStateToolManifest = {
         enum: ["location_change", "time_advance"],
       },
       target: { type: "string", description: "Who or what is being updated (character name or 'player')" },
-      key: { type: "string", description: "The specific stat/item/quest being changed" },
+      key: { type: "string", description: "Optional label for the location or time being changed" },
       value: { type: "string", description: "The new value or change amount" },
       description: { type: "string", description: "Human-readable description of the change" },
     },
-    required: ["type", "target", "key", "value"],
+    required: ["type", "value"],
   },
 } satisfies ToolDefinition;
