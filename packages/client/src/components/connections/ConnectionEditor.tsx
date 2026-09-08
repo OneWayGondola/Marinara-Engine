@@ -132,7 +132,6 @@ const API_KEY_LINKS: Partial<Record<APIProvider, { label: string; url: string }>
   nanogpt: { label: "Get your NanoGPT API key", url: "https://nano-gpt.com/api" },
   xai: { label: "Get your xAI API key", url: "https://console.x.ai" },
   arli: { label: "Get your Arli AI API key", url: "https://www.arliai.com/account" },
-  zai: { label: "Get your Z.AI API key", url: "https://z.ai/manage-apikey/apikey-list" },
   video_generation: { label: "Get your Google AI API key", url: "https://aistudio.google.com/apikey" },
 };
 
@@ -663,7 +662,12 @@ export function ConnectionEditor() {
                   : localProvider === "video_generation" &&
                       (selectedVideoProvider === "comfyui" || selectedVideoProvider === "swarmui")
                     ? undefined
-                    : API_KEY_LINKS[localProvider];
+                    : localProvider === "zai"
+                      ? {
+                          label: t("connections.mediaSources.zai.apiKeyLink"),
+                          url: "https://z.ai/manage-apikey/apikey-list",
+                        }
+                      : API_KEY_LINKS[localProvider];
 
   useEffect(() => {
     if (localProvider !== "image_generation" || !selectedImageDefaultsService) {
