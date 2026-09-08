@@ -99,6 +99,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Location lorebook budgets now keep rejected constant entries out of later keyword and recursive scans, so prompt contents agree with skipped-entry diagnostics.
+
 - Restart Server now uses the launcher's console and waits for the old process to exit before replacing it, with bounded shutdown instead of detached or overlapping servers (#5934).
 - Malformed Game combat tags no longer trigger quadratic parsing delays in the browser (#5937).
 - Experience setup preserves explicit package configs without double nesting and accepts larger, bounded setup payloads (#5938).

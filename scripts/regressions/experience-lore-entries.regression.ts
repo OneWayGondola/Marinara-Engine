@@ -281,6 +281,52 @@ try {
   } as Parameters<typeof connections.create>[0]);
   createdConnectionId = conn.id;
 
+  // #5943: the shared location budget binds ordinary and recursive scans too.
+  for (const recursiveScanning of [false, true]) {
+    const book = await createBook("Location budget", { tokenBudget: 4000, recursiveScanning });
+    const blocked = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Over budget",
+      constant: true,
+      content: loreContent("LOCATIONBLOCK", 1600),
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    const ambient = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Ambient",
+      constant: true,
+      content: "recursion-key",
+      preventRecursion: false,
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    const child = await lorebooks.createEntry({
+      lorebookId: book.id,
+      name: "Recursive child",
+      keys: ["recursion-key"],
+      content: "Child lore",
+    } as Parameters<typeof lorebooks.createEntry>[0]);
+    assert.ok(blocked && ambient && child);
+    const result = await processLorebooks(db, [], null, {
+      activeLorebookIds: [book.id],
+      forcedEntryIds: [blocked.id],
+      currentLocationTokenBudget: 100,
+    });
+    assert.equal(
+      result.activatedEntryIds.includes(blocked.id),
+      false,
+      "A dropped forced constant must not re-enter through a later scan",
+    );
+    assert.equal(result.activatedEntryIds.includes(ambient.id), true, "Unrelated ambient lore still activates");
+    assert.equal(
+      result.activatedEntryIds.includes(child.id),
+      recursiveScanning,
+      "Ordinary recursive activation remains available",
+    );
+    assert.equal(result.budgetSkippedEntries.filter((entry) => entry.id === blocked.id).length, 1);
+    assert.ok(
+      result.budgetSkippedEntries.every((entry) => !result.activatedEntryIds.includes(entry.id)),
+      "Skip diagnostics must describe entries actually omitted",
+    );
+  }
+
   // ── 1. Default-off: the unused path is the path that already shipped ──
   {
     const chat = await createExperienceChat("unused key");
