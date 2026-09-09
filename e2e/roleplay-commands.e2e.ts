@@ -803,12 +803,14 @@ test("Roleplay commands require attached agents, enforce combat audience, and fo
     await commands.getByRole("button", { name: "Expand Commands", exact: true }).click();
     await expect(commands.getByRole("checkbox", { name: /^Combat\b/u })).toBeChecked();
     await expect(commands.getByRole("checkbox", { name: /^Illustrations\b/u })).toBeChecked();
-    await commands.getByRole("combobox", { name: "Who can start combat", exact: true }).selectOption("narrator");
+    const combatAudience = commands.getByRole("combobox", { name: "Who can start combat", exact: true });
+    await combatAudience.selectOption("narrator");
     for (const theme of ["dark", "light"] as const) {
       await page.evaluate(async (theme) => {
         const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
         useUIStore.getState().setTheme(theme);
       }, theme);
+      await combatAudience.scrollIntoViewIfNeeded();
       await testInfo.attach(`roleplay-command-agents-${theme}-${testInfo.project.name}.png`, {
         body: await page.screenshot({
           animations: "disabled",

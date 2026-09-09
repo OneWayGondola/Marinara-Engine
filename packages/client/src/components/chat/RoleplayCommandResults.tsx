@@ -139,7 +139,7 @@ function CommandNotice({
           onChange={setDraft}
           closeLabel={t("roleplay.commands.activity.cancel")}
           footer={
-            <div className="flex flex-wrap items-center justify-end gap-2 pb-[env(safe-area-inset-bottom)]">
+            <div className="flex flex-wrap items-center justify-end gap-2 pb-[var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))]">
               {error && (
                 <p role="alert" className="mr-auto text-sm">
                   {error}
