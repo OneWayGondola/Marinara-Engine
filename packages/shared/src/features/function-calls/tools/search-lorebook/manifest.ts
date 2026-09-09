@@ -3,7 +3,7 @@ import type { ToolDefinition } from "../../tool-definitions.js";
 export const searchLorebookToolManifest = {
   name: "search_lorebook",
   description:
-    "Search enabled lorebooks for relevant world-building information by meaning. Semantic search requires vectorized entries; Game lore search reports when none are available.",
+    "Search enabled lorebooks for relevant world-building information by meaning. Semantic search requires vectorized entries; Game Master lore search reports when none are available.",
   parameters: {
     type: "object",
     properties: {

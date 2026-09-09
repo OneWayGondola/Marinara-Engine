@@ -811,7 +811,7 @@ async function resolveToolRuntime(
     }
   }
 
-  const searchLorebookForTools = async (query: string, category?: string | null) => {
+  const searchLorebookForTools = async (query: string, category?: string | null, requireVectors = false) => {
     const entries = await lorebooksStore.listActiveEntries({
       chatId,
       characterIds: resolveToolLorebookCharacterIds(promptCharacterIds, lorebookCharacterIds),
@@ -843,15 +843,15 @@ async function resolveToolRuntime(
             keys: entry.keys,
             similarity,
           }));
-        if (agentContext.chatMode === "game")
+        if (requireVectors)
           throw new Error(
             "Lore search embeddings are unavailable or incompatible. Check the embedding connection and re-vectorize the lorebook.",
           );
       } catch (err) {
-        if (agentContext.chatMode === "game") throw err;
+        if (requireVectors) throw err;
         logger.warn(err, "[lore-search] Semantic search unavailable; using text matches");
       }
-    } else if (agentContext.chatMode === "game") {
+    } else if (requireVectors) {
       throw new Error(
         "No vectorized lore entries are available. Vectorize an enabled lorebook before using Game lore search.",
       );
@@ -934,7 +934,7 @@ async function resolveToolRuntime(
     customTools: customToolDefs,
     spotify: spotifyCreds,
     spotifyRepeatAfterPlay: gameSpotifyMusicEnabled ? "track" : undefined,
-    searchLorebook: searchLorebookForTools,
+    searchLorebook: (query, category) => searchLorebookForTools(query, category, agentContext.chatMode === "game"),
     chatMeta: chatMetadata,
     onUpdateMetadata: updateChatMetadataForTools,
   };
@@ -989,6 +989,8 @@ async function resolveToolRuntime(
         }
         const executionContext = {
           ...baseToolExecutionContext,
+          // Existing Agent tools keep their text fallback when no vectors are available.
+          searchLorebook: searchLorebookForTools,
           saveLorebookEntry,
           replaceChatMessageContent: replaceChatMessageContentForAgent,
         };
