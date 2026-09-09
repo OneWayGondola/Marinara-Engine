@@ -7157,6 +7157,8 @@ export function ChatSettingsDrawer({
                   >
                     <InlineLorebookEntriesEditor
                       key={inlineResourceEditor.id}
+                      chatId={chat.id}
+                      entryStateOverrides={metadata.entryStateOverrides}
                       lorebookId={inlineResourceEditor.id}
                       lorebookName={
                         activeLorebooks.find((lorebook) => lorebook.id === inlineResourceEditor.id)?.name ?? "Lorebook"

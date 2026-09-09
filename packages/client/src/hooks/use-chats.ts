@@ -953,6 +953,23 @@ export function useUpdateChatMetadata() {
   });
 }
 
+export function useUpdateChatLorebookEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ chatId, entryId, enabled }: { chatId: string; entryId: string; enabled: boolean }) =>
+      api.patch<Chat>(`/chats/${chatId}/lorebook-entries/${entryId}`, { enabled }),
+    onMutate: ({ chatId }) => ({ version: nextChatMetadataMutationVersion(chatId, ["entryStateOverrides"]) }),
+    onSuccess: (chat, _variables, context) => {
+      syncCachedChat(qc, guardServerChatSnapshot(qc, chat, context.version));
+    },
+    onSettled: (_chat, _error, { chatId }) => {
+      qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+      qc.invalidateQueries({ queryKey: chatKeys.list() });
+      qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
+    },
+  });
+}
+
 export function useClearAutonomousUnread() {
   const qc = useQueryClient();
   return useMutation({
