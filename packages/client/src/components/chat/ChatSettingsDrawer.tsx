@@ -9323,7 +9323,7 @@ export function ChatSettingsDrawer({
                   (connection) =>
                     chat.connectionId
                       ? connection.id === chat.connectionId
-                      : connection.isDefault === true || connection.isDefault === "true",
+                      : isConnectionFlagTrue(connection.isDefault),
                 )?.provider
               }
               connections={textConnectionsList}

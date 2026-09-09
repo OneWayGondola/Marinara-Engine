@@ -90,6 +90,7 @@ for (const theme of ["dark", "light"] as const) {
       );
       await expect(lore()).toBeChecked();
       await expect(tools()).not.toBeChecked();
+      await section.evaluate((element) => element.scrollIntoView({ block: "start" }));
       await page.screenshot({ path: testInfo.outputPath(`game-tool-controls-${theme}.png`) });
       await section.getByRole("combobox", { name: "Game tool connection", exact: true }).selectOption("");
       await expect(tools()).toBeDisabled();

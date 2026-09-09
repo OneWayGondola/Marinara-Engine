@@ -16,7 +16,7 @@ A custom tool is not attached to a character card. Instead, you turn it on for a
 
 Native function calling requires a tool-capable connection. Claude and Grok subscription transports ignore native tool definitions, so Chat Settings shows an availability notice and disables the tool controls for those connections. Their text commands and dice tags remain available. Game chats can select a separate tool-planning connection; see [Optional tool planning and lore searches](../game/getting-started.md#optional-tool-planning-and-lore-searches) for its cost and behavior.
 
-Lorebook searches use semantic ranking when enabled, vectorized entries are available. Conversation and Roleplay retain text matching when semantic search is unavailable. Game lore search has its own opt-in and reports missing or incompatible vectors; it never vectorizes a book automatically.
+Lorebook searches use semantic ranking when enabled lore entries have compatible vectors. Conversation and Roleplay retain text matching when semantic search is unavailable. Game lore search has its own opt-in and reports missing or incompatible vectors; it never vectorizes a book automatically.
 
 ## The Functions section
 

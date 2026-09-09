@@ -312,7 +312,7 @@
   "chat.settings.tools.loreSearchHelp": "Search enabled, vectorized lore by meaning without enabling other tools. Vectorize books first. Lookups can add embedding and model requests.",
   "chat.settings.tools.missingConnection": "Connection unavailable",
   "chat.settings.tools.sameConnection": "Same as narrator",
-  "chat.settings.tools.separateHint": "Game dice remain available. Enable Tool Use adds the other optional tools to the planning request.",
+  "chat.settings.tools.separateHint": "Game dice remain available. Enabling Tool Use adds the other optional tools to the planning request.",
   "chat.settings.tools.unavailable": "Native tools are unavailable on this connection. Claude and Grok subscriptions only support text commands and dice tags. Choose a connection that supports tool calls to use these controls.",
   "chat.settingsProfile.action.apply": "Apply a settings profile to this chat",
   "chat.settingsProfile.action.delete": "Delete profile",
