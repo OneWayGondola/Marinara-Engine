@@ -462,8 +462,8 @@ assert.match(
 );
 assert.match(
   generateRouteSource,
-  /extraUpdate\.diceRollResult = toolDiceRollResult;/u,
-  "the roll must be saved on the message extra, or it is gone the moment the page reloads",
+  /extraUpdate\.diceRollResults = \[\.\.\.retainedRolls, \.\.\.toolDiceRollResults\];/u,
+  "all Game rolls must be saved on the swipe, including retained continuation rolls",
 );
 assert.match(
   generateRouteSource,

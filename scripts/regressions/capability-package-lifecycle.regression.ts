@@ -1176,6 +1176,8 @@ try {
   const blocked = installedPackage("hierarchical-maps", ["agent", "maps"]);
   const failing = installedPackage("readiness-failure", ["agent"]);
   const ready = installedPackage("readiness-success", ["agent"]);
+  failing.manifest.permissions.push("chat-read");
+  ready.manifest.permissions.push("chat-read");
   ready.manifest.files.push({ path: "runtime-dependency.mjs", sha256: "0".repeat(64), bytes: 1 });
   writeRegistry([blocked, failing, ready]);
   writeFileSync(

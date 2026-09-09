@@ -67,6 +67,7 @@ import { useChatStore } from "../../stores/chat.store";
 import { parseChatMetadata } from "../../lib/chat-display";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
 import { isVisibleGameMessage } from "../../lib/chat-message-visibility";
+import { readDiceRollResults } from "../../lib/dice-roll-result";
 import { estimateGameSessionHistoryTokens } from "../../lib/game-session-history";
 import { createMessageMacroResolver, findCharacterByName } from "../../lib/chat-macros";
 import { animateTextHtml } from "./AnimatedText";
@@ -929,11 +930,12 @@ function applySegmentEditOverlay(
 
 function formatSkillCheckLogContent(message: NarrationMessage): NarrationSegment[] {
   const skillChecks = parseGmTags(message.content || "").skillChecks;
-  if (skillChecks.length === 0) return [];
+  const extra = parseMessageExtraRecord(message.extra);
+  const diceRolls = readDiceRollResults(extra.diceRollResults ?? extra.diceRollResult);
 
   const formatResult = (result: SkillCheckResult): string => formatSkillCheckResultSummary(result);
 
-  return skillChecks.map((skillCheck, index) => {
+  const checkSegments: NarrationSegment[] = skillChecks.map((skillCheck, index) => {
     const result = skillCheck.resolvedResult;
     if (!result) {
       return {
@@ -949,6 +951,16 @@ function formatSkillCheckLogContent(message: NarrationMessage): NarrationSegment
       content: formatResult(result),
     };
   });
+  return [
+    ...diceRolls.map(
+      (roll, index): NarrationSegment => ({
+        id: `${message.id}-dice-roll-log-${index}`,
+        type: "system",
+        content: `🎲 ${roll.notation}: ${roll.rolls.join(" + ")}${roll.modifier ? ` ${roll.modifier > 0 ? "+" : "−"} ${Math.abs(roll.modifier)}` : ""} = ${roll.total}`,
+      }),
+    ),
+    ...checkSegments,
+  ];
 }
 
 export function GameNarration({
@@ -3635,7 +3647,7 @@ export function GameNarration({
   const ACTIVE_SEGMENT_ACTION_BTN =
     "inline-flex items-center justify-center rounded p-1 text-[var(--muted-foreground)]/40 transition-colors hover:bg-[var(--muted)]/30 hover:text-[var(--muted-foreground)] dark:text-white/20 dark:hover:bg-white/10 dark:hover:text-white/60";
   const LOG_SEGMENT_ACTION_BTN =
-    "rounded p-1 text-white/45 opacity-100 transition-all hover:bg-white/10 hover:text-white/60 md:text-white/20 md:opacity-0 md:group-hover/logseg:opacity-100";
+    "rounded p-1 text-[var(--foreground)]/45 opacity-100 transition-all hover:bg-[var(--muted)]/35 hover:text-[var(--foreground)]/70 md:opacity-0 md:group-hover/logseg:opacity-100 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white/70";
   const LOG_DELETE_ACTION_BTN =
     "text-[var(--marinara-chat-message-action-text)] hover:bg-[var(--marinara-chat-message-action-bg-hover)] hover:text-[var(--marinara-chat-message-action-text-hover)] dark:text-[var(--marinara-chat-message-action-text)] dark:hover:bg-[var(--marinara-chat-message-action-bg-hover)] dark:hover:text-[var(--marinara-chat-message-action-text-hover)]";
   const combatMetaButton = onRequestCombatStart ? (
@@ -4158,8 +4170,7 @@ export function GameNarration({
           ? `log:${sourceMessageId}`
           : null;
     const copyText = seg.readableContent ?? stripGmTagsKeepReadables(seg.content);
-    const stackedActionButtonClass =
-      "rounded p-1 text-[var(--foreground)]/45 opacity-100 transition-all hover:bg-[var(--muted)]/35 hover:text-[var(--foreground)]/70 md:text-[var(--foreground)]/25 md:opacity-0 md:group-hover/logseg:opacity-100 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white/70 dark:md:text-white/25";
+    const stackedActionButtonClass = LOG_SEGMENT_ACTION_BTN;
     const copyButton = copyKey ? (
       <button
         type="button"
@@ -5085,6 +5096,7 @@ export function GameNarration({
                     {showLogsButton && (
                       <button
                         onClick={() => setLogsOpen(true)}
+                        aria-label={localizeUi("ui.game.gamesurfacecomponent.logs")}
                         disabled={logEntries.length === 0}
                         className={cn(NARRATION_META_BTN, "disabled:opacity-40")}
                       >
@@ -5161,6 +5173,7 @@ export function GameNarration({
                     {showLogsButton && (
                       <button
                         onClick={() => setLogsOpen(true)}
+                        aria-label={localizeUi("ui.game.gamesurfacecomponent.logs")}
                         disabled={logEntries.length === 0}
                         className={cn(NARRATION_META_BTN, "disabled:opacity-40")}
                       >
@@ -5235,6 +5248,7 @@ export function GameNarration({
                     {showLogsButton && (
                       <button
                         onClick={() => setLogsOpen(true)}
+                        aria-label={localizeUi("ui.game.gamesurfacecomponent.logs")}
                         disabled={logEntries.length === 0}
                         className={cn(NARRATION_META_BTN, "disabled:opacity-40")}
                       >
@@ -5266,6 +5280,7 @@ export function GameNarration({
                   <div className="mb-2">
                     <button
                       onClick={() => setLogsOpen(true)}
+                      aria-label={localizeUi("ui.game.gamesurfacecomponent.logs")}
                       className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-white/75 transition-colors hover:bg-white/10"
                     >
                       <ScrollText size={12} />
@@ -5297,9 +5312,11 @@ export function GameNarration({
           >
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-white">{localizeUi("ui.game.gamenarration.sessionLogs")}</h3>
+                <h3 className="text-sm font-semibold text-[var(--foreground)]">
+                  {localizeUi("ui.game.gamenarration.sessionLogs")}
+                </h3>
                 {logEntries.length > 0 && (
-                  <p className="text-[0.65rem] text-white/45">
+                  <p className="text-[0.65rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.game.gamenarration.showing")} {visibleLogEntries.length}{" "}
                     {localizeUi("ui.noodle.noodlehome.of")} {logEntries.length}
                     {sessionHistoryTokens > 0 && (
@@ -5339,7 +5356,8 @@ export function GameNarration({
                     setEditingLogSeg(null);
                     logScrolledRef.current = false;
                   }}
-                  className="rounded-lg p-1 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                  aria-label={localizeUi("ui.game.gamesurfacecomponent.closeLogs")}
+                  className="rounded-lg p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
                 >
                   <X size={16} />
                 </button>
@@ -5383,6 +5401,10 @@ export function GameNarration({
                 </div>
               )}
               {visibleLogEntries.map((entry) => {
+                const messageActionSegmentIndex = Math.max(
+                  0,
+                  entry.segments.findIndex((segment) => segment.sourceSegmentIndex != null),
+                );
                 return (
                   <div key={entry.messageId} className="space-y-1.5">
                     {entry.segments.map((seg, entrySegmentIndex) => {
@@ -5398,14 +5420,15 @@ export function GameNarration({
                       const translatedText = sourceMessageId ? translations[sourceMessageId] : undefined;
                       const translationSource = sourceMessageId ? translationSources[sourceMessageId] : undefined;
                       const isTranslating = sourceMessageId ? !!translating[sourceMessageId] : false;
-                      const translatedSegmentText = segmentSourceMessage
-                        ? getGameTranslatedSegmentText(
-                            segmentSourceMessage,
-                            translatedText,
-                            speakerColors,
-                            sourceSegmentIndex,
-                          )
-                        : undefined;
+                      const translatedSegmentText =
+                        segmentSourceMessage && hasSourceSegmentIndex
+                          ? getGameTranslatedSegmentText(
+                              segmentSourceMessage,
+                              translatedText,
+                              speakerColors,
+                              sourceSegmentIndex,
+                            )
+                          : undefined;
                       const showTranslationOnly =
                         translationDisplayOnly &&
                         !!segmentSourceMessage &&
@@ -5472,7 +5495,7 @@ export function GameNarration({
                         ? (sourceMessagesById.get(sourceMessageId) ?? null)
                         : null;
                       const canPeekPrompt =
-                        entrySegmentIndex === 0 &&
+                        entrySegmentIndex === messageActionSegmentIndex &&
                         !!onPeekPrompt &&
                         !!sourceMessageId &&
                         (sourceMessageRole === "assistant" || sourceMessageRole === "narrator") &&
@@ -5532,7 +5555,10 @@ export function GameNarration({
                         ? renderPeekPromptButton(sourceMessageId, LOG_SEGMENT_ACTION_BTN)
                         : null;
                       const translateButton =
-                        entrySegmentIndex === 0 && segmentSourceMessage && sourceMessageRole !== "system" ? (
+                        entrySegmentIndex === messageActionSegmentIndex &&
+                        hasSourceSegmentIndex &&
+                        segmentSourceMessage &&
+                        sourceMessageRole !== "system" ? (
                           <button
                             type="button"
                             onPointerDown={stopLogActionPointerDown}
@@ -5816,7 +5842,7 @@ export function GameNarration({
                                   ? "border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)]"
                                   : seg.partyType === "side" || seg.partyType === "extra"
                                     ? "border-sky-400/10 bg-sky-950/15"
-                                    : "border-white/5 bg-black/20",
+                                    : "border-[var(--border)] bg-[var(--muted)]/20 dark:border-white/5 dark:bg-black/20",
                               isActiveSeg && "ring-1 ring-[var(--primary)]/40",
                               isSelectedForDeletion && MESSAGE_SELECTION_SURFACE_CLASS,
                               jumpRowClasses,
@@ -5912,7 +5938,7 @@ export function GameNarration({
                               ) : (
                                 <div
                                   className={cn(
-                                    "mt-0.5 text-xs leading-relaxed text-white/80",
+                                    "mt-0.5 text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80",
                                     seg.partyType === "thought" ? "italic opacity-80" : "font-semibold",
                                   )}
                                   style={seg.color ? { ...narrationFontStyle, color: seg.color } : narrationFontStyle}
@@ -5928,7 +5954,7 @@ export function GameNarration({
                                 renderTranslationPanel(
                                   segmentSourceMessage,
                                   translatedSegmentText,
-                                  entrySegmentIndex === 0 && isTranslating,
+                                  entrySegmentIndex === messageActionSegmentIndex && isTranslating,
                                   "mt-1",
                                 )}
                             </div>
@@ -5950,12 +5976,12 @@ export function GameNarration({
                           >
                             {actionButtons}
                             <div className="mb-1 flex items-center">
-                              <span className="text-[0.6rem] font-semibold uppercase tracking-wide text-cyan-200/80">
+                              <span className="text-[0.6rem] font-semibold uppercase tracking-wide text-cyan-800 dark:text-cyan-200/80">
                                 {localizeUi("ui.characters.advancedtab.system")}
                               </span>
                             </div>
                             <div
-                              className="whitespace-pre-wrap break-words pr-6 text-xs leading-relaxed text-cyan-50/80"
+                              className="whitespace-pre-wrap break-words pr-6 text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-cyan-50/80"
                               style={narrationFontStyle}
                               dangerouslySetInnerHTML={{
                                 __html: animateTextHtml(
@@ -6006,7 +6032,7 @@ export function GameNarration({
                               renderTranslationPanel(
                                 segmentSourceMessage,
                                 translatedSegmentText,
-                                entrySegmentIndex === 0 && isTranslating,
+                                entrySegmentIndex === messageActionSegmentIndex && isTranslating,
                                 "mt-1",
                               )}
                           </div>
@@ -6018,7 +6044,7 @@ export function GameNarration({
                           {...(jumpRowProps ?? {})}
                           data-log-anchor-key={logAnchorKey}
                           className={cn(
-                            "group/logseg relative rounded-lg border border-white/5 bg-black/20 px-3 py-2",
+                            "group/logseg relative rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 dark:border-white/5 dark:bg-black/20 px-3 py-2",
                             isActiveSeg && "ring-1 ring-[var(--primary)]/40",
                             isSelectedForDeletion && MESSAGE_SELECTION_SURFACE_CLASS,
                             jumpRowClasses,
@@ -6026,7 +6052,7 @@ export function GameNarration({
                         >
                           {actionButtons}
                           <div className="mb-1 flex items-center">
-                            <span className="text-[0.6rem] font-semibold uppercase tracking-wide text-white/80">
+                            <span className="text-[0.6rem] font-semibold uppercase tracking-wide text-[var(--foreground)]/80 dark:text-white/80">
                               {localizeUi("ui.game.gamenarration.narration")}
                             </span>
                             {voiceButton}
@@ -6035,7 +6061,7 @@ export function GameNarration({
                             editTextarea
                           ) : (
                             <div
-                              className="text-xs leading-relaxed text-white/80"
+                              className="text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80"
                               style={narrationStyle}
                               dangerouslySetInnerHTML={{
                                 __html: animateTextHtml(
@@ -6049,7 +6075,7 @@ export function GameNarration({
                             renderTranslationPanel(
                               segmentSourceMessage,
                               translatedSegmentText,
-                              entrySegmentIndex === 0 && isTranslating,
+                              entrySegmentIndex === messageActionSegmentIndex && isTranslating,
                               "mt-1",
                             )}
                         </div>
