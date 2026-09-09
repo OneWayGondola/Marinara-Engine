@@ -6165,10 +6165,13 @@ export async function generateRoutes(app: FastifyInstance) {
           const pendingGameStateToolCalls: Parameters<typeof executeToolCalls>[0] = [];
           const persistGameStateToolCalls = async (messageId: string, swipeIndex: number) => {
             if (!pendingGameStateToolCalls.length || !messageId || abortController.signal.aborted) return;
-            const siblingSnapshot =
+            const siblingSnapshot = projectGameSnapshotLocation(
               input.regenerateMessageId && swipeIndex > 0
                 ? await gameStateStore.getByChatAndMessage(input.chatId, messageId, swipeIndex - 1)
-                : null;
+                : null,
+              ownerSpatialProjection,
+            );
+            const toolBaseSnapshot = siblingSnapshot ?? baseGameStateSnapshot;
             const results = await executeToolCalls(pendingGameStateToolCalls.splice(0), {
               applyGameStateUpdate: async ({ type, value }) => {
                 const field = type === "location_change" ? "location" : "time";
@@ -6177,7 +6180,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   field,
                   value,
                   ownerSpatialProjection?.ownerMode === "game",
-                  { messageId, swipeIndex, baseSnapshot: siblingSnapshot ?? baseGameStateSnapshot },
+                  {
+                    messageId,
+                    swipeIndex,
+                    baseSnapshot: toolBaseSnapshot,
+                    ...(ownerSpatialProjection?.ownerMode === "game"
+                      ? { compatibilityLocation: toolBaseSnapshot?.location ?? null }
+                      : {}),
+                  },
                 );
                 logger.debug("[game_state_patch] tool update_game_state: %j", patch);
                 sendSseEvent(reply, { type: "game_state_patch", data: patch });

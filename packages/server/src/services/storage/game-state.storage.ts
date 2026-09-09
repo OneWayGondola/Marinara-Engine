@@ -377,7 +377,12 @@ export function createGameStateStorage(db: DB) {
       field: "location" | "time",
       value: string,
       locationIsAuthoritative: boolean,
-      target: { messageId: string; swipeIndex: number; baseSnapshot: typeof gameStateSnapshots.$inferSelect | null },
+      target: {
+        messageId: string;
+        swipeIndex: number;
+        baseSnapshot: typeof gameStateSnapshots.$inferSelect | null;
+        compatibilityLocation?: string | null;
+      },
     ) {
       if (field === "location" && locationIsAuthoritative) {
         throw new Error("Location is controlled by Spatial Context. Use the game's movement controls.");
@@ -391,6 +396,9 @@ export function createGameStateStorage(db: DB) {
         if (patch[field] !== value) throw new Error(`The ${field} field is locked; no change was applied.`);
         const stored = await store.updateByMessage(target.messageId, target.swipeIndex, chatId, patch, undefined, {
           baseSnapshot: base,
+          ...(target.compatibilityLocation !== undefined
+            ? { compatibilityLocation: target.compatibilityLocation }
+            : {}),
         });
         if (stored?.[field] !== value) throw new Error("The game-state update could not be stored.");
         return { [field]: stored[field] };
