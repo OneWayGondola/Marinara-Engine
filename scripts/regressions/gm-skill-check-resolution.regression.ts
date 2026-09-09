@@ -184,7 +184,11 @@ assert.doesNotMatch(overwritten.content, /rolls="7"/u, "the invented die must no
 const overwrittenTag = parseSkillCheckTagBody(tagBodies(overwritten.content)[0]!);
 assert.equal(overwrittenTag?.resolvedResult?.usedRoll, 11);
 assert.equal(overwrittenTag?.resolvedResult?.total, 11, "Perception earns no modifier from this sheet");
-assert.equal(overwrittenTag?.resolvedResult?.success, false, "11 misses DC 12 — the honest outcome, not the claimed one");
+assert.equal(
+  overwrittenTag?.resolvedResult?.success,
+  false,
+  "11 misses DC 12 — the honest outcome, not the claimed one",
+);
 assert.match(overwritten.content, /The guard turns\./u);
 assert.match(overwritten.content, /He does not see you\./u);
 
@@ -289,7 +293,11 @@ for (const poolTag of unvouchedPools) {
   // POSTs any tag with no resolvedResult, and the endpoint only rolls d20s.
   const clientTag = parseGmTags(poolTag).skillChecks[0]!;
   assert.equal(clientTag.resolvedResult, undefined, `precondition — the reader cannot vouch for this: ${poolTag}`);
-  assert.equal(isEngineRollableSkillCheckTag(clientTag), false, `the client must not ask the endpoint to roll: ${poolTag}`);
+  assert.equal(
+    isEngineRollableSkillCheckTag(clientTag),
+    false,
+    `the client must not ask the endpoint to roll: ${poolTag}`,
+  );
   assert.equal(clientTag.preRolledD20, undefined, "a pool die is never adopted as the player's own d20");
 }
 
@@ -480,7 +488,7 @@ assert.match(
 const gameSurface = readFileSync(join(root, "packages/client/src/components/game/GameSurface.tsx"), "utf8");
 assert.match(
   gameSurface,
-  /\} else if \(isEngineRollableSkillCheckTag\(sc\)\) \{\s*\n\s*skillCheck\.mutate\(/u,
+  /isEngineRollableSkillCheckTag\(sc\)\s*\?\s*\(\s*await skillCheck\.mutateAsync\(/u,
   "the client must not ask the endpoint to roll a system the engine does not implement",
 );
 
@@ -509,8 +517,8 @@ const reminderContext = {
 const reminder = buildGmFormatReminder(reminderContext);
 assert.match(reminder, /\[skill_check: skill="Skill Name" dc="1-20"\]/u, "the advertised shape is sparse");
 assert.match(reminder, /Do NOT invent rolls, modifier, total or result/u);
-assert.match(reminder, /the engine rolls the die and fills them in/u);
-assert.match(reminder, /the consequence belongs to your next turn/u, "the two-beat convention is stated, not implied");
+assert.match(reminder, /the engine supplies the die and character-sheet modifiers/u);
+assert.match(reminder, /finish this same turn/u, "the outcome continuation is stated, not implied");
 assert.doesNotMatch(reminder, /total="roll \+ modifier"/u, "the GM must no longer be shown a total to fill in");
 assert.doesNotMatch(reminder, /rolls="1-20"/u, "the GM must no longer be shown a die to fill in");
 
@@ -521,34 +529,18 @@ assert.match(
   "when the player rolled, the GM passes their number through and nothing else",
 );
 assert.match(preRollReminder, /Do NOT write modifier, total or result/u);
-assert.match(preRollReminder, /the consequence belongs to your next turn/u);
+assert.match(preRollReminder, /finish this same turn/u);
 assert.doesNotMatch(preRollReminder, /total="roll \+ modifier"/u);
 
-// Pool systems still need the full form, because the engine cannot resolve them
-// — and the sparse convention removed the full form from every other template
-// in the file, so this clause is the only place the GM is shown one. Telling it
-// to "write the full tag yourself" without showing the tag is how a pool arrives
-// missing modifier= or result=, which is exactly the shape left unresolved.
-const POOL_EXAMPLE_TAG = `[skill_check: skill="Intimidation" dc="4" rolls="3|7|9|2|10|5" modifier="0" total="3" result="failure" resolution="successes" dice="6d10"]`;
+// Pool requests state their rules rather than supplying invented results.
+const POOL_EXAMPLE_TAG = `[skill_check: skill="Intimidation" dc="4" dice="6d10" resolution="successes" threshold="6"]`;
 for (const text of [reminder, preRollReminder]) {
-  assert.match(text, /dice="6d10"/u, "pool guidance survives the convention change");
-  assert.match(text, /resolution="successes"/u);
-  assert.ok(text.includes(POOL_EXAMPLE_TAG), "the GM must be shown the full tag it is told to write");
+  assert.ok(text.includes(POOL_EXAMPLE_TAG), "the GM is shown a pool with an explicit per-die threshold");
+  assert.match(text, /Never invent pool results or omit its threshold/u);
+  assert.match(text, /\[dice: 3d8\+2\]/u, "ordinary dice requests also work without tools");
 }
-
-// The example is not decoration: the shape the GM is shown has to be one the
-// shared reader audits as complete, or the prompt teaches a tag the engine
-// leaves unresolved.
 const poolExampleTag = parseSkillCheckTagBody(POOL_EXAMPLE_TAG.replace(/^\[skill_check:\s*|\]$/gu, ""));
-assert.ok(poolExampleTag?.resolvedResult, "the advertised pool tag must read back as a complete, trusted pool");
-assert.equal(poolExampleTag.resolvedResult!.resolution, "successes");
-assert.equal(poolExampleTag.resolvedResult!.dice, "6d10");
-assert.deepEqual(poolExampleTag.resolvedResult!.rolls, [3, 7, 9, 2, 10, 5]);
-assert.equal(
-  (await resolve(POOL_EXAMPLE_TAG, [])).content,
-  POOL_EXAMPLE_TAG,
-  "and the engine must leave the tag it advertises exactly as written",
-);
+assert.equal(poolExampleTag?.resolvedResult, undefined, "the advertised pool requests numbers from the engine");
 
 // ── 10. The serializer round-trips, so the two halves cannot drift ──
 
@@ -681,7 +673,11 @@ assert.equal(sparseBodies[1]!.resolvedResult, undefined);
 assert.equal(sparseBodies[1]!.skill, "Stealth");
 assert.equal(sparseBodies[1]!.dc, 15);
 assert.equal(sparseBodies[1]!.advantage, true, "the mode the GM declared survives the strip");
-assert.equal(parseGmTags(failed.content).skillChecks[0]!.resolvedResult, undefined, "both readers agree it is unrolled");
+assert.equal(
+  parseGmTags(failed.content).skillChecks[0]!.resolvedResult,
+  undefined,
+  "both readers agree it is unrolled",
+);
 
 // The turn completes: a later pass over the saved text rolls the checks that were
 // owed, so the strip costs the check its numbers for one turn and costs the turn
@@ -709,7 +705,7 @@ assert.equal(untouched.sparse, 0);
 // through the error door.
 assert.match(
   generateRoutes,
-  /const rolled = await resolveSkillCheckTagsInContent\(fullResponse, \{[\s\S]*?\}\);\s*\n\s*if \(rolled\.content !== fullResponse\) \{/u,
+  /const rolled = await resolveSkillCheckTagsInContent\(fullResponse, \{[\s\S]*?\}\);\s*const generalRolls = resolveGameDiceRequests\(rolled\.content, toolDiceRollResults\);\s*if \(generalRolls\.content !== fullResponse\) \{/u,
   "the resolver's own output decides the frame and the save on both paths",
 );
 

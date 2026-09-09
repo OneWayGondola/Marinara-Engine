@@ -246,6 +246,8 @@ export interface SkillCheckTagResolutionOptions {
 
 export interface SkillCheckTagResolution {
   content: string;
+  /** Newly rolled checks, for narration that must wait for these outcomes. */
+  results?: SkillCheckResult[];
   /** How many tags this pass rewrote. */
   resolved: number;
   /** How many tags it left alone because the GM's own numbers held up. */
@@ -370,10 +372,13 @@ export async function resolveSkillCheckTagsInContent(
     if (pending.length === 0) return { content, resolved: 0, trusted, left, sparse: 0 };
 
     const context = await options.loadContext();
-    const rolled = rewrite((entry) =>
-      serializeResolvedSkillCheckTag(resolveSkillCheckWithContext(context, entry.request, options.rollD20)),
-    );
-    return { content: rolled, resolved: pending.length, trusted, left, sparse: 0 };
+    const results: SkillCheckResult[] = [];
+    const rolled = rewrite((entry) => {
+      const result = resolveSkillCheckWithContext(context, entry.request, options.rollD20);
+      results.push(result);
+      return serializeResolvedSkillCheckTag(result);
+    });
+    return { content: rolled, results, resolved: pending.length, trusted, left, sparse: 0 };
   } catch (err) {
     // The log itself must not be a second way to fail: a rejected value with a
     // throwing getter would otherwise escape this catch and take the turn down.
