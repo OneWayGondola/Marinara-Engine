@@ -2,6 +2,7 @@
 // Routes: Chats
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 import AdmZip from "adm-zip";
 import { logger } from "../lib/logger.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
@@ -1328,6 +1329,32 @@ export async function chatsRoutes(app: FastifyInstance) {
     const input = markAutonomousUnreadSchema.parse(req.body ?? {});
     const updated = await storage.markAutonomousUnread(req.params.id, input);
     return updated ? normalizeChatForResponse(updated) : updated;
+  });
+
+  app.patch<{ Params: { id: string; entryId: string } }>("/:id/lorebook-entries/:entryId", async (req, reply) => {
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: "enabled must be a boolean" });
+    const entry = await createLorebooksStorage(app.db).getEntry(req.params.entryId);
+    if (!entry) return reply.status(404).send({ error: "Lorebook entry not found" });
+    if (parsed.data.enabled && !entry.enabled) {
+      return reply.status(409).send({ error: "Enable this entry in its lorebook first" });
+    }
+    // Merge one flag inside the existing serialized metadata write. In-flight
+    // ephemeral countdowns and changes to other entries must survive.
+    const updated = await storage.patchMetadata(req.params.id, (current) => {
+      const overrides = (current.entryStateOverrides ?? {}) as Record<
+        string,
+        { enabled?: boolean; ephemeral?: number | null }
+      >;
+      return {
+        entryStateOverrides: {
+          ...overrides,
+          [req.params.entryId]: { ...overrides[req.params.entryId], enabled: parsed.data.enabled },
+        },
+      };
+    });
+    if (!updated) return reply.status(404).send({ error: "Chat not found" });
+    return normalizeChatForResponse(updated);
   });
 
   // Clear autonomous unread state when the user views the relevant chat.
