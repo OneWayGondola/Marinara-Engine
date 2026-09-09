@@ -24,6 +24,7 @@ import {
   normalizeVideoGenerationProfile,
 } from "@marinara-engine/shared";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { canRefreshLocalContext, fetchLocalContextLimit } from "../services/llm/local-context-limit.js";
 import { resetMemoryRecallVectorizerCache } from "../services/memory-recall-embedding.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
@@ -405,6 +406,26 @@ export async function connectionsRoutes(app: FastifyInstance) {
 
   app.get("/", async () => {
     return storage.list();
+  });
+
+  app.post("/refresh-local-context", async () => {
+    const candidates = (await storage.list()).filter(canRefreshLocalContext);
+    const updated: string[] = [];
+    // Each connection makes four bounded metadata probes; keep only three connections active at once.
+    for (let index = 0; index < candidates.length; index += 3) {
+      await Promise.all(
+        candidates.slice(index, index + 3).map(async (candidate) => {
+          const connection = await storage.getWithKey(candidate.id);
+          if (!connection) return;
+          const maxContext = await fetchLocalContextLimit(connection);
+          if (maxContext === null || maxContext === connection.maxContext) return;
+          if (await storage.updateContextIfUnchanged(connection, maxContext)) {
+            updated.push(connection.id);
+          }
+        }),
+      );
+    }
+    return { updated };
   });
 
   app.get<{ Params: { filename: string } }>("/images/file/:filename", async (req, reply) => {
