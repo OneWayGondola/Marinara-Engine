@@ -9320,6 +9320,26 @@ export function ChatSettingsDrawer({
           <div style={{ order: CHAT_SETTINGS_ORDER.functionCalling }}>
             <FunctionCallingSection
               isGameMode={isGame}
+              narratorProvider={
+                (
+                  chatGenerationConnectionsList as Array<{
+                    id: string;
+                    provider?: string;
+                    isDefault?: boolean | string;
+                  }>
+                ).find((connection) =>
+                  chat.connectionId ? connection.id === chat.connectionId : isConnectionFlagTrue(connection.isDefault),
+                )?.provider
+              }
+              connections={textConnectionsList}
+              toolConnectionId={(metadata.gameGmToolConnectionId as string) ?? ""}
+              onToolConnectionChange={(gameGmToolConnectionId) =>
+                updateMeta.mutate({ id: chat.id, gameGmToolConnectionId })
+              }
+              gameLorebookSearch={metadata.gameLorebookSearch === true}
+              onGameLorebookSearchChange={(gameLorebookSearch) =>
+                updateMeta.mutate({ id: chat.id, gameLorebookSearch })
+              }
               enableTools={metadata.enableTools as boolean | undefined}
               forceToolCall={metadata.forceToolCall as boolean | undefined}
               activeToolIds={activeToolIds}

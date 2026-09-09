@@ -928,6 +928,13 @@ function applySegmentEditOverlay(
   return next;
 }
 
+function getLogActionSegmentIndex(segments: NarrationSegment[]): number {
+  return Math.max(
+    0,
+    segments.findIndex((segment) => segment.sourceSegmentIndex != null),
+  );
+}
+
 function formatSkillCheckLogContent(message: NarrationMessage): NarrationSegment[] {
   const skillChecks = parseGmTags(message.content || "").skillChecks;
   const extra = parseMessageExtraRecord(message.extra);
@@ -4133,9 +4140,10 @@ export function GameNarration({
     const translatedText = sourceMessageId ? translations[sourceMessageId] : undefined;
     const translationSource = sourceMessageId ? translationSources[sourceMessageId] : undefined;
     const isTranslating = sourceMessageId ? !!translating[sourceMessageId] : false;
-    const translatedSegmentText = sourceMessage
-      ? getGameTranslatedSegmentText(sourceMessage, translatedText, speakerColors, sourceSegmentIndex)
-      : undefined;
+    const translatedSegmentText =
+      sourceMessage && hasSourceSegmentIndex
+        ? getGameTranslatedSegmentText(sourceMessage, translatedText, speakerColors, sourceSegmentIndex)
+        : undefined;
     const showTranslationOnly =
       translationDisplayOnly &&
       !!sourceMessage &&
@@ -4200,7 +4208,7 @@ export function GameNarration({
     ) : null;
     const peekPromptButton = canPeekPrompt ? renderPeekPromptButton(sourceMessageId, stackedActionButtonClass) : null;
     const translateButton =
-      showMessageActions && sourceMessage && sourceRole !== "system" ? (
+      showMessageActions && hasSourceSegmentIndex && sourceMessage && sourceRole !== "system" ? (
         <button
           type="button"
           onPointerDown={stopLogActionPointerDown}
@@ -4570,10 +4578,10 @@ export function GameNarration({
       return (
         <div
           key={seg.id}
-          className="group/logseg relative rounded-lg border border-cyan-400/15 bg-cyan-950/15 px-2.5 py-2 pr-20 text-cyan-50/80"
+          className="group/logseg relative rounded-lg border border-cyan-400/15 bg-cyan-950/15 px-2.5 py-2 pr-20 text-[var(--foreground)]/80 dark:text-cyan-50/80"
         >
           {actionButtons}
-          <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wide text-cyan-200/80">
+          <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wide text-cyan-800 dark:text-cyan-200/80">
             {localizeUi("ui.characters.advancedtab.system")}
           </div>
           {isEditingThis ? (
@@ -4684,11 +4692,16 @@ export function GameNarration({
                     setStackedLogPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 32);
                   }}
                 >
-                  {stackedLogEntries.map((entry) => (
-                    <div key={entry.messageId} className="space-y-1.5">
-                      {entry.segments.map((seg, index) => renderStackedLogSegment(seg, entry.messageId, index === 0))}
-                    </div>
-                  ))}
+                  {stackedLogEntries.map((entry) => {
+                    const messageActionSegmentIndex = getLogActionSegmentIndex(entry.segments);
+                    return (
+                      <div key={entry.messageId} className="space-y-1.5">
+                        {entry.segments.map((seg, index) =>
+                          renderStackedLogSegment(seg, entry.messageId, index === messageActionSegmentIndex),
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -5401,10 +5414,7 @@ export function GameNarration({
                 </div>
               )}
               {visibleLogEntries.map((entry) => {
-                const messageActionSegmentIndex = Math.max(
-                  0,
-                  entry.segments.findIndex((segment) => segment.sourceSegmentIndex != null),
-                );
+                const messageActionSegmentIndex = getLogActionSegmentIndex(entry.segments);
                 return (
                   <div key={entry.messageId} className="space-y-1.5">
                     {entry.segments.map((seg, entrySegmentIndex) => {

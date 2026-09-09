@@ -4,6 +4,7 @@ import { SettingsSwitch } from "../../../components/panels/settings/SettingContr
 import { ChatSettingsSection } from "../ChatSettingsSection";
 import { PickerDropdown } from "../PickerDropdown";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { supportsNativeToolCalls } from "@marinara-engine/shared";
 
 export interface FunctionToolOption {
   id: string;
@@ -14,6 +15,12 @@ export interface FunctionToolOption {
 interface FunctionCallingSectionProps {
   /** Game chats get the dice tool regardless of this toggle, so they need the extra context. */
   isGameMode: boolean;
+  narratorProvider?: string;
+  connections: Array<{ id: string; name: string; model?: string; provider?: string }>;
+  toolConnectionId: string;
+  onToolConnectionChange: (id: string | null) => void;
+  gameLorebookSearch: boolean;
+  onGameLorebookSearchChange: (enabled: boolean) => void;
   enableTools: boolean | undefined;
   forceToolCall: boolean | undefined;
   activeToolIds: string[];
@@ -33,6 +40,12 @@ interface FunctionCallingSectionProps {
 
 export function FunctionCallingSection({
   isGameMode,
+  narratorProvider,
+  connections,
+  toolConnectionId,
+  onToolConnectionChange,
+  gameLorebookSearch,
+  onGameLorebookSearchChange,
   enableTools,
   forceToolCall,
   activeToolIds,
@@ -50,6 +63,13 @@ export function FunctionCallingSection({
   onCreateCustomTool,
 }: FunctionCallingSectionProps) {
   const { t: localizeUi } = useUiTranslation();
+  const toolProvider =
+    isGameMode && toolConnectionId
+      ? connections.find((connection) => connection.id === toolConnectionId)?.provider
+      : narratorProvider;
+  // A random-pool choice is resolved by the server at generation time; an
+  // unselected narrator must still allow configuring the chat in advance.
+  const nativeToolsAvailable = toolProvider ? supportsNativeToolCalls(toolProvider) : !(isGameMode && toolConnectionId);
   const inactiveTools = availableTools.filter((tool) => !activeToolIds.includes(tool.id));
   const visibleInactiveTools = inactiveTools.filter((tool) =>
     tool.name.toLowerCase().includes(toolSearch.toLowerCase()),
@@ -64,10 +84,60 @@ export function FunctionCallingSection({
       help={localizeUi("ui.chatSettings.functioncallingsection.whenEnabledTheAiCanCallBuiltInTools")}
     >
       <div className="space-y-2">
+        {isGameMode && (
+          <>
+            <label className="flex flex-col gap-1 px-1 text-xs">
+              {localizeUi("chat.settings.tools.connection")}
+              <select
+                value={toolConnectionId}
+                onChange={(event) => onToolConnectionChange(event.target.value || null)}
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none focus:border-[var(--primary)]/50"
+              >
+                <option value="">{localizeUi("chat.settings.tools.sameConnection")}</option>
+                {toolConnectionId && !connections.some((connection) => connection.id === toolConnectionId) && (
+                  <option value={toolConnectionId} disabled>
+                    {localizeUi("chat.settings.tools.missingConnection")}
+                  </option>
+                )}
+                {connections.map((connection) => (
+                  <option
+                    key={connection.id}
+                    value={connection.id}
+                    disabled={!supportsNativeToolCalls(connection.provider)}
+                  >
+                    {connection.name}
+                    {connection.model
+                      ? localizeUi("ui.chat.chatsettingsdrawer.value1", { value1: connection.model })
+                      : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
+              {localizeUi("chat.settings.tools.connectionHelp")}
+            </p>
+            <SettingsSwitch
+              label={localizeUi("chat.settings.tools.loreSearch")}
+              description={localizeUi("chat.settings.tools.loreSearchHelp")}
+              checked={gameLorebookSearch}
+              disabled={!nativeToolsAvailable}
+              onChange={onGameLorebookSearchChange}
+              labelPosition="start"
+              className="justify-between rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left"
+              labelClassName="text-xs font-medium"
+            />
+          </>
+        )}
+        {!nativeToolsAvailable && (
+          <p role="status" className="px-1 text-xs text-[var(--muted-foreground)]">
+            {localizeUi("chat.settings.tools.unavailable")}
+          </p>
+        )}
         <SettingsSwitch
           label={localizeUi("ui.chatSettings.functioncallingsection.enableToolUse")}
           description={localizeUi("ui.chatSettings.functioncallingsection.allowAiToCallFunctionsDiceRollsGameState")}
           checked={!!enableTools}
+          disabled={!nativeToolsAvailable}
           onChange={onEnableToolsChange}
           labelPosition="start"
           className={cn(
@@ -80,13 +150,17 @@ export function FunctionCallingSection({
         />
         <p className="text-[0.625rem] text-[var(--muted-foreground)] px-1">
           {isGameMode
-            ? localizeUi("ui.chatSettings.functioncallingsection.gameChatsAlreadyRollRealDiceWithoutThis")
+            ? localizeUi(
+                toolConnectionId
+                  ? "chat.settings.tools.separateHint"
+                  : "ui.chatSettings.functioncallingsection.gameChatsAlreadyRollRealDiceWithoutThis",
+              )
             : enableTools
               ? localizeUi("ui.chatSettings.functioncallingsection.ifEnabledThisChatCanUseGloballyEnabledTools")
               : localizeUi("ui.chatSettings.functioncallingsection.ifDisabledNoFunctionsWillBeAvailable")}
         </p>
 
-        {enableTools && (
+        {enableTools && nativeToolsAvailable && (
           <>
             <SettingsSwitch
               label={localizeUi("ui.chatSettings.functioncallingsection.forceToCallTool")}

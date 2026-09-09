@@ -269,6 +269,41 @@ for (const theme of ["dark", "light"] as const) {
         useTranslationStore.getState().clearAll();
       });
       await logs.getByRole("button", { name: "Close logs", exact: true }).click();
+      const nextScene = await request.post(`/api/chats/${chatId}/messages`, {
+        data: { role: "assistant", content: "A new scene begins." },
+      });
+      expect(nextScene.ok()).toBeTruthy();
+      const nextSceneId = (await nextScene.json()).id;
+      await page.reload();
+      await expect(narration).toContainText("A new scene begins.");
+      await page.evaluate(async () => {
+        const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.getState().setGameDialogueDisplayMode("stacked");
+      });
+      const stackedProse = page.locator('[class~="group/logseg"]').filter({ hasText: "The gate opens." });
+      await expect(stackedProse.getByRole("button", { name: "Translate", exact: true })).toBeVisible();
+      await page.evaluate(async ({ id, content }: { id: string; content: string }) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+        const chat = useChatStore.getState().activeChat;
+        const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+        useChatStore.getState().setActiveChat({ ...chat, metadata: { ...metadata, translationDisplayOnly: true } });
+        useTranslationStore.getState().setTranslation(id, "Brama się otwiera.", content);
+      }, translatedMessage);
+      await expect(page.locator('[class~="group/logseg"]').filter({ hasText: "Brama się otwiera." })).toHaveCount(1);
+      for (const roll of returnedRolls) {
+        await expect(
+          page.locator('[class~="group/logseg"]').filter({ hasText: `🎲 ${roll.notation}: ${roll.rolls.join(" + ")}` }),
+        ).toHaveCount(1);
+      }
+      await page.screenshot({ path: testInfo.outputPath(`stacked-dice-history-${theme}.png`) });
+      expect((await request.delete(`/api/chats/${chatId}/messages/${nextSceneId}`)).ok()).toBeTruthy();
+      await page.reload();
+      await expect(narration).toContainText(/The gate opens\.|Try the gate\./);
+      if (await narration.getByText("Try the gate.", { exact: true }).isVisible()) {
+        await narration.getByRole("button", { name: "Next", exact: true }).click();
+      }
+      await expect(narration).toContainText("The gate opens.");
       if (testInfo.project.name.includes("mobile")) {
         await page.getByRole("button", { name: "Game actions", exact: true }).click();
       }

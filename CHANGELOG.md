@@ -46,6 +46,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Game chats can use a separate connection for one tool-planning request before narration and enable semantic lorebook search independently. Tool settings explain unsupported subscription connections, vectorization prerequisites, and the extra requests (#5955, #5957, #5958).
+
 - Added OpenAI GPT Image 2.5 Flare and Sunburst for image generation and reference edits, including transparent PNGs, custom image sizes, and the new Extra high and Max quality settings.
 - Conversation and Roleplay setup wizards can save mode-specific defaults independently of profiles, or reset the saved choices (#5948).
 - Custom agents can read their own prior output, retain private JSON continuation context, and hide saved outputs as spoilers. Context follows visible message history; activated lorebook references include entry names (#5945).
@@ -101,7 +103,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Game-state tools now mark location/time changes as pending until the response is saved, then confirm storage on that message and swipe. Earlier turns stay unchanged, and refused or locked writes are reported. Failed and denied tool calls show a concise notification even when debug mode is off (#5898, #5901).
 - Package persistence now requires declared chat-read/chat-write permissions for chat and spatial snapshot access, including transactions. The package detail view distinguishes installed and catalog permissions and explains which permissions are API gates or trusted-code access declarations (#5899).
-- Game turns now keep every dice roll on its swipe, show dice and skill-check cards in sequence, and retain roll history in Logs, including when displaying translated narration. Text-only connections can request ordinary dice and explicit success pools; the GM receives the real results in one follow-up request before finishing outcome narration (#5956, #5959, #5960, #5961).
+- Game turns now keep every dice roll on its swipe, show dice and skill-check cards in sequence, and retain roll history in Logs and stacked history, including when displaying translated narration. Text-only connections can request ordinary dice and explicit success pools; the GM receives the real results in one follow-up request before finishing outcome narration (#5956, #5959, #5960, #5961).
 
 - Gemini reasoning replies now stream on Google's official API endpoint, including tool-using turns. Other endpoints retain the compatibility workaround that preserves proxy thought parts (#5904).
 - Professor Mari now executes a frame's edits before checking its completion claim, recovers common command formats, and repairs unrecognized commands instead of silently dropping them. Requested lorebook edits use the real save/review path; explicit previews remain read-only (#5966, #5967).

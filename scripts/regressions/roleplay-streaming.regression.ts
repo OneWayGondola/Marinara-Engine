@@ -121,7 +121,7 @@ assert.match(
   "Generator-streamed text-rewrite responses must still capture reasoning duration",
 );
 const generationInfoPersistenceSource =
-  /const extraUpdate: Record<string, unknown> = \{\s*generationInfo: \{[\s\S]*?\n\s*\},\s*\};/u.exec(
+  /const extraUpdate: Record<string, unknown> = \{[\s\S]*?generationInfo: \{[\s\S]*?\n\s*\},\s*\};/u.exec(
     generateRouteSource,
   )?.[0];
 assert.ok(generationInfoPersistenceSource, "The committed generation metadata block must remain available");

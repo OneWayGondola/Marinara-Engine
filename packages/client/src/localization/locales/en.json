@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "locale": "en",
-    "direction": "ltr"
+    "direction": "ltr",
+    "locale": "en"
   },
   "achievements.definitions.backseatAppreciator.description": "Viewed the credits.",
   "achievements.definitions.backseatAppreciator.title": "Backseat Appreciator",
@@ -310,6 +310,14 @@
   "chat.settings.promptPreset.quickEdit.title": "Preset sections",
   "chat.settings.regex.presetDefault": "Preset default: {{mode}}. Selecting a mode below overrides it for this chat only.",
   "chat.settings.regex.usePreset": "Use preset default",
+  "chat.settings.tools.connection": "Game tool connection",
+  "chat.settings.tools.connectionHelp": "A separate model chooses tools before narration. Adds one request per turn on this connection. Use Same as narrator for tool work that needs several steps.",
+  "chat.settings.tools.loreSearch": "Let the GM search lore",
+  "chat.settings.tools.loreSearchHelp": "Search enabled, vectorized lore by meaning without enabling other tools. Vectorize books first. Lookups can add embedding and model requests.",
+  "chat.settings.tools.missingConnection": "Connection unavailable",
+  "chat.settings.tools.sameConnection": "Same as narrator",
+  "chat.settings.tools.separateHint": "Game dice remain available. Enabling Tool Use adds the other optional tools to the planning request.",
+  "chat.settings.tools.unavailable": "Native tools are unavailable on this connection. Claude and Grok subscriptions only support text commands and dice tags. Choose a connection that supports tool calls to use these controls.",
   "chat.settingsProfile.action.apply": "Apply a settings profile to this chat",
   "chat.settingsProfile.action.delete": "Delete profile",
   "chat.settingsProfile.action.export": "Export settings profile (.json)",
