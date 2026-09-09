@@ -247,7 +247,7 @@ function escapeSvgAttribute(value: string) {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-let cursorColorProbe: HTMLSpanElement | null = null;
+let colorProbe: HTMLSpanElement | null = null;
 let cursorCanvasContext: CanvasRenderingContext2D | null | undefined;
 
 function clampCursorColorByte(value: number) {
@@ -306,30 +306,32 @@ function normalizeCursorColorForSvg(color: string, fallback: string) {
   return normalizeCursorColorWithCanvas(clean) || clean;
 }
 
-function resolveCursorColor(color: string, fallback: string) {
+function resolveCssColor(color: string, fallback: string) {
   if (typeof document === "undefined") return fallback;
-  if (!cursorColorProbe) {
-    cursorColorProbe = document.createElement("span");
-    cursorColorProbe.setAttribute("aria-hidden", "true");
-    cursorColorProbe.style.position = "fixed";
-    cursorColorProbe.style.pointerEvents = "none";
-    cursorColorProbe.style.visibility = "hidden";
-    cursorColorProbe.style.width = "0";
-    cursorColorProbe.style.height = "0";
-    document.body.appendChild(cursorColorProbe);
-  } else if (!cursorColorProbe.isConnected) {
-    document.body.appendChild(cursorColorProbe);
+  if (!colorProbe) {
+    colorProbe = document.createElement("span");
+    colorProbe.setAttribute("aria-hidden", "true");
+    colorProbe.style.position = "fixed";
+    colorProbe.style.pointerEvents = "none";
+    colorProbe.style.visibility = "hidden";
+    colorProbe.style.width = "0";
+    colorProbe.style.height = "0";
+    colorProbe.style.transition = "none";
+    document.body.appendChild(colorProbe);
+  } else if (!colorProbe.isConnected) {
+    document.body.appendChild(colorProbe);
   }
 
-  cursorColorProbe.style.color = "";
-  cursorColorProbe.style.color = color;
-  if (!cursorColorProbe.style.color) return fallback;
+  colorProbe.style.color = "";
+  colorProbe.style.color = color;
+  if (!colorProbe.style.color) return fallback;
 
-  return normalizeCursorColorForSvg(getComputedStyle(cursorColorProbe).color, fallback);
+  return getComputedStyle(colorProbe).color || fallback;
 }
 
 function getAccentCursorColors(accent: string, theme: "dark" | "light") {
-  const fill = resolveCursorColor(accent, getDefaultAppAccentColor(theme));
+  const fallback = getDefaultAppAccentColor(theme);
+  const fill = normalizeCursorColorForSvg(resolveCssColor(accent, fallback), fallback);
   const stroke = theme === "light" ? "#1a1025" : "#050312";
 
   return { fill, stroke };
@@ -507,8 +509,6 @@ export function App() {
     () => getThemeAccentPulseConfig(activeCustomTheme?.css),
     [activeCustomTheme?.css],
   );
-  const pauseChromeEffectsForAppearance =
-    appearanceSettingsActive && !appAccentRgbMode && !appAccentPulseMode && !themeAccentPulseConfig.enabled;
   useLegacyThemeMigration();
   useSettingsSync();
   const showDownloadModal = useSidecarStore((s) => s.showDownloadModal);
@@ -651,12 +651,9 @@ export function App() {
 
   useEffect(() => {
     const root = document.documentElement;
+    // Keep the accent preview independent of Home's covered ambient effects.
     const syncEffectsPausedState = () => {
-      const paused = !(
-        document.visibilityState === "visible" &&
-        document.hasFocus() &&
-        !pauseChromeEffectsForAppearance
-      );
+      const paused = !(document.visibilityState === "visible" && document.hasFocus() && !appearanceSettingsActive);
       if (!paused) {
         delete root.dataset.marinaraEffectsPaused;
       } else {
@@ -680,7 +677,7 @@ export function App() {
       window.removeEventListener("pagehide", syncEffectsPausedState);
       delete root.dataset.marinaraEffectsPaused;
     };
-  }, [pauseChromeEffectsForAppearance]);
+  }, [appearanceSettingsActive]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -776,10 +773,13 @@ export function App() {
     };
 
     const applyLiveAccent = () => {
-      const liveAccent =
+      const mixedAccent =
         animatedAccentIsGradient && animatedGradientStops.length > 1
           ? getGradientRgbAccent(animatedGradientStops)
           : getSolidRgbAccent(animatedSolidAccent);
+      // Resolve on the small probe before changing inherited tokens. Nested
+      // color-mix() values can abort WebKit while it resolves control backgrounds.
+      const liveAccent = resolveCssColor(mixedAccent, defaultAccent);
 
       const liveGradient = getSolidAccentGradient(liveAccent);
       if (appAccentRgbMode) {
@@ -827,10 +827,7 @@ export function App() {
 
       accentAnimationTimer = window.setTimeout(() => {
         accentAnimationTimer = null;
-        if (
-          !accentAnimationEnabled ||
-          !canRunAccentAnimation(reducedMotionQuery, pauseChromeEffectsForAppearance || reduceAmbientEffects)
-        ) {
+        if (!accentAnimationEnabled || !canRunAccentAnimation(reducedMotionQuery, reduceAmbientEffects)) {
           stopAccentAnimation();
           return;
         }
@@ -849,10 +846,7 @@ export function App() {
     };
 
     const syncAccentAnimationState = () => {
-      if (
-        accentAnimationEnabled &&
-        canRunAccentAnimation(reducedMotionQuery, pauseChromeEffectsForAppearance || reduceAmbientEffects)
-      ) {
+      if (accentAnimationEnabled && canRunAccentAnimation(reducedMotionQuery, reduceAmbientEffects)) {
         if (isTextEntryFocused()) {
           // Root accent ticks invalidate styles across the entire Roleplay
           // surface in Firefox. Freeze the current accent while the user is
@@ -871,9 +865,8 @@ export function App() {
     };
 
     if (accentAnimationEnabled) {
-      // Keep the custom cursor on the selected solid accent. Resolving a
-      // color-mix() cursor through getComputedStyle on every live accent tick
-      // causes a synchronous style flush that becomes noticeable in long sessions.
+      // Keep the custom cursor on the selected solid accent. Resolving it after
+      // live root-token writes forces a synchronous app-wide style flush.
       applyCursorAccent(solidAccent);
       setAccentModeDataset();
     } else {
@@ -918,7 +911,6 @@ export function App() {
     appAccentPulseMode,
     appAccentRgbMode,
     customCursorEnabled,
-    pauseChromeEffectsForAppearance,
     reduceAmbientEffects,
     theme,
     themeAccentPulseConfig.enabled,

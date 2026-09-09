@@ -1726,6 +1726,18 @@
     transform 180ms linear;
 }
 
+/* Touch accents should repaint at their tick cadence, not start color, border
+   and shadow transitions across every mounted control between ticks.
+   ponytail: root colors still update at 2 Hz; isolated accent layers are the
+   upgrade path if device profiles need a smaller rendering budget. */
+@media (pointer: coarse) {
+  html[data-marinara-accent-animation] *,
+  html[data-marinara-accent-animation] *::before,
+  html[data-marinara-accent-animation] *::after {
+    transition-property: opacity, transform, translate, scale, rotate !important;
+  }
+}
+
 /* ─────────────────────────────────────────────
    4c. SHARED EDITOR CHROME
    Used by character, persona, preset, lorebook, connection, and agent editors.
