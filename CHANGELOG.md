@@ -46,6 +46,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Game chats can use a separate connection for one tool-planning request before narration and enable semantic lorebook search independently. Tool settings explain unsupported subscription connections, vectorization prerequisites, and the extra requests (#5955, #5957, #5958).
+
 - Added OpenAI GPT Image 2.5 Flare and Sunburst for image generation and reference edits, including transparent PNGs, custom image sizes, and the new Extra high and Max quality settings.
 - Conversation and Roleplay setup wizards can save mode-specific defaults independently of profiles, or reset the saved choices (#5948).
 - Custom agents can read their own prior output, retain private JSON continuation context, and hide saved outputs as spoilers. Context follows visible message history; activated lorebook references include entry names (#5945).

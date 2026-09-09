@@ -14,6 +14,7 @@ import {
 } from "../tools/tool-executor.js";
 import { resolveSpotifyCredentials, spotifyHasScope } from "../spotify/spotify.service.js";
 import { logger } from "../../lib/logger.js";
+import { semanticShortlistLorebookEntries, type LorebookEmbeddingOptions } from "../lorebook/embeddings.js";
 import {
   agentWriteApprovalRequired,
   buildLorebookWriteApprovalProposal,
@@ -94,6 +95,8 @@ export type ResolveGenerationToolsArgs = {
    * local-endpoint `<available_functions>` prompt injection.
    */
   autoAttachToolNames?: readonly string[];
+  nativeToolsAvailable?: boolean;
+  lorebookEmbeddingOptions?: LorebookEmbeddingOptions;
 };
 
 export type ResolveAgentGenerationToolsArgs = ResolveGenerationToolsArgs & {
@@ -718,6 +721,7 @@ async function resolveToolRuntime(
     agentContext,
     emitMetadataPatch,
     observeSpotifyPlaybackBeforePlay,
+    lorebookEmbeddingOptions,
   }: ResolveAgentGenerationToolsArgs,
   options: {
     enableChatTools: boolean;
@@ -760,6 +764,9 @@ async function resolveToolRuntime(
   // update_about_me's Conversation-only scope (the UI filter is cosmetic).
   if (toolDefs && agentContext.chatMode !== "conversation") {
     toolDefs = toolDefs.filter((toolDef) => !CONVERSATION_ONLY_TOOL_NAMES.has(toolDef.function.name));
+  }
+  if (toolDefs && agentContext.chatMode === "game" && !booleanText(chatMetadata.gameLorebookSearch)) {
+    toolDefs = toolDefs.filter((toolDef) => toolDef.function.name !== "search_lorebook");
   }
 
   const resolvedToolNames = new Set(allToolDefs.map((toolDef) => toolDef.function.name));
@@ -813,8 +820,44 @@ async function resolveToolRuntime(
       excludedLorebookIds,
       excludedSourceAgentIds,
     });
+    const eligible = entries.filter(
+      (entry: any) =>
+        (!category || entry.tag === category) &&
+        (chatMetadata.entryStateOverrides as Record<string, { enabled?: boolean }> | undefined)?.[entry.id]?.enabled !==
+          false,
+    );
+    const vectorized = eligible.filter(
+      (entry: any) => !entry.excludeFromVectorization && Array.isArray(entry.embedding) && entry.embedding.length > 0,
+    );
+    if (vectorized.length) {
+      try {
+        const matches = await semanticShortlistLorebookEntries(vectorized, query, {
+          ...lorebookEmbeddingOptions,
+          topK: 20,
+        });
+        if (matches)
+          return matches.map(({ entry, similarity }) => ({
+            name: entry.name,
+            content: entry.content,
+            tag: entry.tag,
+            keys: entry.keys,
+            similarity,
+          }));
+        if (agentContext.chatMode === "game")
+          throw new Error(
+            "Lore search embeddings are unavailable or incompatible. Check the embedding connection and re-vectorize the lorebook.",
+          );
+      } catch (err) {
+        if (agentContext.chatMode === "game") throw err;
+        logger.warn(err, "[lore-search] Semantic search unavailable; using text matches");
+      }
+    } else if (agentContext.chatMode === "game") {
+      throw new Error(
+        "No vectorized lore entries are available. Vectorize an enabled lorebook before using Game lore search.",
+      );
+    }
     const normalizedQuery = query.toLowerCase();
-    return entries
+    return eligible
       .filter((entry: any) => {
         const nameMatch = typeof entry.name === "string" && entry.name.toLowerCase().includes(normalizedQuery);
         const contentMatch = typeof entry.content === "string" && entry.content.toLowerCase().includes(normalizedQuery);
@@ -1034,12 +1077,21 @@ export async function resolveAgentGenerationTools(
 
 export async function resolveGenerationTools(args: ResolveGenerationToolsArgs): Promise<ResolvedGenerationTools> {
   const chatToolsExplicitlyDisabled = booleanFalseText(args.chatMetadata.enableTools);
+  const available = args.nativeToolsAvailable !== false;
   const enableChatTools =
-    args.requestBody.enableTools === true ||
-    (!chatToolsExplicitlyDisabled && booleanText(args.chatMetadata.enableTools));
+    available &&
+    (args.requestBody.enableTools === true ||
+      (!chatToolsExplicitlyDisabled && booleanText(args.chatMetadata.enableTools)));
   return resolveToolRuntime(args, {
     enableChatTools,
-    autoAttachToolNames: args.autoAttachToolNames ?? [],
+    autoAttachToolNames: available
+      ? [
+          ...(args.autoAttachToolNames ?? []),
+          ...(args.agentContext.chatMode === "game" && booleanText(args.chatMetadata.gameLorebookSearch)
+            ? ["search_lorebook"]
+            : []),
+        ]
+      : [],
     preloadSpotifyPlayback: true,
     restoreSpotifyAgentDefaultTools: true,
   });

@@ -598,6 +598,10 @@ export interface ChatMetadata {
   gameLastIllustrationTag?: string;
   /** Connection used for Game Mode scene-video generation. */
   gameVideoConnectionId?: string | null;
+  /** Optional independent tool-planning pass before the Game narrator. */
+  gameGmToolConnectionId?: string | null;
+  /** Let the GM query already-vectorized lore without enabling the other optional tools. */
+  gameLorebookSearch?: boolean;
   /** Master visibility/runtime switch for manual Game Mode scene videos. */
   gameSceneVideosEnabled?: boolean;
   /** Selected Game Mode scene/storyboard video prompt template. */
