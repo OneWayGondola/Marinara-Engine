@@ -240,7 +240,8 @@ for (const format of ["xml", "markdown", "none"] as const) {
     characterNames: ["Alice"],
   });
   assert.doesNotMatch(reminder, /\[illustrate:/u, "an unavailable image agent must not be offered");
-  assert.match(reminder, /LIES, DECEPTIONS/u);
+  assert.doesNotMatch(reminder, /YOUR|LIES|DECEPTIONS|Maximum \d|\n\s*\n\s*-/u);
+  assert.match(reminder, /keep it short/iu);
   const section = format === "xml" ? "<commands>" : format === "markdown" ? "## Commands" : "Commands:";
   assert.ok(reminder.startsWith(section));
   const tracker =
