@@ -115,6 +115,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - World generation preserves all explicitly selected lorebook entries instead of applying automatic lore token/count budgets, and reports a clear context-limit error before sending an oversized prompt or repair to the model.
 - Malformed Game combat tags no longer trigger quadratic parsing delays in the browser (#5937).
 - Experience setup preserves explicit package configs without double nesting and accepts larger, bounded setup payloads (#5938).
+- Lorebook entry switches in chat settings now affect only that chat, preserve ephemeral counters, and clearly distinguish shared content edits from per-chat enablement (#5954).
 - Lorebook Keeper decodes XML-escaped punctuation in entry names before approval and saving, avoiding escaped-name duplicates while respecting entry locks (#5946).
 - The Home lifecycle regression waits for chat initialization during warm-up, so one-time loading is not mistaken for retained navigation memory.
 - Gemini tool replies preserve the provider's call identifiers, keeping parallel calls to the same function correctly paired (#5918).
