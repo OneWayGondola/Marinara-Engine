@@ -765,6 +765,11 @@ export const ConversationMessage = memo(function ConversationMessage({
   useEffect(() => {
     if (!showActions) return;
     const handleTouch = (e: TouchEvent) => {
+      if (
+        e.target instanceof Element &&
+        e.target.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [data-chat-floating-panel]')
+      )
+        return;
       if (msgRef.current && !msgRef.current.contains(e.target as Node)) setShowActions(false);
     };
     document.addEventListener("touchstart", handleTouch);
