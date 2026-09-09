@@ -2384,7 +2384,6 @@ function GameSurfaceComponent({
 
   const closeCharacterSheet = useGameModeStore((s) => s.closeCharacterSheet);
   const applyWidgetUpdate = useGameModeStore((s) => s.applyWidgetUpdate);
-  const setDiceRollResult = useGameModeStore((s) => s.setDiceRollResult);
   const dismissDiceRollResult = useGameModeStore((s) => s.dismissDiceRollResult);
   const weatherEffectsEnabled = useUIStore((s) => s.weatherEffects);
   const gameFullBodySpriteScale = useUIStore((s) => s.gameFullBodySpriteScale);
@@ -9847,7 +9846,6 @@ function GameSurfaceComponent({
         }
       }
       setActiveChoices(null);
-      setDiceRollResult(null);
       const succeeded = await sendMessage(message, attachments, options?.pendingSpatialTransition);
       if (succeeded !== false && options?.commitPendingMove && pendingMapMove) {
         setPendingMapMove(null);
@@ -9864,7 +9862,6 @@ function GameSurfaceComponent({
       pendingMapMove,
       sendMessage,
       sessionInteractive,
-      setDiceRollResult,
       updateMessage,
       localizeUi,
     ],

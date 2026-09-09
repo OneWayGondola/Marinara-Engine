@@ -279,6 +279,20 @@ for (const theme of ["dark", "light"] as const) {
         typeof regeneratedMessage.extra === "string" ? JSON.parse(regeneratedMessage.extra) : regeneratedMessage.extra;
       expect(regeneratedExtra.diceRollResult).toBeNull();
       expect(regeneratedExtra.diceRollResults).toEqual([]);
+      await page.reload();
+      await expect(narration).toContainText("The path continues.");
+      await page.evaluate(async () => {
+        const { useGameModeStore } = await import("/src/stores/game-mode.store.ts" as string);
+        useGameModeStore.getState().setDiceRollResult({ notation: "2d1", rolls: [1, 1], modifier: 0, total: 2 });
+      });
+      await expect(card).toContainText("2d1");
+      await page.getByPlaceholder("What do you do?", { exact: true }).fill("Keep walking.");
+      const sent = page.waitForResponse(
+        (response) => response.url().includes("/api/generate") && response.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Send game turn", exact: true }).click();
+      await sent;
+      await expect(card).toContainText("2d1");
     } finally {
       finishFollowup?.();
       await page.close().catch(() => undefined);
