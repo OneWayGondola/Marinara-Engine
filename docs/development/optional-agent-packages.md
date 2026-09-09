@@ -460,14 +460,21 @@ keys under its own id; `noodle` and `background` sit in the same position, the l
 verbs, which own no key at all. Keys are flat and top-level because that is the shape a package's
 reconciler already reads.
 
-Verbs run only for a package that holds the `chat-write` permission and is installed and ready.
-This is the Engine's first enforcement of that permission, and it widens what the permission means:
-until now `chat-write` described a package's own client code writing chat data, and it now also
-means the Engine will execute writes on the package's behalf from model output. Permissions are
-displayed before install and nothing re-consents on update, so an existing install carries the old
-meaning into the new one. Readiness is checked rather than servability, so after an update that
-leaves a package `restart-required` its verbs stop resolving until the Engine restarts, with a log
-line as the only signal.
+Verbs run only for a package that declares `chat-write` and is installed and ready. This permission
+also gates writes through the package persistence API, including messages, chat metadata, roleplay
+events and spatial snapshots. `chat-read` gates chat, message, game-state and spatial-snapshot reads.
+The same checks apply inside persistence transactions and chat locks; a write permission does not
+implicitly grant read permission. Engine-owned persistence calls remain trusted.
+
+The Download Agents detail view shows the installed version's declared permissions after installation.
+When the catalog version requests different permissions, it shows those separately. Installing or
+updating code still requires the existing approval bound to that exact version and checksum; model
+commands do not request separate approval on every turn.
+
+These are API checks, not a JavaScript sandbox. Network, storage and UI permissions are access
+declarations. Package browser/server code remains trusted code and can access its host environment;
+only install packages you trust. Readiness is checked rather than servability, so an update that leaves
+a package `restart-required` stops its verbs resolving until Engine restarts.
 
 ## Initial packages
 
