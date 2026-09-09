@@ -18,6 +18,7 @@ const { getDB, closeDB } = await import("../../packages/server/src/db/connection
 const { generateRoutes } = await import("../../packages/server/src/routes/generate.routes.js");
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createConnectionsStorage } = await import("../../packages/server/src/services/storage/connections.storage.js");
+const { createGameStateStorage } = await import("../../packages/server/src/services/storage/game-state.storage.js");
 const { createLorebooksStorage } = await import("../../packages/server/src/services/storage/lorebooks.storage.js");
 const { resolveGenerationTools } =
   await import("../../packages/server/src/services/generation/tool-resolution-runtime.js");
@@ -34,6 +35,8 @@ let expectPlan = true;
 let emptyPlan = false;
 let rejectPlan = false;
 let requestTextRoll = false;
+let planStateChange = false;
+let stateBaseline: { id: string; chatId: string } | undefined;
 const originalPlanner = OpenAIProvider.prototype.chatComplete;
 OpenAIProvider.prototype.chatComplete = async (messages, options) => {
   order.push("planner");
@@ -45,7 +48,7 @@ OpenAIProvider.prototype.chatComplete = async (messages, options) => {
   assert.ok(messages.every((message) => !message.providerMetadata && !message.tool_calls && !message.tool_call_id));
   assert.deepEqual(
     options.tools?.map((tool) => tool.function.name),
-    ["roll_dice"],
+    planStateChange ? ["roll_dice", "update_game_state"] : ["roll_dice"],
   );
   assert.match(messages.at(-1)!.content, /one planning request/);
   if (rejectPlan) throw new Error("Planner connection refused the request");
@@ -59,6 +62,18 @@ OpenAIProvider.prototype.chatComplete = async (messages, options) => {
             type: "function",
             function: { name: "roll_dice", arguments: JSON.stringify({ notation: "2d2" }) },
           },
+          ...(planStateChange
+            ? [
+                {
+                  id: "state-write",
+                  type: "function" as const,
+                  function: {
+                    name: "update_game_state",
+                    arguments: JSON.stringify({ type: "time_advance", value: "13:00" }),
+                  },
+                },
+              ]
+            : []),
           {
             id: "forbidden",
             type: "function",
@@ -80,6 +95,11 @@ async function* narrator(messages: ChatMessage[], options: ChatOptions): AsyncGe
     assert.match(context, /"total":[2-4]/);
     assert.match(context, /Tool not allowed in this context: web_search/);
   }
+  if (planStateChange) {
+    assert.match(messages.at(-1)!.content, /"pending":true/);
+    assert.match(messages.at(-1)!.content, /"applied":false/);
+    assert.equal((await states.getById(stateBaseline!.id, stateBaseline!.chatId))?.time, "12:00");
+  }
   const outcomeRewrite = messages.at(-1)?.content.includes("The engine has now rolled the requested dice:");
   yield requestTextRoll && !outcomeRewrite ? "[dice: d1]" : "The gate opens with the recorded result.";
   return { promptTokens: 11, completionTokens: 5, totalTokens: 16, finishReason: "stop" };
@@ -94,6 +114,7 @@ GrokSubscriptionProvider.prototype.chat = narrator;
 GoogleProvider.prototype.chat = narrator;
 const db = await getDB();
 const chats = createChatsStorage(db);
+const states = createGameStateStorage(db);
 const connections = createConnectionsStorage(db);
 const lorebooks = createLorebooksStorage(db);
 const app = Fastify();
@@ -176,6 +197,27 @@ try {
         "the outcome rewrite keeps the separate planner's results",
       );
       requestTextRoll = false;
+      planStateChange = true;
+      stateBaseline = (await states.updateByMessage(
+        message.id,
+        message.activeSwipeIndex,
+        chat.id,
+        { time: "12:00" },
+        undefined,
+        { baseSnapshot: null },
+      ))!;
+      await chats.patchMetadata(chat.id, { enableTools: true, activeToolIds: ["update_game_state"] });
+      const written = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
+      assert.ok(!written.body.includes('"type":"error"'), written.body);
+      const saved = (await chats.listMessages(chat.id)).at(-1)!;
+      assert.equal(
+        (await states.getByChatAndMessage(chat.id, saved.id, saved.activeSwipeIndex))?.time,
+        "13:00",
+        "a separate planner's update is stored on the saved narration",
+      );
+      assert.equal((await states.getById(stateBaseline.id, chat.id))?.time, "12:00");
+      planStateChange = false;
+      await chats.patchMetadata(chat.id, { enableTools: false });
     }
     if (provider !== "google") {
       expectPlan = false;
