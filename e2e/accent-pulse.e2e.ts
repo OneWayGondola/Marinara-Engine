@@ -40,7 +40,9 @@ for (const color of ["#a78bfa", "linear-gradient(90deg, #a78bfa, #ec4899, #22d3e
       const root = page.locator("html");
       await expect(root).toHaveAttribute("data-marinara-accent-animation");
       const firstAccent = await root.evaluate((element) => element.style.getPropertyValue("--primary"));
-      await expect.poll(() => root.evaluate((element) => element.style.getPropertyValue("--primary"))).not.toBe(firstAccent);
+      await expect
+        .poll(() => root.evaluate((element) => element.style.getPropertyValue("--primary")))
+        .not.toBe(firstAccent);
 
       // Sample real transition events while idle, rather than asserting a CSS rule's text.
       const rendering = await page.evaluate(async () => {

@@ -101,6 +101,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Accent Pulse avoids a WebKit rendering crash and recurring color and shadow transition bursts on touchscreens. Appearance keeps covered Home effects paused while the accent preview continues (#5988).
 - Mobile message action icons remain available after closing action dialogs such as Peek Prompt (#5825).
 - Game-state tools now mark location/time changes as pending until the response is saved, then confirm storage on that message and swipe. Earlier turns stay unchanged, and refused or locked writes are reported. Failed and denied tool calls show a concise notification even when debug mode is off (#5898, #5901).
 - Package persistence now requires declared chat-read/chat-write permissions for chat and spatial snapshot access, including transactions. The package detail view distinguishes installed and catalog permissions and explains which permissions are API gates or trusted-code access declarations (#5899).
