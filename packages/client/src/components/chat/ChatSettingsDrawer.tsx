@@ -9319,11 +9319,14 @@ export function ChatSettingsDrawer({
             <FunctionCallingSection
               isGameMode={isGame}
               narratorProvider={
-                ((connections ?? []) as Array<{ id: string; provider?: string; isDefault?: boolean | string }>).find(
-                  (connection) =>
-                    chat.connectionId
-                      ? connection.id === chat.connectionId
-                      : isConnectionFlagTrue(connection.isDefault),
+                (
+                  chatGenerationConnectionsList as Array<{
+                    id: string;
+                    provider?: string;
+                    isDefault?: boolean | string;
+                  }>
+                ).find((connection) =>
+                  chat.connectionId ? connection.id === chat.connectionId : isConnectionFlagTrue(connection.isDefault),
                 )?.provider
               }
               connections={textConnectionsList}

@@ -102,6 +102,24 @@ for (const theme of ["dark", "light"] as const) {
         "deleted-connection",
       );
       await expect(tools()).toBeDisabled();
+      // A non-chat default in an imported connection list must not mask the
+      // language default used by the narrator controls.
+      await request.patch(`/api/chats/${chat.id}`, { data: { connectionId: null } });
+      await request.patch(`/api/chats/${chat.id}/metadata`, { data: { gameGmToolConnectionId: null } });
+      await page.route("**/api/connections", (route) =>
+        route.fulfill({
+          json: [
+            { id: "imported-image-default", name: "Image", provider: "image_generation", isDefault: "true" },
+            { ...planner, isDefault: "false" },
+            { ...narrator, isDefault: "true" },
+          ],
+        }),
+      );
+      await page.reload();
+      section = await openTools();
+      await expect(tools()).toBeDisabled();
+      await expect(lore()).toBeDisabled();
+      await expect(section.getByRole("status")).toContainText("Claude and Grok subscriptions");
     } finally {
       await page.close();
       await request.delete(`/api/chats/${chat.id}?force=true`).catch(() => undefined);
