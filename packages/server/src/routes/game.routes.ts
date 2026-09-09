@@ -185,7 +185,6 @@ import {
   isTerminal as isTacticalTerminal,
   TERRAIN_DATA,
   extractLeadingThinkingBlocks,
-  LIMITS,
   type RPGStatsConfig,
 } from "@marinara-engine/shared";
 import {
@@ -10732,45 +10731,7 @@ export async function gameRoutes(app: FastifyInstance) {
     },
   );
 
-  // ── POST /game/:chatId/experience-generation (#5135) ──
-  // One host-run, bounded, non-streaming structured-output call for the chat's
-  // stamped game-surface Experience — e.g. turning wizard preferences into a
-  // compact world brief its deterministic generator compiles into a tile world.
-  // Packages are client-only, so this is the sanctioned way for one to spend a
-  // single LLM call; the gate is the same stamp the experience-state routes
-  // enforce, the connection is the chat's own GM connection, and both a
-  // dedicated rate-limit class and the per-chat asset-generation lock bound the
-  // spend. Modeled on /game/scene-wrap, with the illustrator's repair
-  // round-trip instead of a blind retry.
-  //
-  // Token ceiling for the player's own lorebook selection, and it is the FIRST of
-  // two walls rather than the only one.
-  //
-  // This one is the lorebook service's current-location budget, which defaults to
-  // 2,048 tokens — sized for the lore a location carries by itself, not for a
-  // selection somebody made by hand against a budget readout — and silently
-  // keeping 5 of 8 picked entries is the invisible-budget failure this feature
-  // exists to avoid. 3,000 is the picker's own 12,000-character figure at the
-  // service's ceil(len/4) estimate, and this route is the only caller that raises
-  // it; every other one keeps 2,048.
-  //
-  // The SECOND wall is each lorebook's own tokenBudget, applied after this one in
-  // trySelectBudgetedLorebookEntry and not overridable by any caller — it belongs
-  // to whoever owns the book. Its schema default is 2,048 (db/schema/lorebooks.ts),
-  // which sits BELOW the number raised here, so inside a single book left on that
-  // default this override buys nothing: eight 350-token entries clear 3,000 and
-  // then five of them fit 2,048. Raising this does not make the player's whole
-  // selection arrive; what it does is stop the FIRST wall from cutting a selection
-  // that the book itself would have carried. The drops are reported either way,
-  // with blockedBy naming which wall bound, so the response never lies about it —
-  // and the picker budgets per book, against the book's own figure, for the same
-  // reason. Both walls are pinned in experience-lore-entries.regression.ts.
-  //
-  // forcedEntriesOnly skips both ordinary and recursive activation so constant
-  // entries cannot re-enter after being reported as skipped. Legacy /setup and
-  // spatial callers keep their existing scan behavior, tracked separately in #5943.
-  const EXPERIENCE_LORE_TOKEN_BUDGET = 3_000;
-
+  // Exact player lore selections are bounded by the model context, not automatic lorebook budgets.
   const experienceGenerationSchema = z.object({
     /** The package's guidance: what to produce, the schema description, vocabularies. */
     instructions: z.string().min(1).max(16_000),
@@ -10812,10 +10773,8 @@ export async function gameRoutes(app: FastifyInstance) {
      *  outbound messages are the ones this route has always sent, and the reply
      *  carries no lorebook key. Non-empty ALWAYS comes back with that key, even
      *  when nothing survived the gates — see the protocol note at the return site.
-     *  The ceiling is the same LIMITS.MAX_LOREBOOK_ENTRIES the lorebook service
-     *  already truncates to twice on this path, so the wire cannot promise more
-     *  than the server accepts. */
-    lorebookEntryIds: z.array(z.string()).max(LIMITS.MAX_LOREBOOK_ENTRIES).optional(),
+     *  The complete selection is checked against model context before generation. */
+    lorebookEntryIds: z.array(z.string()).optional(),
   });
 
   app.post<{ Params: { chatId: string } }>(
@@ -10841,6 +10800,12 @@ export async function gameRoutes(app: FastifyInstance) {
         chat.connectionId,
       );
       const gameGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
+      const modelAccessPolicy = resolveGameModelAccessPolicy({
+        provider: conn.provider,
+        model: conn.model,
+        maxContext: conn.maxContext,
+        parameters: gameGenerationParameters,
+      });
       const provider = await createGameMainProvider(connections, conn, baseUrl);
 
       // ── Player-selected lorebook entries ──────────────────────────────────
@@ -10891,7 +10856,11 @@ export async function gameRoutes(app: FastifyInstance) {
         });
         const resolveLoreMacrosForFinal = (value: string, lorebookEntryCounts?: Readonly<Record<string, number>>) => {
           setLorebookEntryCounts(lorePromptMacroContext, lorebookEntryCounts);
-          return resolveMacrosWithVariableSnapshot(value, lorePromptMacroContext);
+          // Preserve large literal entries while keeping expansion bounded and
+          // retaining the resolver's recursion/expansion-count safeguards.
+          return resolveMacrosWithVariableSnapshot(value, lorePromptMacroContext, {
+            maxMacroOutputLength: Math.max(value.length, 200_000),
+          });
         };
         const loreScopeExclusions = resolveLorebookScopeExclusions("game", meta);
         const lorebookResult = await processLorebooks(app.db, [], null, {
@@ -10912,11 +10881,6 @@ export async function gameRoutes(app: FastifyInstance) {
           // an entry its author filtered to game_setup — the player would tick a
           // settlement and never learn why the world had not heard of it.
           generationTriggers: ["game_setup", "game"],
-          // Raises the FIRST of the two walls above: the 2,048-token
-          // current-location default is sized for a location's own attached lore,
-          // not for a deliberate selection. The book's own tokenBudget still
-          // applies after it and no caller can move that one.
-          currentLocationTokenBudget: EXPERIENCE_LORE_TOKEN_BUDGET,
           // A ticked entry is a selection, not a dice roll: probability: 25 would
           // otherwise drop it three times in four, silently and unreproducibly.
           // Every other gate still bites, including enabled and the filters.
@@ -10927,6 +10891,7 @@ export async function gameRoutes(app: FastifyInstance) {
           lorebookResult.worldInfoBefore,
           ...lorebookResult.depthEntries.map((entry) => entry.content),
           lorebookResult.worldInfoAfter,
+          ...Object.values(lorebookResult.outlets),
         ]
           .map((part) => part.trim())
           .filter(Boolean)
@@ -10959,7 +10924,7 @@ export async function gameRoutes(app: FastifyInstance) {
           // player's own preferences against that field's separate 8,000 cap. The
           // append happens AFTER experienceGenerationSchema.parse because only the
           // server can resolve macros, so the lore never passes the 16,000-char
-          // `instructions` cap — the budgets above are the ones that bind it.
+          // `instructions` cap — the completed prompt is checked against model context.
           content: lorebookContext
             ? `${input.instructions}\n\n## Lorebook entries selected for this world\n\n${lorebookContext}`
             : input.instructions,
@@ -11082,6 +11047,25 @@ export async function gameRoutes(app: FastifyInstance) {
         let lastRaw = "";
         let lastFinishReason: string | null = null;
         for (let attempt = 1; attempt <= 2; attempt++) {
+          const fit = fitMessagesToModelAccessContext({
+            messages: attemptMessages,
+            policy: modelAccessPolicy,
+            maxTokens: options.maxTokens,
+          });
+          // This one-shot prompt has no disposable history. Dropping its system
+          // tail would silently discard lore the player explicitly selected.
+          if (fit.trimmed) {
+            return reply.code(422).send({
+              code: "context_limit",
+              truncated: false,
+              error: lorebookSelectionRequested
+                ? "The selected lorebook entries and world-generation instructions exceed this connection's context window. Choose a larger-context connection, fewer lore entries, or shorter instructions."
+                : "The world-generation instructions exceed this connection's context window. Choose a larger-context connection or shorten the instructions.",
+              estimatedInputTokens: fit.estimatedTokensBefore,
+              inputBudget: fit.inputBudget,
+            });
+          }
+          options.maxTokens = fit.maxTokens ?? options.maxTokens;
           let raw: string;
           let finishReason: string | null;
           try {
