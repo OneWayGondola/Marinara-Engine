@@ -6,7 +6,7 @@ import { seedUIState } from "./ui-state-fixture.js";
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 for (const theme of ["dark", "light"] as const) {
-  test(`Game shows a native dice result before the tool follow-up finishes (${theme})`, async ({
+  test(`Game queues every native roll and skill check and retains their history (${theme})`, async ({
     page,
     request,
   }, testInfo) => {
@@ -14,7 +14,9 @@ for (const theme of ["dark", "light"] as const) {
     const providerRequests: Array<Record<string, unknown>> = [];
     let finishFollowup: (() => void) | undefined;
     let returnedTotal = 0;
+    let returnedRolls: Array<{ notation: string; rolls: number[]; modifier: number; total: number }> = [];
     let textOnly = false;
+    let outcomeFollowupHasTools: boolean | undefined;
     const provider = createServer(async (incoming, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
@@ -29,15 +31,50 @@ for (const theme of ["dark", "light"] as const) {
         response.end("data: [DONE]\n\n");
         return;
       }
-      const result = body.messages?.find((message: { role: string }) => message.role === "tool");
-      if (result) {
-        returnedTotal = JSON.parse(result.content).total;
+      if (body.messages?.at(-1)?.content?.includes("The engine has now rolled the requested dice:")) {
+        outcomeFollowupHasTools = body.tools !== undefined;
+        write({ content: `The roll is ${returnedTotal}. The gate opens.` });
+        write({}, "stop");
+        response.end("data: [DONE]\n\n");
+        return;
+      }
+      const results = body.messages?.filter((message: { role: string }) => message.role === "tool") ?? [];
+      if (results.length >= 3) {
+        returnedRolls = results.map((message: { content: string }) => {
+          const { notation, rolls, modifier, total } = JSON.parse(message.content);
+          return { notation, rolls, modifier, total };
+        });
+        write({
+          content: ` The roll is ${returnedTotal}. The gate opens.\n[skill_check: skill="Stealth" dc="10"]\n[skill_check: skill="Perception" dc="12"]`,
+        });
+        write({}, "stop");
+        response.end("data: [DONE]\n\n");
+      } else if (results.length) {
+        returnedRolls = results.map((message: { content: string }) => {
+          const { notation, rolls, modifier, total } = JSON.parse(message.content);
+          return { notation, rolls, modifier, total };
+        });
+        returnedTotal = returnedRolls[0]!.total;
         response.flushHeaders();
         // The browser must show the real tool result before this second model
         // response is allowed to finish. No paid provider is called by this test.
         finishFollowup = () => {
-          write({ content: ` The roll is ${returnedTotal}. The gate opens.` });
-          write({}, "stop");
+          write(
+            {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "roll-three",
+                  type: "function",
+                  function: {
+                    name: "roll_dice",
+                    arguments: JSON.stringify({ notation: "1d4" }),
+                  },
+                },
+              ],
+            },
+            "tool_calls",
+          );
           response.end("data: [DONE]\n\n");
         };
       } else {
@@ -53,6 +90,12 @@ for (const theme of ["dark", "light"] as const) {
                   name: "roll_dice",
                   arguments: JSON.stringify({ notation: "1d20+3" }),
                 },
+              },
+              {
+                index: 1,
+                id: "roll-two",
+                type: "function",
+                function: { name: "roll_dice", arguments: JSON.stringify({ notation: "2d6" }) },
               },
             ],
           },
@@ -155,6 +198,9 @@ for (const theme of ["dark", "light"] as const) {
         .toEqual({ text: "Let the die decide.", streaming: true });
       await expect(narration).not.toContainText("The gate opens.");
       await expect(card.locator(".dice-roll-total")).toHaveText(`= ${returnedTotal}`);
+      await card.getByRole("button", { name: "Dismiss dice roll result" }).click();
+      await expect(card).toContainText("2d6");
+      await expect(card.locator(".dice-roll-total")).toHaveText(`= ${returnedRolls[1]!.total}`);
       const firstRequest = providerRequests[0] as {
         tools: Array<{ function: { name: string } }>;
         tool_choice?: unknown;
@@ -163,22 +209,66 @@ for (const theme of ["dark", "light"] as const) {
       expect(firstRequest.tools.map((tool) => tool.function.name)).toEqual(["roll_dice"]);
       expect(firstRequest.tool_choice).not.toBe("required");
       expect(firstRequest.messages.some((message) => message.content?.includes("<available_functions>"))).toBe(true);
-      await expect(card).toHaveClass(/is-settled/);
-      await testInfo.attach(`native-dice-${theme}-${testInfo.project.name}.png`, {
-        body: await card.screenshot({ animations: "disabled" }),
-        contentType: "image/png",
-      });
+      await card.getByRole("button", { name: "Dismiss dice roll result" }).click();
+      await expect(card).toHaveCount(0);
       finishFollowup!();
       finishFollowup = undefined;
+      await expect(card).toContainText("1d4");
+      await expect(card.locator(".dice-roll-total")).toHaveText(`= ${returnedRolls[2]!.total}`);
+      await card.getByRole("button", { name: "Dismiss dice roll result" }).click();
       await expect(narration).toContainText(`The roll is ${returnedTotal}. The gate opens.`);
+      expect(outcomeFollowupHasTools).toBe(false);
       await expect
         .poll(async () => {
           const rows = await (await request.get(`/api/chats/${chatId}/messages`)).json();
           const last = rows.at(-1);
           const extra = typeof last?.extra === "string" ? JSON.parse(last.extra) : last?.extra;
-          return extra?.diceRollResult?.total;
+          return extra?.diceRollResults;
         })
-        .toBe(returnedTotal);
+        .toEqual(returnedRolls);
+      const skillCard = page.locator(".skill-check-roll--game");
+      await expect(skillCard).toContainText("Stealth");
+      await skillCard.getByRole("button", { name: "Dismiss dice roll result" }).click();
+      await expect(skillCard).toContainText("Perception");
+      await skillCard.getByRole("button", { name: "Dismiss dice roll result" }).click();
+      await expect(skillCard).toHaveCount(0);
+      await page.reload();
+      await expect(narration).toContainText("The gate opens.");
+      await page.getByRole("button", { name: "Logs", exact: true }).click();
+      const logs = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Session Logs" }) });
+      for (const roll of returnedRolls) {
+        await expect(logs).toContainText(`🎲 ${roll.notation}: ${roll.rolls.join(" + ")}`);
+      }
+      const proseRow = logs.locator('[class~="group/logseg"]').filter({ hasText: "The gate opens." });
+      await expect(proseRow.getByRole("button", { name: "Translate", exact: true })).toBeVisible();
+      const diceRow = logs.locator('[class~="group/logseg"]').filter({ hasText: `🎲 ${returnedRolls[0]!.notation}:` });
+      await expect(diceRow.getByRole("button", { name: "Translate", exact: true })).toHaveCount(0);
+      await testInfo.attach(`all-dice-history-${theme}.png`, {
+        body: await logs.screenshot({ path: testInfo.outputPath(`all-dice-history-${theme}.png`) }),
+        contentType: "image/png",
+      });
+      const translatedMessage = (await (await request.get(`/api/chats/${chatId}/messages`)).json()).at(-1);
+      await page.evaluate(async ({ id, content }: { id: string; content: string }) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+        const chat = useChatStore.getState().activeChat;
+        const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+        useChatStore.getState().setActiveChat({ ...chat, metadata: { ...metadata, translationDisplayOnly: true } });
+        useTranslationStore.getState().setTranslation(id, "Brama się otwiera.", content);
+      }, translatedMessage);
+      await expect(logs).toContainText("Brama się otwiera.");
+      for (const roll of returnedRolls) {
+        await expect(logs).toContainText(`🎲 ${roll.notation}: ${roll.rolls.join(" + ")}`);
+      }
+      await page.evaluate(async () => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+        const chat = useChatStore.getState().activeChat;
+        const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+        useChatStore.getState().setActiveChat({ ...chat, metadata: { ...metadata, translationDisplayOnly: false } });
+        useTranslationStore.getState().clearAll();
+      });
+      await logs.getByRole("button", { name: "Close logs", exact: true }).click();
       if (testInfo.project.name.includes("mobile")) {
         await page.getByRole("button", { name: "Game actions", exact: true }).click();
       }
@@ -204,7 +294,8 @@ for (const theme of ["dark", "light"] as const) {
       expect(continuedMessage.content).toContain("The path continues.");
       const continuedExtra =
         typeof continuedMessage.extra === "string" ? JSON.parse(continuedMessage.extra) : continuedMessage.extra;
-      expect(continuedExtra.diceRollResult?.total).toBe(returnedTotal);
+      expect(continuedExtra.diceRollResults).toEqual(returnedRolls);
+      expect(continuedExtra.diceRollResult).toBeNull();
       const regenerated = await request.post("/api/generate", {
         data: { chatId, regenerateMessageId: savedMessageId },
       });
@@ -214,6 +305,21 @@ for (const theme of ["dark", "light"] as const) {
       const regeneratedExtra =
         typeof regeneratedMessage.extra === "string" ? JSON.parse(regeneratedMessage.extra) : regeneratedMessage.extra;
       expect(regeneratedExtra.diceRollResult).toBeNull();
+      expect(regeneratedExtra.diceRollResults).toEqual([]);
+      await page.reload();
+      await expect(narration).toContainText("The path continues.");
+      await page.evaluate(async () => {
+        const { useGameModeStore } = await import("/src/stores/game-mode.store.ts" as string);
+        useGameModeStore.getState().setDiceRollResult({ notation: "2d1", rolls: [1, 1], modifier: 0, total: 2 });
+      });
+      await expect(card).toContainText("2d1");
+      await page.getByPlaceholder("What do you do?", { exact: true }).fill("Keep walking.");
+      const sent = page.waitForResponse(
+        (response) => response.url().includes("/api/generate") && response.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Send game turn", exact: true }).click();
+      await sent;
+      await expect(card).toContainText("2d1");
     } finally {
       finishFollowup?.();
       await page.close().catch(() => undefined);

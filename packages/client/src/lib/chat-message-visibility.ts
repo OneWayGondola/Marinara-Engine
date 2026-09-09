@@ -16,6 +16,7 @@ export function isMessageHiddenFromUser(message: ChatMessageVisibilityInput): bo
   if (extra.hiddenFromUser === true) return true;
   if (message.role !== "user") return false;
   if (extra.diceRollResult && typeof extra.diceRollResult === "object") return false;
+  if (Array.isArray(extra.diceRollResults) && extra.diceRollResults.length > 0) return false;
   return !hasVisibleUserMessagePayload(message.content, extra.attachments);
 }
 

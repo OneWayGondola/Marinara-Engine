@@ -763,20 +763,21 @@ export function buildGmFormatReminder(
     `- [choices: "Option A"|"Option B"|"Option C"] - only for explicit player-facing options that require a selection.`,
   );
 
-  // Checks are emitted SPARSE: the engine rolls the die and writes the numbers
-  // into the tag before the turn is saved, so the GM must never invent them.
-  // The cost is a two-beat check — the outcome is narrated on the turn after
-  // the one that asked for it — and that is the honest trade for a roll the
-  // player can trust.
+  // The engine supplies numbers before the GM writes outcome narration.
   if (ctx.playerDiceRollSubmitted) {
     lines.push(
-      `- [skill_check: skill="Skill Name" dc="1-20" rolls="the player's d20 result"] - if the player presented you with a [dice: ...] roll, start the turn with the check tag, put their exact number in rolls, and choose the DC fairly (5 trivial, 10 routine under pressure, 15 hard, 20 desperate). Do NOT write modifier, total or result: the engine applies the player's card modifiers to their number and fills those in. Narrate up to the moment of the attempt and stop there; the consequence belongs to your next turn, once the resolved check is in front of you. If using another die or a dice pool the engine does not resolve, write the full tag yourself instead, with every attribute present: [skill_check: skill="Intimidation" dc="4" rolls="3|7|9|2|10|5" modifier="0" total="3" result="failure" resolution="successes" dice="6d10"] - one number in rolls per die you threw, the pool's exact notation in dice, resolution="successes" when counting qualifying dice, and the count reported as the total without pretending the pool was added. The engine does not roll systems it does not implement, so a pool tag stands exactly as you write it - including one missing an attribute, which is left unresolved rather than repaired.`,
+      `- [skill_check: skill="Skill Name" dc="1-20" rolls="the player's d20 result"] - use the player's exact die and choose a fair DC (5 trivial, 10 routine under pressure, 15 hard, 20 desperate). Do NOT write modifier, total or result: the engine applies their character-sheet modifiers.`,
     );
   } else {
     lines.push(
-      `- [skill_check: skill="Skill Name" dc="1-20"] - only when uncertainty or the player's actions should be resolved mechanically. Abandon positivity bias: choose the DC fairly (5 trivial, 10 routine under pressure, 15 hard, 20 desperate). Do NOT invent rolls, modifier, total or result - the engine rolls the die and fills them in, and a number you make up will be overwritten. Narrate up to the moment of the attempt and stop there; the consequence belongs to your next turn, once the resolved check is in front of you. If using another die or a dice pool the engine does not resolve, write the full tag yourself instead, with every attribute present: [skill_check: skill="Intimidation" dc="4" rolls="3|7|9|2|10|5" modifier="0" total="3" result="failure" resolution="successes" dice="6d10"] - one number in rolls per die you threw, the pool's exact notation in dice, resolution="successes" when counting qualifying dice, and the count reported as the total without pretending the pool was added. The engine does not roll systems it does not implement, so a pool tag stands exactly as you write it - including one missing an attribute, which is left unresolved rather than repaired.`,
+      `- [skill_check: skill="Skill Name" dc="1-20"] - request a d20 check only when uncertainty matters. Choose a fair DC (5 trivial, 10 routine under pressure, 15 hard, 20 desperate). Do NOT invent rolls, modifier, total or result: the engine supplies the die and character-sheet modifiers.`,
     );
   }
+  lines.push(
+    `- [dice: 3d8+2] - request any NdM roll with an optional flat modifier, even without a tools API. The engine rolls it, capped at 100 dice and 1000 sides per die. Never write the numbers yourself.`,
+    `- For other checks, declare the actual notation: [skill_check: skill="Endurance" dc="12" dice="3d6+2"]. These use the notation's modifier, not d20 character-sheet modifiers. For a pool, declare the per-die threshold and required successes: [skill_check: skill="Intimidation" dc="4" dice="6d10" resolution="successes" threshold="6"]. Each die at or above threshold counts once; dc is the number of successes needed. Exploding dice, botches, or other special pool rules are not implemented. Never invent pool results or omit its threshold.`,
+    `- Place unresolved roll requests before any outcome that depends on them. Describe the attempt, then stop. The engine will send the real results back for you to finish this same turn; do not guess success or failure before receiving them.`,
+  );
 
   lines.push(
     ...(ctx.enableQuickTimeEvents === false

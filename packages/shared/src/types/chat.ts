@@ -847,6 +847,8 @@ export interface MessageExtra {
   startsNewAssistantBubble?: boolean;
   /** Structured dice roll payload rendered by the chat UI. */
   diceRollResult?: DiceRollResult | null;
+  /** Every Game roll in this swipe, in execution order. Older turns use diceRollResult. */
+  diceRollResults?: DiceRollResult[] | null;
   /**
    * Cached pipeline injections (prose-guardian, director, knowledge-retrieval, etc.)
    * saved with this assistant message — reused when regenerating that swipe unless refreshed.
