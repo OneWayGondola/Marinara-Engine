@@ -16,3 +16,8 @@ export function isDiceRollResult(value: unknown): value is DiceRollResult {
     Number.isFinite(candidate.total)
   );
 }
+
+/** Read current plural records and legacy single rolls through the same card guard. */
+export function readDiceRollResults(value: unknown): DiceRollResult[] {
+  return (Array.isArray(value) ? value : [value]).filter(isDiceRollResult);
+}

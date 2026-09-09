@@ -2373,7 +2373,7 @@ function GameSurfaceComponent({
       activeMapId: s.activeMapId,
       sessionNumber: s.sessionNumber,
       isSetupActive: s.isSetupActive,
-      diceRollResult: s.diceRollResult,
+      diceRollResult: s.diceRollResults[0] ?? null,
       npcs: s.npcs,
       hudWidgets: s.hudWidgets,
       blueprint: s.blueprint,
@@ -2385,6 +2385,7 @@ function GameSurfaceComponent({
   const closeCharacterSheet = useGameModeStore((s) => s.closeCharacterSheet);
   const applyWidgetUpdate = useGameModeStore((s) => s.applyWidgetUpdate);
   const setDiceRollResult = useGameModeStore((s) => s.setDiceRollResult);
+  const dismissDiceRollResult = useGameModeStore((s) => s.dismissDiceRollResult);
   const weatherEffectsEnabled = useUIStore((s) => s.weatherEffects);
   const gameFullBodySpriteScale = useUIStore((s) => s.gameFullBodySpriteScale);
   const chatBackgroundBlur = useUIStore((s) => s.chatBackgroundBlur);
@@ -2959,8 +2960,8 @@ function GameSurfaceComponent({
     statuses: CombatStatusTag[];
     messageId: string;
   } | null>(null);
-  const [pendingSkillCheck, setPendingSkillCheck] = useState<import("@marinara-engine/shared").SkillCheckResult | null>(
-    null,
+  const [pendingSkillChecks, setPendingSkillChecks] = useState<import("@marinara-engine/shared").SkillCheckResult[]>(
+    [],
   );
   const [pendingReaction, setPendingReaction] = useState<{
     reaction: string;
@@ -3497,7 +3498,6 @@ function GameSurfaceComponent({
   const handleSegmentEnter = useCallback(
     (segmentIndex: number) => {
       setActiveStoryboardSegmentIndex(Number.isFinite(segmentIndex) ? segmentIndex : null);
-      useGameModeStore.getState().setDiceRollResult(null);
       const sceneEffectsApplied = appliedSegmentsRef.current.has(segmentIndex);
       const inventoryApplied = appliedInventorySegmentsRef.current.has(segmentIndex);
       const effects = sceneEffectsApplied ? [] : pendingSegmentEffects.filter((e) => e.segment === segmentIndex);
@@ -4378,6 +4378,7 @@ function GameSurfaceComponent({
     sceneReadyMsgIdRef.current = undefined;
     weatherMsgRef.current = null;
     lastProcessedMsgRef.current = null;
+    setPendingSkillChecks([]);
   }, [sceneRuntimeScopeKey]);
 
   if (sceneReadyMsgIdRef.current === undefined && !isMessagesLoading) {
@@ -4931,32 +4932,34 @@ function GameSurfaceComponent({
       }
     }
 
-    // Skill checks from GM — prefer inline resolved results, otherwise resolve
-    // server-side. A tag naming a system the engine does not implement (a
-    // success pool, a die that is not a d20) gets neither: the endpoint would
-    // answer it with a d20 and rewrite the GM's pool out of the saved message,
-    // so it is left standing exactly as written.
-    if (tags.skillChecks.length > 0) {
-      const sc = tags.skillChecks[0]!;
-      if (sc.resolvedResult) {
-        setPendingSkillCheck(sc.resolvedResult);
-      } else if (isEngineRollableSkillCheckTag(sc)) {
-        skillCheck.mutate(
-          {
-            chatId: activeChatId,
-            skill: sc.skill,
-            dc: sc.dc,
-            advantage: sc.advantage,
-            disadvantage: sc.disadvantage,
-            preRolledD20: sc.preRolledD20,
-            messageId: msg.id,
-          },
-          {
-            onSuccess: (res) => setPendingSkillCheck(res.result),
-          },
-        );
+    // Preserve reading order, including the legacy endpoint fallback. A late
+    // fallback from another chat or swipe must never append to the new queue.
+    setPendingSkillChecks([]);
+    void (async () => {
+      for (const sc of tags.skillChecks) {
+        try {
+          const result =
+            sc.resolvedResult ??
+            (isEngineRollableSkillCheckTag(sc)
+              ? (
+                  await skillCheck.mutateAsync({
+                    chatId: activeChatId,
+                    skill: sc.skill,
+                    dc: sc.dc,
+                    advantage: sc.advantage,
+                    disadvantage: sc.disadvantage,
+                    preRolledD20: sc.preRolledD20,
+                    messageId: msg.id,
+                  })
+                ).result
+              : null);
+          if (lastProcessedMsgRef.current !== turnKey || useChatStore.getState().activeChatId !== activeChatId) return;
+          if (result) setPendingSkillChecks((pending) => [...pending, result]);
+        } catch (err) {
+          console.error("[game/skill-check] Could not resolve check", err);
+        }
       }
-    }
+    })();
 
     // Element attacks — show reaction popup for first element_attack tag
     if (tags.elementAttacks.length > 0) {
@@ -9631,8 +9634,8 @@ function GameSurfaceComponent({
   );
 
   const handleDismissDice = useCallback(() => {
-    setDiceRollResult(null);
-  }, [setDiceRollResult]);
+    dismissDiceRollResult();
+  }, [dismissDiceRollResult]);
 
   const handleChoiceSelect = useCallback(
     (choice: string) => {
@@ -12334,9 +12337,13 @@ function GameSurfaceComponent({
                       />
                     ) : undefined;
 
-                  const skillCheckSlot = pendingSkillCheck ? (
-                    <GameSkillCheckResult result={pendingSkillCheck} onDismiss={() => setPendingSkillCheck(null)} />
-                  ) : undefined;
+                  const skillCheckSlot =
+                    !diceRollResult && pendingSkillChecks[0] ? (
+                      <GameSkillCheckResult
+                        result={pendingSkillChecks[0]}
+                        onDismiss={() => setPendingSkillChecks((pending) => pending.slice(1))}
+                      />
+                    ) : undefined;
 
                   const diceResultSlot = diceRollResult ? (
                     <GameDiceResult result={diceRollResult} onDismiss={handleDismissDice} />
