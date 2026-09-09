@@ -5,6 +5,7 @@ import { cn, copyToClipboard, getAvatarCropStyle, isLegacyAvatarCrop } from "../
 import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { applyInlineMarkdown, renderMarkdownBlocks, applyInlineMarkdownHTML } from "../../lib/markdown";
 import { RoleplayCommandResults } from "./RoleplayCommandResults";
+import { latestRoleplayParagraph } from "../../lib/roleplay-vn-paragraphs";
 import {
   normalizeCardAssetImageSyntax,
   resolveCardAssetUrl,
@@ -882,6 +883,8 @@ const EditTextarea = memo(function EditTextarea({
 interface ChatMessageProps {
   message: Message & { swipes?: Array<{ id: string; content: string }> };
   isStreaming?: boolean;
+  /** Compact paragraph presentation; full message actions stay in the history. */
+  visualNovel?: boolean;
   /** Whether the live Roleplay response has begun emitting visible output. */
   streamingOutputStarted?: boolean;
   /** Frame-throttled live content that receives the same formatter as committed messages. */
@@ -1758,6 +1761,7 @@ function NameColorText({ color, children }: { color?: string; children: ReactNod
 export const ChatMessage = memo(function ChatMessage({
   message,
   isStreaming,
+  visualNovel = false,
   streamingOutputStarted = false,
   streamingContent,
   onDelete,
@@ -1794,6 +1798,7 @@ export const ChatMessage = memo(function ChatMessage({
   const isSystem = message.role === "system";
   const isNarrator = message.role === "narrator";
   const isRoleplay = chatMode === "roleplay";
+  const vnPortraitScale = useUIStore((state) => (visualNovel ? state.roleplayVnPortraitScale : 1));
   const alwaysDisplaySwipeMenu = useUIStore((state) =>
     isRoleplay
       ? state.alwaysDisplayRoleplaySwipeMenu
@@ -2717,7 +2722,8 @@ export const ChatMessage = memo(function ChatMessage({
   );
 
   // Render content with dialogue highlighting (or HTML rendering)
-  const text = typeof displayContent === "string" ? displayContent : message.content;
+  const fullText = typeof displayContent === "string" ? displayContent : message.content;
+  const text = visualNovel ? latestRoleplayParagraph(fullText) : fullText;
   const isHtmlContent = containsChatHtml(text);
   const htmlScopeClass = useMemo(() => {
     const suffix = message.id.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -2782,7 +2788,7 @@ export const ChatMessage = memo(function ChatMessage({
     () =>
       translatedText
         ? renderContent(
-            translatedText,
+            visualNovel ? latestRoleplayParagraph(translatedText) : translatedText,
             dialogueColor,
             speakerColorMap,
             boldDialogue,
@@ -2796,6 +2802,7 @@ export const ChatMessage = memo(function ChatMessage({
         : null,
     [
       translatedText,
+      visualNovel,
       dialogueColor,
       speakerColorMap,
       boldDialogue,
@@ -3019,6 +3026,137 @@ export const ChatMessage = memo(function ChatMessage({
       )}
     </>
   );
+
+  const roleplayAttachments = isRoleplay &&
+    !editing &&
+    extra.attachments?.length > 0 &&
+    !IMAGE_URL_RE.test(message.content.trim()) && (
+      <div className="mt-1.5 flex flex-col items-center gap-2 px-3 pb-2">
+        {extra.attachments.map((att: any, i: number) =>
+          att.roleplaySound === true ? null : att.type === "image" || att.type?.startsWith("image/") ? (
+            <div key={i} className="group/att relative inline-block">
+              <button
+                type="button"
+                onClick={() => openAttachmentImageLightbox(att, i)}
+                className="block"
+                title={localizeUi("ui.noodle.noodlepostcard.openImage")}
+                aria-label={localizeUi("ui.chat.chatmessage.openValue1", {
+                  value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
+                })}
+              >
+                <ChatImagePreview
+                  src={att.url || att.data}
+                  alt={att.filename || att.name || "image"}
+                  className="max-h-[70vh] max-w-full rounded-lg object-contain sm:max-h-[32rem]"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRemoveAttachment(i)}
+                aria-label={localizeUi("ui.chat.chatmessage.removeImageFromMessage")}
+                title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
+                className="absolute top-1.5 right-1.5 rounded-full bg-black/60 p-1 text-white/80 transition-opacity hover:bg-black/80 hover:text-white sm:opacity-0 sm:group-hover/att:opacity-100"
+              >
+                <X size="0.875rem" />
+              </button>
+            </div>
+          ) : (
+            <div
+              key={i}
+              className="group/att flex max-w-full items-center gap-2 rounded-lg bg-foreground/10 px-2.5 py-1.5 text-xs text-foreground/70 ring-1 ring-foreground/10"
+            >
+              <ScrollText size="0.875rem" className="shrink-0 text-[var(--primary)]" />
+              <span className="min-w-0 max-w-[16rem] truncate">{att.filename || att.name || "attachment"}</span>
+              <button
+                type="button"
+                onClick={() => handleRemoveAttachment(i)}
+                aria-label={localizeUi("ui.chat.chatmessage.removeFileFromMessage")}
+                title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
+                className="rounded-full p-0.5 text-foreground/45 transition-colors hover:bg-foreground/10 hover:text-[var(--destructive)] sm:opacity-0 sm:group-hover/att:opacity-100"
+              >
+                <X size="0.75rem" />
+              </button>
+            </div>
+          ),
+        )}
+      </div>
+    );
+
+  if (visualNovel) {
+    return (
+      <>
+        <div
+          className="mari-roleplay-vn-dialogue flex min-w-0 gap-3 p-3 sm:gap-4 sm:p-4"
+          data-vn-message-id={message.id}
+        >
+          <div
+            className="relative shrink-0 self-start overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--secondary)]"
+            style={{ width: `min(${5 * vnPortraitScale}rem, 26vw)`, height: `min(${5 * vnPortraitScale}rem, 26vw)` }}
+          >
+            {displayAvatarUrl ? (
+              <img
+                src={displayAvatarUrl}
+                alt={displayName}
+                className="h-full w-full object-cover"
+                style={panelAvatarCropStyle}
+              />
+            ) : (
+              <div
+                className="flex h-full items-center justify-center text-[var(--muted-foreground)]"
+                aria-hidden="true"
+              >
+                {isUser ? <User size="1.75rem" /> : <Bot size="1.75rem" />}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 truncate text-sm font-semibold text-[var(--marinara-chat-chrome-highlight-text)]">
+              {isMergedGroup ? (
+                mergedNameElement
+              ) : isNarrator ? (
+                localizeUi("ui.chat.chatmessage.narrator")
+              ) : (
+                <span style={solidNameColorStyle(msgNameColor)}>
+                  <NameColorText color={msgNameColor}>{displayName}</NameColorText>
+                </span>
+              )}
+            </div>
+            <div
+              className="mari-message-content max-h-[min(30dvh,18rem)] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words pr-1"
+              style={messageTextStyle}
+              tabIndex={0}
+              role="region"
+              aria-label={localizeUi("chat.roleplayVn.currentParagraph")}
+              aria-live="polite"
+            >
+              {isStreaming && streamingContent ? (
+                streamingContent(renderStreamingText)
+              ) : (
+                <>
+                  {diceRollResult && (
+                    <DiceMessageContent diceRollResult={diceRollResult} createdAt={message.createdAt} />
+                  )}
+                  {diceReplacesContent ? null : showTranslationOnly ? renderedTranslation : renderedContent}
+                  {roleplayAttachments}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        {imageLightbox && (
+          <ChatImageLightbox
+            image={imageLightbox.image}
+            alt={imageLightbox.alt}
+            pinEnabled={imageLightbox.pinEnabled}
+            downloadEnabled={imageLightbox.downloadEnabled}
+            onClose={closeImageLightbox}
+          />
+        )}
+      </>
+    );
+  }
 
   // ─── System messages (shared across modes) ───
   if (isSystem) {
@@ -3485,60 +3623,7 @@ export const ChatMessage = memo(function ChatMessage({
               ) : null}
             </div>
 
-            {/* Attachments (illustrations, selfies, uploaded files) */}
-            {!editing && extra.attachments?.length > 0 && !IMAGE_URL_RE.test(message.content.trim()) && (
-              <div className="mt-1.5 flex flex-col items-center gap-2 px-3 pb-2">
-                {extra.attachments.map((att: any, i: number) =>
-                  att.roleplaySound === true ? null : att.type === "image" || att.type?.startsWith("image/") ? (
-                    <div key={i} className="group/att relative inline-block">
-                      <button
-                        type="button"
-                        onClick={() => openAttachmentImageLightbox(att, i)}
-                        className="block"
-                        title={localizeUi("ui.noodle.noodlepostcard.openImage")}
-                        aria-label={localizeUi("ui.chat.chatmessage.openValue1", {
-                          value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
-                        })}
-                      >
-                        <ChatImagePreview
-                          src={att.url || att.data}
-                          alt={att.filename || att.name || "image"}
-                          className="max-h-[70vh] max-w-full rounded-lg object-contain sm:max-h-[32rem]"
-                          loading="lazy"
-                          decoding="async"
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveAttachment(i)}
-                        aria-label={localizeUi("ui.chat.chatmessage.removeImageFromMessage")}
-                        title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
-                        className="absolute top-1.5 right-1.5 rounded-full bg-black/60 p-1 text-white/80 transition-opacity hover:bg-black/80 hover:text-white sm:opacity-0 sm:group-hover/att:opacity-100"
-                      >
-                        <X size="0.875rem" />
-                      </button>
-                    </div>
-                  ) : (
-                    <div
-                      key={i}
-                      className="group/att flex max-w-full items-center gap-2 rounded-lg bg-foreground/10 px-2.5 py-1.5 text-xs text-foreground/70 ring-1 ring-foreground/10"
-                    >
-                      <ScrollText size="0.875rem" className="shrink-0 text-[var(--primary)]" />
-                      <span className="min-w-0 max-w-[16rem] truncate">{att.filename || att.name || "attachment"}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveAttachment(i)}
-                        aria-label={localizeUi("ui.chat.chatmessage.removeFileFromMessage")}
-                        title={localizeUi("ui.chat.chatmessage.removeFromMessage")}
-                        className="rounded-full p-0.5 text-foreground/45 transition-colors hover:bg-foreground/10 hover:text-[var(--destructive)] sm:opacity-0 sm:group-hover/att:opacity-100"
-                      >
-                        <X size="0.75rem" />
-                      </button>
-                    </div>
-                  ),
-                )}
-              </div>
-            )}
+            {roleplayAttachments}
 
             {!editing && !isUser && (storyboard || storyboardGenerating) ? (
               <RoleplayStoryboardMessageMedia
