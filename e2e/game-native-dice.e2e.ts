@@ -16,6 +16,7 @@ for (const theme of ["dark", "light"] as const) {
     let returnedTotal = 0;
     let returnedRolls: Array<{ notation: string; rolls: number[]; modifier: number; total: number }> = [];
     let textOnly = false;
+    let outcomeFollowupHasTools: boolean | undefined;
     const provider = createServer(async (incoming, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
@@ -31,7 +32,7 @@ for (const theme of ["dark", "light"] as const) {
         return;
       }
       if (body.messages?.at(-1)?.content?.includes("The engine has now rolled the requested dice:")) {
-        expect(body.tools).toBeUndefined();
+        outcomeFollowupHasTools = body.tools !== undefined;
         write({ content: `The roll is ${returnedTotal}. The gate opens.` });
         write({}, "stop");
         response.end("data: [DONE]\n\n");
@@ -216,6 +217,7 @@ for (const theme of ["dark", "light"] as const) {
       await expect(card.locator(".dice-roll-total")).toHaveText(`= ${returnedRolls[2]!.total}`);
       await card.getByRole("button", { name: "Dismiss dice roll result" }).click();
       await expect(narration).toContainText(`The roll is ${returnedTotal}. The gate opens.`);
+      expect(outcomeFollowupHasTools).toBe(false);
       await expect
         .poll(async () => {
           const rows = await (await request.get(`/api/chats/${chatId}/messages`)).json();
@@ -237,11 +239,36 @@ for (const theme of ["dark", "light"] as const) {
       for (const roll of returnedRolls) {
         await expect(logs).toContainText(`🎲 ${roll.notation}: ${roll.rolls.join(" + ")}`);
       }
+      const proseRow = logs.locator('[class~="group/logseg"]').filter({ hasText: "The gate opens." });
+      await expect(proseRow.getByRole("button", { name: "Translate", exact: true })).toBeVisible();
+      const diceRow = logs.locator('[class~="group/logseg"]').filter({ hasText: `🎲 ${returnedRolls[0]!.notation}:` });
+      await expect(diceRow.getByRole("button", { name: "Translate", exact: true })).toHaveCount(0);
       await testInfo.attach(`all-dice-history-${theme}.png`, {
         body: await logs.screenshot({ path: testInfo.outputPath(`all-dice-history-${theme}.png`) }),
         contentType: "image/png",
       });
-      await logs.getByRole("heading", { name: "Session Logs" }).locator("../..").getByRole("button").last().click();
+      const translatedMessage = (await (await request.get(`/api/chats/${chatId}/messages`)).json()).at(-1);
+      await page.evaluate(async ({ id, content }: { id: string; content: string }) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+        const chat = useChatStore.getState().activeChat;
+        const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+        useChatStore.getState().setActiveChat({ ...chat, metadata: { ...metadata, translationDisplayOnly: true } });
+        useTranslationStore.getState().setTranslation(id, "Brama się otwiera.", content);
+      }, translatedMessage);
+      await expect(logs).toContainText("Brama się otwiera.");
+      for (const roll of returnedRolls) {
+        await expect(logs).toContainText(`🎲 ${roll.notation}: ${roll.rolls.join(" + ")}`);
+      }
+      await page.evaluate(async () => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+        const chat = useChatStore.getState().activeChat;
+        const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : chat.metadata;
+        useChatStore.getState().setActiveChat({ ...chat, metadata: { ...metadata, translationDisplayOnly: false } });
+        useTranslationStore.getState().clearAll();
+      });
+      await logs.getByRole("button", { name: "Close logs", exact: true }).click();
       if (testInfo.project.name.includes("mobile")) {
         await page.getByRole("button", { name: "Game actions", exact: true }).click();
       }

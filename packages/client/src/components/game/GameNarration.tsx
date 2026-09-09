@@ -5401,6 +5401,10 @@ export function GameNarration({
                 </div>
               )}
               {visibleLogEntries.map((entry) => {
+                const messageActionSegmentIndex = Math.max(
+                  0,
+                  entry.segments.findIndex((segment) => segment.sourceSegmentIndex != null),
+                );
                 return (
                   <div key={entry.messageId} className="space-y-1.5">
                     {entry.segments.map((seg, entrySegmentIndex) => {
@@ -5416,14 +5420,15 @@ export function GameNarration({
                       const translatedText = sourceMessageId ? translations[sourceMessageId] : undefined;
                       const translationSource = sourceMessageId ? translationSources[sourceMessageId] : undefined;
                       const isTranslating = sourceMessageId ? !!translating[sourceMessageId] : false;
-                      const translatedSegmentText = segmentSourceMessage
-                        ? getGameTranslatedSegmentText(
-                            segmentSourceMessage,
-                            translatedText,
-                            speakerColors,
-                            sourceSegmentIndex,
-                          )
-                        : undefined;
+                      const translatedSegmentText =
+                        segmentSourceMessage && hasSourceSegmentIndex
+                          ? getGameTranslatedSegmentText(
+                              segmentSourceMessage,
+                              translatedText,
+                              speakerColors,
+                              sourceSegmentIndex,
+                            )
+                          : undefined;
                       const showTranslationOnly =
                         translationDisplayOnly &&
                         !!segmentSourceMessage &&
@@ -5490,7 +5495,7 @@ export function GameNarration({
                         ? (sourceMessagesById.get(sourceMessageId) ?? null)
                         : null;
                       const canPeekPrompt =
-                        entrySegmentIndex === 0 &&
+                        entrySegmentIndex === messageActionSegmentIndex &&
                         !!onPeekPrompt &&
                         !!sourceMessageId &&
                         (sourceMessageRole === "assistant" || sourceMessageRole === "narrator") &&
@@ -5550,7 +5555,10 @@ export function GameNarration({
                         ? renderPeekPromptButton(sourceMessageId, LOG_SEGMENT_ACTION_BTN)
                         : null;
                       const translateButton =
-                        entrySegmentIndex === 0 && segmentSourceMessage && sourceMessageRole !== "system" ? (
+                        entrySegmentIndex === messageActionSegmentIndex &&
+                        hasSourceSegmentIndex &&
+                        segmentSourceMessage &&
+                        sourceMessageRole !== "system" ? (
                           <button
                             type="button"
                             onPointerDown={stopLogActionPointerDown}
@@ -5946,7 +5954,7 @@ export function GameNarration({
                                 renderTranslationPanel(
                                   segmentSourceMessage,
                                   translatedSegmentText,
-                                  entrySegmentIndex === 0 && isTranslating,
+                                  entrySegmentIndex === messageActionSegmentIndex && isTranslating,
                                   "mt-1",
                                 )}
                             </div>
@@ -6024,7 +6032,7 @@ export function GameNarration({
                               renderTranslationPanel(
                                 segmentSourceMessage,
                                 translatedSegmentText,
-                                entrySegmentIndex === 0 && isTranslating,
+                                entrySegmentIndex === messageActionSegmentIndex && isTranslating,
                                 "mt-1",
                               )}
                           </div>
@@ -6067,7 +6075,7 @@ export function GameNarration({
                             renderTranslationPanel(
                               segmentSourceMessage,
                               translatedSegmentText,
-                              entrySegmentIndex === 0 && isTranslating,
+                              entrySegmentIndex === messageActionSegmentIndex && isTranslating,
                               "mt-1",
                             )}
                         </div>

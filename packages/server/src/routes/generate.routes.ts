@@ -7566,7 +7566,9 @@ export async function generateRoutes(app: FastifyInstance) {
                 );
                 narration = "";
               } finally {
-                await followup.return?.().catch(() => undefined);
+                await followup.return?.().catch((closeError: unknown) => {
+                  logger.warn(closeError, "[generate/game] Failed to close the outcome narration stream");
+                });
               }
               // Keep the engine's records exactly once, even if the rewrite
               // echoed or changed them. On failure, save the real results rather
