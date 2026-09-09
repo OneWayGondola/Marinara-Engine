@@ -24,6 +24,7 @@ import { collectPastReasoningMetadata } from "../../packages/server/src/services
 import { conversationPromptHistoryContent } from "../../packages/server/src/routes/generate/conversation-prompt-formatting.js";
 import { generateRoleplaySoundEffect } from "../../packages/server/src/routes/tts.routes.js";
 import { prepareRoleplayRoll } from "../../packages/server/src/services/generation/roleplay-rolls.js";
+import type { RPGStatsConfig } from "../../packages/shared/src/types/character.js";
 
 const cancelledSound = new AbortController();
 cancelledSound.abort();
@@ -390,7 +391,7 @@ assert.equal(
   0,
 );
 
-const diceCharacters = [
+const diceCharacters: { id: string; name: string; rpgStats?: RPGStatsConfig }[] = [
   {
     id: "dottore",
     name: "Dottore",

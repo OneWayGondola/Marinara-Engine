@@ -183,6 +183,11 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
         async () => extra((await (await request.get(`/api/chats/${chat.id}`)).json()).metadata).roleplayRollAudience,
       )
       .toBe("narrator");
+    await narratorSelect.selectOption("");
+    await expect(rollAudience).toHaveAccessibleName("Who can roll dice");
+    await expect(rollAudience).toHaveAccessibleDescription("Choose a Narrator character below to allow this command.");
+    await narratorSelect.selectOption(narrator);
+    await expect(rollAudience).not.toHaveAttribute("aria-describedby");
     expect(await preview(alice)).not.toContain("roll_dice");
     expect(await preview(alice)).not.toContain("[roll:");
     expect(await preview(narrator)).toContain("[roll:");

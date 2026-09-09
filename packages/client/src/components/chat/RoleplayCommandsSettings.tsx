@@ -69,6 +69,7 @@ export function RoleplayCommandsSettings({
                           : true;
                 const checked = available && isRoleplayCommandEnabled(metadata, key);
                 const audienceKey = key === "roll" ? "roleplayRollAudience" : "roleplayCombatAudience";
+                const showAudienceWarning = metadata[audienceKey] === "narrator" && (!privateAvailable || !hasNarrator);
                 return (
                   <div key={key} className="flex flex-col gap-2">
                     <SettingsSwitch
@@ -102,9 +103,11 @@ export function RoleplayCommandsSettings({
                       labelClassName="text-[0.6875rem] font-medium"
                     />
                     {checked && (key === "roll" || key === "combat") && (
-                      <label className="flex flex-col gap-1.5 text-xs">
-                        <span>{t(`roleplay.commands.${key}.audience`)}</span>
+                      <div className="flex flex-col gap-1.5 text-xs">
+                        <label htmlFor={`${chat.id}:${key}-audience`}>{t(`roleplay.commands.${key}.audience`)}</label>
                         <select
+                          id={`${chat.id}:${key}-audience`}
+                          aria-describedby={showAudienceWarning ? `${chat.id}:${key}-audience-status` : undefined}
                           value={metadata[audienceKey] ?? "all"}
                           disabled={update.isPending}
                           onChange={(event) => update.mutate({ id: chat.id, [audienceKey]: event.target.value })}
@@ -113,8 +116,12 @@ export function RoleplayCommandsSettings({
                           <option value="all">{t("roleplay.commands.audience.all")}</option>
                           <option value="narrator">{t("roleplay.commands.audience.narrator")}</option>
                         </select>
-                        {metadata[audienceKey] === "narrator" && (!privateAvailable || !hasNarrator) && (
-                          <span className="text-[0.6875rem] text-[var(--muted-foreground)]" role="status">
+                        {showAudienceWarning && (
+                          <span
+                            id={`${chat.id}:${key}-audience-status`}
+                            className="text-[0.6875rem] text-[var(--muted-foreground)]"
+                            role="status"
+                          >
                             {t(
                               !privateAvailable
                                 ? "roleplay.commands.narrator.individualRequired"
@@ -122,16 +129,20 @@ export function RoleplayCommandsSettings({
                             )}
                           </span>
                         )}
-                      </label>
+                      </div>
                     )}
                   </div>
                 );
               })}
             </div>
             {characters.length > 0 && (
-              <label className="flex flex-col gap-1.5 text-xs">
-                <span className="font-medium">{t("roleplay.commands.narrator.label")}</span>
+              <div className="flex flex-col gap-1.5 text-xs">
+                <label htmlFor={`${chat.id}:command-narrator`} className="font-medium">
+                  {t("roleplay.commands.narrator.label")}
+                </label>
                 <select
+                  id={`${chat.id}:command-narrator`}
+                  aria-describedby={`${chat.id}:command-narrator-description`}
                   value={
                     characters.some((character) => character.id === metadata.roleplayCommandNarratorId)
                       ? (metadata.roleplayCommandNarratorId ?? "")
@@ -150,15 +161,22 @@ export function RoleplayCommandsSettings({
                     </option>
                   ))}
                 </select>
-                <span className="text-[0.6875rem] text-[var(--muted-foreground)]">
+                <span
+                  id={`${chat.id}:command-narrator-description`}
+                  className="text-[0.6875rem] text-[var(--muted-foreground)]"
+                >
                   {t("roleplay.commands.narrator.description")}
                 </span>
-              </label>
+              </div>
             )}
             {isRoleplayCommandEnabled(metadata, "sound") && (
-              <label className="flex flex-col gap-1.5 text-xs">
-                <span className="font-medium">{t("roleplay.commands.sound.connection")}</span>
+              <div className="flex flex-col gap-1.5 text-xs">
+                <label htmlFor={`${chat.id}:command-sound-connection`} className="font-medium">
+                  {t("roleplay.commands.sound.connection")}
+                </label>
                 <select
+                  id={`${chat.id}:command-sound-connection`}
+                  aria-describedby={`${chat.id}:command-sound-description`}
                   value={metadata.roleplaySoundConnectionId ?? ""}
                   disabled={update.isPending}
                   onChange={(event) =>
@@ -173,10 +191,13 @@ export function RoleplayCommandsSettings({
                     </option>
                   ))}
                 </select>
-                <span className="text-[0.6875rem] text-[var(--muted-foreground)]">
+                <span
+                  id={`${chat.id}:command-sound-description`}
+                  className="text-[0.6875rem] text-[var(--muted-foreground)]"
+                >
                   {t("roleplay.commands.sound.requirements")}
                 </span>
-              </label>
+              </div>
             )}
           </>
         )}

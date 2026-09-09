@@ -27,6 +27,7 @@ export function prepareRoleplayRoll(
   let bonus = 0;
   if (stats?.enabled && attribute) {
     const exact = stats.attributes.find((item) => item.name.trim().toLowerCase() === attribute.toLowerCase());
+    // This mapper omits unrecognized names; an unknown attribute must not pick a default stat.
     const canonical = Object.keys(mapSheetAttributesToRPG([{ name: attribute, value: 0 }]))[0];
     const score =
       exact?.value ??
