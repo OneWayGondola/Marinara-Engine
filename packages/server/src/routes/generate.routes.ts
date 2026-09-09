@@ -6139,6 +6139,35 @@ export async function generateRoutes(app: FastifyInstance) {
         } | null> => {
           generationProviderOrigin = { model: conn.model, provider: conn.provider };
           let recoveredAlreadyAppliedSpatialTurn = false;
+          const pendingGameStateToolCalls: Parameters<typeof executeToolCalls>[0] = [];
+          const persistGameStateToolCalls = async (messageId: string, swipeIndex: number) => {
+            if (!pendingGameStateToolCalls.length || !messageId || abortController.signal.aborted) return;
+            const siblingSnapshot =
+              input.regenerateMessageId && swipeIndex > 0
+                ? await gameStateStore.getByChatAndMessage(input.chatId, messageId, swipeIndex - 1)
+                : null;
+            const results = await executeToolCalls(pendingGameStateToolCalls.splice(0), {
+              applyGameStateUpdate: async ({ type, value }) => {
+                const field = type === "location_change" ? "location" : "time";
+                const patch = await gameStateStore.updateFromTool(
+                  input.chatId,
+                  field,
+                  value,
+                  ownerSpatialProjection?.ownerMode === "game",
+                  { messageId, swipeIndex, baseSnapshot: siblingSnapshot ?? baseGameStateSnapshot },
+                );
+                logger.debug("[game_state_patch] tool update_game_state: %j", patch);
+                sendSseEvent(reply, { type: "game_state_patch", data: patch });
+                return patch;
+              },
+            });
+            for (const result of results) {
+              sendSseEvent(reply, {
+                type: "tool_result",
+                data: { name: result.name, result: result.result, success: result.success },
+              });
+            }
+          };
           const targetCharacterProfile = targetCharId ? characterMacroProfilesById.get(targetCharId) : undefined;
           const deferredTargetCharacterProfile = deferCharacterMacros ? targetCharacterProfile : undefined;
           // Turn-game board awareness: when a table game is active in this chat,
@@ -6719,15 +6748,13 @@ export async function generateRoutes(app: FastifyInstance) {
                 applyGameStateUpdate: async ({ type, value }) => {
                   if (chatMode !== "game") throw new Error("Game-state writes are only available in Game Mode.");
                   const field = type === "location_change" ? "location" : "time";
-                  const patch = await gameStateStore.updateFromTool(
-                    input.chatId,
-                    field,
-                    value,
-                    ownerSpatialProjection?.ownerMode === "game",
-                  );
-                  logger.debug("[game_state_patch] tool update_game_state: %j", patch);
-                  sendSseEvent(reply, { type: "game_state_patch", data: patch });
-                  return patch;
+                  if (field === "location" && ownerSpatialProjection?.ownerMode === "game") {
+                    throw new Error("Location is controlled by Spatial Context. Use the game's movement controls.");
+                  }
+                  if (!gameState) throw new Error("No game-state snapshot is available to update.");
+                  const patch = applyTrackerFieldLocksToGameStatePatch({ [field]: value }, gameState);
+                  if (patch[field] !== value) throw new Error(`The ${field} field is locked; no change was applied.`);
+                  return { ...patch, pending: true };
                 },
                 // The character whose turn this is — update_about_me writes their about-me.
                 // Only attribute when this generation voices exactly one character and the
@@ -6746,6 +6773,10 @@ export async function generateRoutes(app: FastifyInstance) {
                 .filter((toolResult): toolResult is NonNullable<typeof toolResult> => toolResult != null);
 
               for (const tr of toolResults) {
+                if (tr.name === "update_game_state" && tr.success) {
+                  const call = permittedToolCalls.find((call) => call.id === tr.toolCallId);
+                  if (call) pendingGameStateToolCalls.push(call);
+                }
                 // A dice roll the GM asked for is player-facing, not a debug trace: carry the
                 // parsed result on the event so the client can show the card while the turn is
                 // still running, and remember it for the saved message. The raw tool result the
@@ -7569,6 +7600,7 @@ export async function generateRoutes(app: FastifyInstance) {
               "[generate] Empty response after post-processing",
             );
             if (
+              (pendingGameStateToolCalls.length > 0 && !abortController.signal.aborted) ||
               shouldSaveHiddenGenerationAnchor({
                 impersonate: input.impersonate,
                 parsedCommandCount: parsedCommands.length,
@@ -7612,6 +7644,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 messageId: anchoredMsg?.id ?? "",
                 swipeIndex: anchoredMsg?.activeSwipeIndex ?? 0,
               });
+              await persistGameStateToolCalls(anchoredMsg?.id ?? "", anchoredMsg?.activeSwipeIndex ?? 0);
               if (
                 anchoredMsg?.id &&
                 hierarchicalMapsEnabledForChat &&
@@ -7782,6 +7815,7 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           // Empty messageId on the paths that save no message; that costs the claim, never the effect.
           await executeCollectedGmVerbCalls({ messageId: savedMsg?.id ?? "", swipeIndex: savedSwipeIndex ?? 0 });
+          await persistGameStateToolCalls(savedMsg?.id ?? "", savedSwipeIndex ?? 0);
 
           if (
             savedMsg?.id &&

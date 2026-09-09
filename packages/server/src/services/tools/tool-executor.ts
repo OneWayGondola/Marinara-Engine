@@ -216,7 +216,7 @@ const spotifyTrackIndexCache = new Map<string, SpotifyTrackIndexCacheEntry>();
 
 export interface ToolExecutionContext {
   gameState?: Record<string, unknown>;
-  /** Returns the stored patch only after the host has validated and persisted it. */
+  /** Returns a stored patch, or an explicit pending patch until the turn is saved. */
   applyGameStateUpdate?: (update: { type: string; value: string }) => Promise<Record<string, unknown>>;
   chatMeta?: Record<string, unknown>;
   hiddenContext?: CustomToolHiddenContext;
@@ -561,7 +561,10 @@ async function updateGameState(
   const field = type === "location_change" ? "location" : "time";
   if (stored[field] !== value) throw new Error("The requested game-state value was not stored.");
   return {
-    applied: true,
+    applied: stored.pending !== true,
+    ...(stored.pending === true
+      ? { pending: true, note: "Queued for this turn. The change is not applied until this response is saved." }
+      : {}),
     update: {
       type: args.type,
       value,

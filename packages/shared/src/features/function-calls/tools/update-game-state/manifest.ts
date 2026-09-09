@@ -3,7 +3,7 @@ import type { ToolDefinition } from "../../tool-definitions.js";
 export const updateGameStateToolManifest = {
   name: "update_game_state",
   description:
-    "Set the game's shared clock or party location. Reports success only after storage; locked fields and Spatial Context-owned locations are refused. Stats, inventory and quests are tracked elsewhere.",
+    "Set the game's shared clock or party location for this turn. A pending receipt is not an applied change: it is stored only after the response is saved. Locked fields and Spatial Context-owned locations are refused. Stats, inventory and quests are tracked elsewhere.",
   parameters: {
     type: "object",
     properties: {
