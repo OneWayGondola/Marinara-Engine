@@ -103,7 +103,7 @@ function withIllustratorFailureTargets(
 }
 
 /** Show a persistent, copyable error toast and log to console */
-function showError(msg: string, options?: Pick<ExternalToast, "action">) {
+function showError(msg: string, options?: Pick<ExternalToast, "action" | "id">) {
   const formatted = formatGenerationParameterError(msg);
   console.error("[Generation]", msg);
   toast.error(formatted, { duration: 15000, ...options });
@@ -2145,6 +2145,26 @@ export function useGenerate() {
                 diceRollResult?: unknown;
                 mode?: string;
               };
+              if (data.success === false && isActiveChat()) {
+                let reason = "";
+                try {
+                  const result = typeof data.result === "string" ? JSON.parse(data.result) : data.result;
+                  if (result && typeof result.error === "string") reason = result.error.trim().slice(0, 250);
+                } catch {
+                  /* Keep malformed/raw tool output in debug only. */
+                }
+                const tool =
+                  typeof data.name === "string" ? data.name.slice(0, 80) : translate("generation.tools.unknown");
+                showError(
+                  translate("generation.tools.failed", {
+                    tool,
+                    reason: reason || translate("generation.tools.noResult"),
+                  }),
+                  {
+                    id: `tool-failure-${params.chatId}-${tool}`,
+                  },
+                );
+              }
               // A dice roll the GM asked for is something the player is meant to see, so it
               // escapes the debug-only gate and drives the same card /roll shows.
               if (isDiceRollResult(data.diceRollResult) && isActiveChat()) {

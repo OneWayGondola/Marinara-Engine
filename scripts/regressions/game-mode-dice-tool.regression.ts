@@ -312,7 +312,7 @@ assert.equal(
 
 // ── 6. update_game_state narrowed to the two types that persist ────────────
 // The other four were answered with `applied: true` and then dropped on the floor.
-// Whether these two should persist at all is issue #5898's question, not this one's.
+// Supported writes now require a confirmed host persistence receipt (#5898).
 
 assert.deepEqual(
   (updateGameStateToolManifest.parameters.properties.type as { enum: string[] }).enum,
@@ -350,16 +350,24 @@ for (const deadType of ["stat_change", "inventory_add", "inventory_remove", "que
   );
 }
 
-const [locationChange] = await executeToolCalls([
-  {
-    id: "call-location",
-    type: "function",
-    function: {
-      name: "update_game_state",
-      arguments: JSON.stringify({ type: "location_change", target: "player", key: "location", value: "Riverwatch" }),
+const receiptContext = {
+  applyGameStateUpdate: async ({ type, value }: { type: string; value: string }) => ({
+    [type === "location_change" ? "location" : "time"]: value,
+  }),
+};
+const [locationChange] = await executeToolCalls(
+  [
+    {
+      id: "call-location",
+      type: "function",
+      function: {
+        name: "update_game_state",
+        arguments: JSON.stringify({ type: "location_change", target: "player", key: "location", value: "Riverwatch" }),
+      },
     },
-  },
-]);
+  ],
+  receiptContext,
+);
 assert.equal(locationChange?.success, true, "location_change still persists and must still be accepted");
 assert.equal(
   (JSON.parse(locationChange!.result) as Record<string, unknown>).applied,
@@ -369,13 +377,16 @@ assert.equal(
 
 for (const type of PERSISTED_GAME_STATE_UPDATE_TYPES) {
   const value = type === "time_advance" ? "18:00" : "Riverwatch";
-  const [minimal] = await executeToolCalls([
-    {
-      id: `minimal-${type}`,
-      type: "function",
-      function: { name: "update_game_state", arguments: JSON.stringify({ type, value }) },
-    },
-  ]);
+  const [minimal] = await executeToolCalls(
+    [
+      {
+        id: `minimal-${type}`,
+        type: "function",
+        function: { name: "update_game_state", arguments: JSON.stringify({ type, value }) },
+      },
+    ],
+    receiptContext,
+  );
   assert.equal(minimal?.success, true, `${type} does not use target or key`);
   assert.equal(JSON.parse(minimal!.result).display, `📊 ${type} → ${value}`);
 }
