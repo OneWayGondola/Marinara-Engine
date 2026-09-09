@@ -119,7 +119,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Stopping a Gemini or Anthropic tool-streaming turn reports it as interrupted, and failed turns release their upstream connection (#5918).
 - Stabilized the swipe-control theme regression by comparing settled colors instead of WebKit transition values.
-- Experience lore selections respect their token limit even when a selected lorebook enables recursive scanning; entries reported as skipped stay out of the prompt (#5942).
+- Budgeted lore selection keeps skipped entries out of recursive scanning (#5942). Explicit world-generation selections now bypass automatic lore budgets and use the model context limit instead.
 - Scoped the character-action browser fixture to its test character so unrelated catalog entries do not delay the check.
 
 - Game narration has a Translate action and rejects stale translations after rerolls; automatic translation can start with the first response when enabled during setup. Delayed translations stay with their original chat when switching chats (#5888).
