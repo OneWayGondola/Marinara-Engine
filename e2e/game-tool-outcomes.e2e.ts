@@ -6,21 +6,25 @@ const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.u
 for (const mode of ["game", "roleplay", "conversation"] as const) {
   test(`${mode} shows refused tool results with debug disabled`, async ({ page, request }, testInfo) => {
     page.setDefaultTimeout(10_000);
-    const character =
-      mode === "conversation"
-        ? await (await request.post("/api/characters", { data: { data: { name: "Tool fixture" } } })).json()
-        : null;
-    const response = await request.post("/api/chats", {
-      data: {
-        name: "Tool refusal proof",
-        mode,
-        characterIds: character ? [character.id] : [],
-        connectionId: "synthetic-tool-fixture",
-      },
-    });
-    expect(response.ok()).toBeTruthy();
-    const { id } = await response.json();
+    let characterId: string | undefined;
+    let chatId: string | undefined;
     try {
+      if (mode === "conversation") {
+        const character = await request.post("/api/characters", { data: { data: { name: "Tool fixture" } } });
+        expect(character.ok()).toBeTruthy();
+        characterId = (await character.json()).id;
+      }
+      const response = await request.post("/api/chats", {
+        data: {
+          name: "Tool refusal proof",
+          mode,
+          characterIds: characterId ? [characterId] : [],
+          connectionId: "synthetic-tool-fixture",
+        },
+      });
+      expect(response.ok()).toBeTruthy();
+      const { id } = await response.json();
+      chatId = id;
       await request.patch(`/api/chats/${id}/metadata`, {
         data: {
           enableAgents: false,
@@ -96,8 +100,10 @@ for (const mode of ["game", "roleplay", "conversation"] as const) {
         });
       }
     } finally {
-      await request.delete(`/api/chats/${id}`);
-      if (character) await request.delete(`/api/characters/${character.id}`);
+      await Promise.all([
+        ...(chatId ? [request.delete(`/api/chats/${chatId}`)] : []),
+        ...(characterId ? [request.delete(`/api/characters/${characterId}`)] : []),
+      ]);
     }
   });
 }

@@ -127,6 +127,32 @@ try {
     applyGameStateUpdate: async () => ({ location: "Elsewhere" }),
   });
   assert.equal(falseReceipt?.success, false);
+  const projectedMessage = (await chats.createMessage({
+    chatId: chat.id,
+    role: "assistant",
+    content: "At the harbor.",
+  }))!;
+  const projectedTarget = {
+    messageId: projectedMessage.id,
+    swipeIndex: 0,
+    baseSnapshot: { ...fixtureTarget.baseSnapshot, location: "World > Harbor" },
+    compatibilityLocation: "World > Harbor",
+  };
+  await states.updateFromTool(chat.id, "time", "19:00", true, projectedTarget);
+  const projectedSnapshot = (await states.getByChatAndMessage(chat.id, projectedMessage.id, 0))!;
+  assert.equal(
+    projectedSnapshot.location,
+    "World > Harbor",
+    "a clock-only write must preserve the authoritative projected location when cloning",
+  );
+  assert.equal((await states.getById(fixtureTarget.baseSnapshot.id, chat.id))?.location, "Square");
+  await states._applyUpdate(projectedSnapshot, { location: "World > Pier" });
+  await states.updateFromTool(chat.id, "time", "20:00", true, projectedTarget);
+  assert.equal(
+    (await states.getByChatAndMessage(chat.id, projectedMessage.id, 0))?.location,
+    "World > Pier",
+    "compatibility location seeds only a new snapshot",
+  );
   for (const locked of [false, true]) {
     expectedSuccess = !locked;
     await states.updateLatest(chat.id, {
