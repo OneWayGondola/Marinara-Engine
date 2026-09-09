@@ -459,6 +459,8 @@ function RegeneratingMessageContent({
     ...parsedExtra,
     attachments: null,
     roleplayDocuments: null,
+    roleplayCommandActivity: null,
+    roleplayPrivateCommands: null,
     diceRollResult: null,
     thinking: thinkingBuffer || null,
   };

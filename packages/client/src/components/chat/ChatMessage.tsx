@@ -3000,7 +3000,14 @@ export const ChatMessage = memo(function ChatMessage({
           </>
         )}
       </div>
-      <RoleplayCommandResults documents={extra.roleplayDocuments} attachments={extra.attachments} />
+      <RoleplayCommandResults
+        chatId={message.chatId}
+        messageId={message.id}
+        swipeIndex={message.activeSwipeIndex}
+        characterName={charName}
+        extra={extra}
+        isStreaming={!!isStreaming}
+      />
       {(translatedText || isTranslating) && !showTranslationOnly && (
         <div className="mt-2 border-t border-white/10 pt-2">
           {isTranslating ? (

@@ -1,21 +1,18 @@
 import {
   isRoleplayCommandEnabled,
+  isRoleplayCommandAllowed,
+  getRoleplayPrivateCommands,
   ROLEPLAY_COMMAND_KEYS,
   normalizeChatSummaryEntries,
   type RoleplayCommandKey,
-  type RoleplayPrivateCommand,
+  type RoleplayCommand,
+  type RoleplayCommandActivity,
   type WrapFormat,
 } from "@marinara-engine/shared";
 import { parseQuotedParam } from "../conversation/character-commands.js";
 import { wrapContent } from "../prompt/format-engine.js";
 
-export type RoleplayCommand =
-  | RoleplayPrivateCommand
-  | { type: "illustrate"; subject: string }
-  | { type: "document"; documentType: string; title: string; content: string }
-  | { type: "sound"; description: string }
-  | { type: "music"; mood: string }
-  | { type: "roll"; notation: string; reason: string };
+export type { RoleplayCommand } from "@marinara-engine/shared";
 
 const COMMAND_NAMES = [...ROLEPLAY_COMMAND_KEYS, "dismiss_notes", "dismiss_memory"];
 const COMMAND_START = new RegExp(`\\[(${COMMAND_NAMES.join("|")})(?=\\s|:|\\]|$)\\s*:?\\s*`, "giu");
@@ -66,7 +63,11 @@ function readCommand(type: string, body: string): RoleplayCommand | null {
     }
     case "illustrate": {
       const subject = field("subject", 4_000);
-      return subject ? { type, subject } : null;
+      const characters = field("characters", 2_000)
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
+      return subject ? { type, subject, ...(characters.length ? { characters } : {}) } : null;
     }
     case "document": {
       const title = field("title", 200);
@@ -82,8 +83,20 @@ function readCommand(type: string, body: string): RoleplayCommand | null {
     }
     case "roll": {
       const notation = field("notation", 80) || field("dice", 80);
-      return notation ? { type, notation, reason: field("reason", 500) } : null;
+      const character = field("character", 200);
+      const attribute = field("attribute", 100);
+      return notation
+        ? {
+            type,
+            notation,
+            reason: field("reason", 500),
+            ...(character ? { character } : {}),
+            ...(attribute ? { attribute } : {}),
+          }
+        : null;
     }
+    case "combat":
+      return { type };
     default:
       return null;
   }
@@ -92,10 +105,12 @@ function readCommand(type: string, body: string): RoleplayCommand | null {
 export function parseRoleplayCommands(text: string): {
   content: string;
   commands: RoleplayCommand[];
+  activity: RoleplayCommandActivity[];
   invalid: number;
   roll?: { command: Extract<RoleplayCommand, { type: "roll" }>; start: number; end: number };
 } {
   const commands: RoleplayCommand[] = [];
+  const activity: RoleplayCommandActivity[] = [];
   let content = "";
   let cursor = 0;
   let invalid = 0;
@@ -116,6 +131,7 @@ export function parseRoleplayCommands(text: string): {
     const command = end - match.index <= MAX_COMMAND_LENGTH ? readCommand(match[1]!.toLowerCase(), body) : null;
     if (command && commands.length < 24) {
       commands.push(command);
+      activity.push({ command, raw: text.slice(match.index, end) });
       if (command.type === "roll" && !roll) roll = { command, start: match.index, end };
     } else invalid++;
     cursor = end;
@@ -128,7 +144,7 @@ export function parseRoleplayCommands(text: string): {
     content = content.slice(0, lastBracket);
     invalid++;
   }
-  return { content, commands, invalid, roll };
+  return { content, commands, activity, invalid, roll };
 }
 
 /** Hold possible prefixes across chunks so private command text never flashes in the chat. */
@@ -228,8 +244,7 @@ export function readRoleplayPersonalState(
     )
       continue;
     if (message.role !== "assistant" || typeof message.characterId !== "string") continue;
-    const commands = (extra as Record<string, unknown>).roleplayPrivateCommands;
-    if (!Array.isArray(commands)) continue;
+    const commands = getRoleplayPrivateCommands(metadata);
     const state = states.get(message.characterId) ?? { notes: "", reminders: new Map<string, string>() };
     for (const command of commands) {
       if (!command || typeof command !== "object") continue;
@@ -308,46 +323,46 @@ export function buildRoleplayCommandsReminder(args: {
   availableAgentIds: ReadonlySet<string>;
   format: WrapFormat;
   characterNames: string[];
+  characterId?: string | null;
 }): string {
   const lines: string[] = [];
-  const enabled = (key: RoleplayCommandKey) => isRoleplayCommandEnabled(args.metadata, key);
+  const enabled = (key: RoleplayCommandKey) => isRoleplayCommandAllowed(args.metadata, key, args.characterId);
   if (enabled("illustrate") && args.availableAgentIds.has("illustrator"))
     lines.push(
-      '- [illustrate: subject="the moment, object, or interaction to depict"] requests an Illustrator image. Use sparingly for visually significant moments.',
+      '- [illustrate: subject="the moment, object, or interaction to depict" characters="names of involved characters, separated by commas"] requests an image using this chat\'s Illustrator settings and the named characters\' avatars. Use sparingly.',
     );
   if (enabled("document"))
     lines.push(
-      '- [document: kind="letter|journal|report|poster|terminal", title="title", content="full text"] presents a readable in-world document. Do not repeat its full contents in narration.',
+      '- [document: kind="letter|journal|report|poster|terminal" title="title" content="full text"] creates an in-world document. Do not repeat its contents in narration.',
     );
-  if (enabled("sound"))
-    lines.push(
-      '- [sound: description="a brief sound effect"] plays a short sound cue that fits the scene. Use sparingly.',
-    );
+  if (enabled("sound")) lines.push('- [sound: description="a brief sound effect"] plays a sound cue. Use sparingly.');
   if (enabled("music") && args.availableAgentIds.has("spotify"))
     lines.push(
-      '- [music: mood="scene mood and musical direction"] asks Music DJ to select a soundtrack through the active player. Use only when a change is warranted.',
+      '- [music: mood="scene mood and musical direction"] asks Music DJ to change the soundtrack when the scene calls for it.',
     );
   if (args.privateAvailable && enabled("notes"))
     lines.push(
-      '- [notes: content="your complete current personal notes"] replaces YOUR notes. Record motives, secrets, LIES, DECEPTIONS, the actual truth versus your false claims, cover stories, goals, plans, and pending intentions. Preserve still-relevant details when rewriting. Maximum 8000 characters. Only you and the selected narrator receive them. [dismiss_notes] clears YOUR notes when no longer needed; a scene change alone is not a reason to clear unresolved plans or lies.',
+      '- [notes: content="your current personal notes"] replaces your notes about motives, secrets, beliefs, lies and plans. Preserve relevant details and keep it short; these notes are available to you and narrator alone. [dismiss_notes] clears your notes when they\'re no longer needed or relevant.',
     );
   if (args.privateAvailable && enabled("memory"))
     lines.push(
-      '- [memory: id="short-stable-id", content="what to revisit and when"] adds or updates YOUR private short-term reminder (up to 20 pending, 1000 characters each). It survives note rewrites. [dismiss_memory: id="id"] removes that reminder after it is fulfilled or abandoned. Only you and the selected narrator receive reminders.',
+      '- [memory: id="short-stable-id" content="what to revisit and when"] adds or updates a reminder, available to you and narrator alone. Keep it short. [dismiss_memory: id="id"] removes it when fulfilled or no longer relevant.',
     );
   if (enabled("roll"))
     lines.push(
-      '- Use the roll_dice function to request a real roll. Set the action and any difficulty or success rule BEFORE rolling. Wait for the tool result before narrating the outcome. If function calls are unavailable, emit [roll: notation="1d20+3", reason="action and success rule"] and STOP your response immediately. The engine returns the actual result and asks you to continue. Never invent a result or reroll to obtain a preferred outcome.',
+      '- [roll: character="character name" notation="1d20" attribute="Strength" reason="action and success rule"] requests a real roll; use roll_dice with the same fields when available. Attribute is optional; the engine adds the assigned attribute modifier, so do not add it yourself. Set the stakes first, stop after the command, and wait for the result before narrating the outcome. Never invent results or reroll an action.',
     );
+  if (enabled("combat") && args.availableAgentIds.has("combat"))
+    lines.push("- [combat] asks the Combat agent to start an encounter when the scene turns to combat.");
   if (enabled("dm"))
     lines.push(
-      `- [dm: character="${args.characterNames.map((name) => name.replace(/"/g, "'")).join(" | ")}", message="short text"] sends an in-world direct message to the user through the linked Conversation or a DM thread. Use only a listed character with a card, when a phone, letter, terminal, or similar channel fits. Do not repeat the same message in narration.`,
+      `- [dm: character="${args.characterNames.map((name) => name.replace(/"/g, "'")).join(" | ")}" message="short text"] sends the user an in-world direct message from a listed character. Use an appropriate phone, letter or terminal; do not repeat the message in narration.`,
     );
   if (!lines.length) return "";
   const body = [
-    'Optional hidden commands. Use them only when they fit the scene. Commands are removed from the displayed reply. Put text values in double quotes; escape embedded quotes as \\" and newlines as \\n. You may issue several commands, but never need to issue one.',
+    'Optional, user-hidden commands you may include in your response, if appropriate. Put text values in double quotes; escape embedded quotes as \\" and newlines as \\n. You may issue one, many, or no commands.',
     ...lines,
-  ].join("\n\n");
+  ].join("\n");
   return args.format === "none" ? `Commands:\n${body}` : wrapContent(body, "Commands", args.format);
 }
 

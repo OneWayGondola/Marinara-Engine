@@ -28,6 +28,7 @@ export function RoleplayCommandsSettings({
   const enabled = roleplayCommandsEnabled(metadata);
   const individual = characters.length > 1 && metadata.groupChatMode === "individual";
   const privateAvailable = characters.length === 1 || individual;
+  const hasNarrator = characters.some((character) => character.id === metadata.roleplayCommandNarratorId);
   return (
     <div className="mb-3" data-roleplay-commands>
       <AgentSettingsCard
@@ -44,7 +45,12 @@ export function RoleplayCommandsSettings({
           disabled={update.isPending}
           onChange={(value) => update.mutate({ id: chat.id, roleplayCommandsEnabled: value })}
           labelPosition="start"
-          className="min-h-11 justify-between rounded-lg bg-[var(--background)]/75 px-3 py-2.5 text-left ring-1 ring-[var(--border)]"
+          className={cn(
+            "min-h-11 justify-between rounded-lg px-3 py-2.5 text-left ring-1",
+            enabled
+              ? "bg-[var(--primary)]/10 ring-[var(--primary)]/30"
+              : "bg-[var(--background)]/75 ring-[var(--border)]",
+          )}
           labelClassName="text-xs font-medium"
         />
         {enabled && (
@@ -53,47 +59,76 @@ export function RoleplayCommandsSettings({
               {ROLEPLAY_COMMAND_KEYS.map((key) => {
                 const available =
                   key === "illustrate"
-                    ? installedAgentIds.has("illustrator")
-                    : key === "music"
-                      ? installedAgentIds.has("spotify")
-                      : key === "notes" || key === "memory"
-                        ? privateAvailable
-                        : true;
-                const checked = isRoleplayCommandEnabled(metadata, key);
+                    ? installedAgentIds.has("illustrator") && metadata.activeAgentIds?.includes("illustrator") === true
+                    : key === "combat"
+                      ? installedAgentIds.has("combat") && metadata.activeAgentIds?.includes("combat") === true
+                      : key === "music"
+                        ? installedAgentIds.has("spotify")
+                        : key === "notes" || key === "memory"
+                          ? privateAvailable
+                          : true;
+                const checked = available && isRoleplayCommandEnabled(metadata, key);
+                const audienceKey = key === "roll" ? "roleplayRollAudience" : "roleplayCombatAudience";
                 return (
-                  <SettingsSwitch
-                    key={key}
-                    label={t(`roleplay.commands.${key}.label`)}
-                    description={
-                      !available
-                        ? t(
-                            key === "notes" || key === "memory"
-                              ? "roleplay.commands.individualRequired"
-                              : "roleplay.commands.agentRequired",
-                          )
-                        : t(`roleplay.commands.${key}.description`)
-                    }
-                    checked={checked}
-                    disabled={!available || update.isPending}
-                    labelPosition="start"
-                    onChange={(value) =>
-                      update.mutate({
-                        id: chat.id,
-                        roleplayCommandToggles: { ...metadata.roleplayCommandToggles, [key]: value },
-                      })
-                    }
-                    className={cn(
-                      "h-full min-h-[4.125rem] items-center justify-between rounded-lg px-3 py-2.5 text-left",
-                      checked
-                        ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                        : "bg-[var(--background)]/75 ring-1 ring-[var(--border)] hover:bg-[var(--accent)]",
+                  <div key={key} className="flex flex-col gap-2">
+                    <SettingsSwitch
+                      label={t(`roleplay.commands.${key}.label`)}
+                      description={
+                        !available
+                          ? t(
+                              key === "notes" || key === "memory"
+                                ? "roleplay.commands.individualRequired"
+                                : key === "illustrate" || key === "combat"
+                                  ? "roleplay.commands.agentAttachedRequired"
+                                  : "roleplay.commands.agentRequired",
+                            )
+                          : t(`roleplay.commands.${key}.description`)
+                      }
+                      checked={checked}
+                      disabled={!available || update.isPending}
+                      labelPosition="start"
+                      onChange={(value) =>
+                        update.mutate({
+                          id: chat.id,
+                          roleplayCommandToggles: { ...metadata.roleplayCommandToggles, [key]: value },
+                        })
+                      }
+                      className={cn(
+                        "h-full min-h-[4.125rem] items-center justify-between rounded-lg px-3 py-2.5 text-left",
+                        checked
+                          ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                          : "bg-[var(--background)]/75 ring-1 ring-[var(--border)] hover:bg-[var(--accent)]",
+                      )}
+                      labelClassName="text-[0.6875rem] font-medium"
+                    />
+                    {checked && (key === "roll" || key === "combat") && (
+                      <label className="flex flex-col gap-1.5 text-xs">
+                        <span>{t(`roleplay.commands.${key}.audience`)}</span>
+                        <select
+                          value={metadata[audienceKey] ?? "all"}
+                          disabled={update.isPending}
+                          onChange={(event) => update.mutate({ id: chat.id, [audienceKey]: event.target.value })}
+                          className="min-h-11 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 focus-visible:outline focus-visible:outline-[var(--primary)]"
+                        >
+                          <option value="all">{t("roleplay.commands.audience.all")}</option>
+                          <option value="narrator">{t("roleplay.commands.audience.narrator")}</option>
+                        </select>
+                        {metadata[audienceKey] === "narrator" && (!privateAvailable || !hasNarrator) && (
+                          <span className="text-[0.6875rem] text-[var(--muted-foreground)]" role="status">
+                            {t(
+                              !privateAvailable
+                                ? "roleplay.commands.narrator.individualRequired"
+                                : "roleplay.commands.narrator.required",
+                            )}
+                          </span>
+                        )}
+                      </label>
                     )}
-                    labelClassName="text-[0.6875rem] font-medium"
-                  />
+                  </div>
                 );
               })}
             </div>
-            {individual && (
+            {characters.length > 0 && (
               <label className="flex flex-col gap-1.5 text-xs">
                 <span className="font-medium">{t("roleplay.commands.narrator.label")}</span>
                 <select

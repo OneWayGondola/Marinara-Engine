@@ -8,7 +8,13 @@ import type { HapticFeedbackSensitivity } from "./haptic.js";
 import type { CustomEmojiSelectionPrefs } from "../schemas/custom-emoji.schema.js";
 import type { DiceRollResult } from "./game.js";
 import type { SpotifySourceType } from "./spotify.js";
-import type { RoleplayCommandToggles, RoleplayDocument, RoleplayPrivateCommand } from "./roleplay-command.js";
+import type {
+  RoleplayCommandActivity,
+  RoleplayCommandAudience,
+  RoleplayCommandToggles,
+  RoleplayDocument,
+  RoleplayPrivateCommand,
+} from "./roleplay-command.js";
 
 export type { SpotifySourceType } from "./spotify.js";
 
@@ -466,6 +472,8 @@ export interface ChatMetadata {
   roleplayCommandToggles?: RoleplayCommandToggles;
   /** An actual group participant, used only for individual Roleplay generations. */
   roleplayCommandNarratorId?: string | null;
+  roleplayRollAudience?: RoleplayCommandAudience;
+  roleplayCombatAudience?: RoleplayCommandAudience;
   roleplaySoundConnectionId?: string | null;
   /** Chat-scoped Intiface Central WebSocket URL for haptic manual and auto-connect. */
   hapticIntifaceUrl?: string | null;
@@ -812,6 +820,8 @@ export interface MessageExtra {
   /** This empty command-only turn was automatically hidden from the reader. */
   roleplayPrivateOnly?: boolean;
   roleplayDocuments?: RoleplayDocument[] | null;
+  /** User-only command disclosures. Their labels and raw text never enter prompt history. */
+  roleplayCommandActivity?: RoleplayCommandActivity[] | null;
   /** Professor Mari workspace trace shown on the home assistant transcript. */
   mariWorkspaceTimeline?: MariWorkspaceTraceItem[] | null;
   /** True when this Mari turn deferred mutating commands behind an Accept action (#5725 Manual mode). */
