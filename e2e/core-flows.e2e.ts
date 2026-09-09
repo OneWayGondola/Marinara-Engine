@@ -2192,11 +2192,10 @@ for (const layout of ["Roleplay", "Classic Conversation", "Bubble Conversation"]
         await expect(peekPrompt.locator("svg")).toBeVisible();
         await page.screenshot({ path: testInfo.outputPath("message-actions-after-dialogs.png") });
 
-        await page
-          .locator(`[data-message-id="${otherMessage.id}"]`)
-          .getByText("A different message.", { exact: true })
-          .tap();
+        const otherMessageRow = page.locator(`[data-message-id="${otherMessage.id}"]`);
+        await otherMessageRow.getByText("A different message.", { exact: true }).tap();
         await expect(messageRow.locator(".mari-message-actions")).toHaveCSS("opacity", "0");
+        await expect(otherMessageRow.locator(".mari-message-actions")).toHaveCSS("opacity", "1");
       } finally {
         if (chatId) await bestEffortDelete(page.request, `/api/chats/${chatId}?force=true`);
         if (characterId) await bestEffortDelete(page.request, `/api/characters/${characterId}`);
