@@ -7,6 +7,9 @@ import { runInNewContext } from "node:vm";
 import {
   ROLEPLAY_COMMAND_KEYS,
   isRoleplayCommandEnabled,
+  isRoleplayCommandAllowed,
+  getRoleplayCommandActivity,
+  getRoleplayDocuments,
   roleplayCommandsEnabled,
 } from "../../packages/shared/src/types/roleplay-command.js";
 import {
@@ -20,6 +23,8 @@ import {
 import { collectPastReasoningMetadata } from "../../packages/server/src/services/generation/generation-parameters.js";
 import { conversationPromptHistoryContent } from "../../packages/server/src/routes/generate/conversation-prompt-formatting.js";
 import { generateRoleplaySoundEffect } from "../../packages/server/src/routes/tts.routes.js";
+import { prepareRoleplayRoll } from "../../packages/server/src/services/generation/roleplay-rolls.js";
+import type { RPGStatsConfig } from "../../packages/shared/src/types/character.js";
 
 const cancelledSound = new AbortController();
 cancelledSound.abort();
@@ -240,7 +245,8 @@ for (const format of ["xml", "markdown", "none"] as const) {
     characterNames: ["Alice"],
   });
   assert.doesNotMatch(reminder, /\[illustrate:/u, "an unavailable image agent must not be offered");
-  assert.match(reminder, /LIES, DECEPTIONS/u);
+  assert.doesNotMatch(reminder, /YOUR|LIES|DECEPTIONS|Maximum \d|\n\s*\n\s*-/u);
+  assert.match(reminder, /keep it short/iu);
   const section = format === "xml" ? "<commands>" : format === "markdown" ? "## Commands" : "Commands:";
   assert.ok(reminder.startsWith(section));
   const tracker =
@@ -301,4 +307,132 @@ const visibleHistory = conversationPromptHistoryContent(
 );
 assert.match(visibleHistory, /Meet at dawn/u);
 assert.doesNotMatch(visibleHistory, /ALICE_LIE/u);
+
+const scoped = {
+  ...metadata,
+  roleplayCommandToggles: { roll: true, combat: true, illustrate: true },
+  roleplayRollAudience: "narrator",
+  roleplayCombatAudience: "narrator",
+  activeAgentIds: ["combat", "illustrator"],
+};
+for (const key of ["roll", "combat"] as const) {
+  assert.equal(isRoleplayCommandAllowed(scoped, key, "narrator"), true);
+  for (const caller of ["alice", "deleted", null]) assert.equal(isRoleplayCommandAllowed(scoped, key, caller), false);
+  assert.equal(
+    isRoleplayCommandAllowed({ ...scoped, roleplayRollAudience: "all", roleplayCombatAudience: "all" }, key, "alice"),
+    true,
+  );
+}
+for (const key of ["illustrate", "combat"] as const) {
+  assert.equal(isRoleplayCommandAllowed({ ...scoped, activeAgentIds: [] }, key, "narrator"), false);
+}
+for (const format of ["xml", "markdown", "none"] as const) {
+  const prompt = (characterId: string | null, availableAgentIds = new Set(["illustrator", "combat"])) =>
+    buildRoleplayCommandsReminder({
+      metadata: scoped,
+      characterId,
+      privateAvailable: true,
+      availableAgentIds,
+      format,
+      characterNames: ["Alice", "Narrator"],
+    });
+  assert.match(prompt("narrator"), /\[combat\]/u);
+  assert.match(prompt("narrator"), /\[roll: character=/u);
+  assert.match(prompt("alice"), /\[illustrate:.*characters=/u);
+  assert.doesNotMatch(prompt("alice"), /\[roll:|\[combat\]/u);
+  assert.doesNotMatch(prompt(null), /\[roll:|\[combat\]/u);
+  assert.doesNotMatch(prompt("narrator", new Set()), /\[illustrate:|\[combat\]/u);
+  assert.doesNotMatch(prompt("narrator"), /\n\s*\n\s*-/u);
+}
+const newSyntax =
+  '[combat] [illustrate: subject="The duel" characters="Alice, Narrator"] [roll: character="Alice" notation="d20" attribute="STR" reason="Lift the gate"]';
+const scanned = parseRoleplayCommands(newSyntax);
+assert.deepEqual(scanned.commands, [
+  { type: "combat" },
+  { type: "illustrate", subject: "The duel", characters: ["Alice", "Narrator"] },
+  { type: "roll", character: "Alice", notation: "d20", attribute: "STR", reason: "Lift the gate" },
+]);
+assert.equal(scanned.activity.map((item) => item.raw).join(" "), newSyntax);
+
+const attached = parseRoleplayCommands(
+  '[notes: content="OLDER_SECRET"] [memory: id="key" content="OLDER_REMINDER"]',
+).activity;
+const revised = parseRoleplayCommands(
+  '[notes: content="NEW_SECRET"] [memory: id="key" content="NEW_REMINDER"] [document: title="Letter" content="DOCUMENT_TEXT"]',
+).activity;
+const edited = revised.map((item) =>
+  item.command.type === "notes" ? { ...item, command: { ...item.command, content: "EDITED_SECRET" } } : item,
+);
+const currentHistory = (activity: typeof revised) => [
+  { role: "assistant", characterId: "alice", extra: { roleplayCommandActivity: attached } },
+  { role: "assistant", characterId: "alice", extra: { roleplayCommandActivity: activity } },
+];
+assert.equal(readRoleplayPersonalState(currentHistory(edited)).get("alice")?.notes, "EDITED_SECRET");
+assert.equal(edited[0]?.raw, revised[0]?.raw, "editing context preserves the exact original command");
+const removed = revised.map((item) => ({ ...item, deleted: true }));
+assert.equal(readRoleplayPersonalState(currentHistory(removed)).get("alice")?.notes, "");
+assert.equal(
+  readRoleplayPersonalState(currentHistory(removed)).get("alice")?.reminders.size,
+  0,
+  "deletion must not resurrect previous reminders",
+);
+assert.deepEqual(getRoleplayDocuments({ roleplayCommandActivity: removed }), []);
+const activityHistory = conversationPromptHistoryContent(
+  { role: "assistant", content: "Visible story", extra: { roleplayCommandActivity: edited } },
+  "roleplay",
+);
+assert.match(activityHistory, /DOCUMENT_TEXT/u);
+assert.doesNotMatch(activityHistory, /NEW_SECRET|EDITED_SECRET|NEW_REMINDER|\[document:|used .* command/u);
+assert.equal(
+  getRoleplayCommandActivity({
+    roleplayCommandActivity: [],
+    roleplayPrivateCommands: [{ type: "notes", content: "LEGACY" }],
+  }).length,
+  0,
+);
+
+const diceCharacters: { id: string; name: string; rpgStats?: RPGStatsConfig }[] = [
+  {
+    id: "dottore",
+    name: "Dottore",
+    rpgStats: {
+      enabled: true,
+      hp: { value: 10, max: 10 },
+      attributes: [
+        { name: "STR", value: 12 },
+        { name: "Dexterity", value: 8 },
+        { name: "Luck", value: 14 },
+      ],
+    },
+  },
+  { id: "mari", name: "Mari" },
+];
+const dice = (args: Record<string, unknown>) =>
+  prepareRoleplayRoll({ notation: "d20", character: "Dottore", ...args }, diceCharacters, "mari");
+assert.equal(dice({ attribute: "Strength" }).notation, "d20+1");
+assert.equal(dice({ attribute: "STR", notation: "d20+2" }).notation, "d20+3");
+assert.equal(dice({ attribute: "DEX" }).notation, "d20-1");
+assert.equal(dice({ attribute: "Luck" }).notation, "d20+2");
+assert.equal(dice({ attribute: "Unknown" }).notation, "d20");
+assert.equal(dice({ character: "Mari", attribute: "Strength" }).notation, "d20");
+assert.equal(dice({ character: undefined, attribute: "Strength" }).character, "Mari");
+assert.equal(
+  prepareRoleplayRoll(
+    { notation: "d20", attribute: "STR" },
+    [{ ...diceCharacters[0]!, rpgStats: { ...diceCharacters[0]!.rpgStats!, enabled: false } }],
+    "dottore",
+  ).notation,
+  "d20",
+);
+assert.throws(() => dice({ character: "Nobody", attribute: "Strength" }), /one chat participant/u);
+assert.throws(
+  () =>
+    prepareRoleplayRoll(
+      { character: "Dottore", notation: "d20" },
+      [...diceCharacters, { id: "copy", name: "Dottore" }],
+      "dottore",
+    ),
+  /one chat participant/u,
+);
+assert.throws(() => dice({ notation: "1d20+9007199254740971", attribute: "STR" }), /numeric range/u);
 process.stdout.write("Roleplay commands regression passed.\n");

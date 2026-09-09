@@ -2168,15 +2168,8 @@ export function useGenerate() {
               // A dice roll the GM asked for is something the player is meant to see, so it
               // escapes the debug-only gate and drives the same card /roll shows.
               if (isDiceRollResult(data.diceRollResult) && isActiveChat()) {
-                if (data.mode === "roleplay")
-                  toast(
-                    translate("roleplay.commands.roll.result", {
-                      notation: data.diceRollResult.notation,
-                      total: data.diceRollResult.total,
-                    }),
-                    { icon: "🎲" },
-                  );
-                else useGameModeStore.getState().setDiceRollResult(data.diceRollResult);
+                // Roleplay keeps the result inside its collapsed command notice.
+                if (data.mode !== "roleplay") useGameModeStore.getState().setDiceRollResult(data.diceRollResult);
               }
               if (!debugMode) break;
               addDebugEntry({

@@ -89,7 +89,13 @@ import {
 } from "../services/spatial-context/state-resolution.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { writeManualIllustratorPromptPlan } from "../services/generation/illustrator-manual-prompt-generation.js";
-import { isRoleplayCommandEnabled, type RoleplayPrivateCommand, type RoleplayDocument } from "@marinara-engine/shared";
+import {
+  isRoleplayCommandEnabled,
+  isRoleplayCommandAllowed,
+  getRoleplayCommandActivity,
+  type RoleplayCommandActivity,
+} from "@marinara-engine/shared";
+import { prepareRoleplayRoll } from "../services/generation/roleplay-rolls.js";
 import {
   appendRoleplayPromptTail,
   buildRoleplayCommandsReminder,
@@ -1455,6 +1461,13 @@ export async function generateRoutes(app: FastifyInstance) {
           ? scopedMessages
           : scopedMessages.slice(0, roleplayTimelineIndex + (input.continueMessageId ? 1 : 0))),
       ];
+      if (chatMode === "roleplay" && roleplayTimelineIndex >= 0) {
+        // A swipe starts before its source; a continuation includes only the selected reply.
+        // Public documents must use the same boundary as private notes and trackers.
+        const timelineIds = new Set(roleplayTimeline.map((message) => message.id));
+        chatMessages = chatMessages.filter((message) => timelineIds.has(message.id));
+        lorebookKeeperMessages = lorebookKeeperMessages.filter((message) => timelineIds.has(message.id));
+      }
       const promptLastGenerationType = resolvePromptLastGenerationType(input);
       const promptIdleDuration = resolvePromptIdleDuration(chatMessages, {
         excludeMessageId: currentTurnUserMessageId,
@@ -1541,7 +1554,13 @@ export async function generateRoutes(app: FastifyInstance) {
       });
       const roleplayCommandAgentIds = new Set<string>();
       if (chatMode === "roleplay" && !input.impersonate) {
-        if (isRoleplayCommandEnabled(chatMeta, "illustrate")) roleplayCommandAgentIds.add("illustrator");
+        if (isRoleplayCommandAllowed(chatMeta, "illustrate", null)) roleplayCommandAgentIds.add("illustrator");
+        if (
+          isRoleplayCommandEnabled(chatMeta, "combat") &&
+          Array.isArray(chatMeta.activeAgentIds) &&
+          chatMeta.activeAgentIds.includes("combat")
+        )
+          roleplayCommandAgentIds.add("combat");
         if (isRoleplayCommandEnabled(chatMeta, "music") && activeMusicPlayerSource)
           roleplayCommandAgentIds.add("spotify");
       }
@@ -4912,7 +4931,10 @@ export async function generateRoutes(app: FastifyInstance) {
         const textRewriteAgentIds = new Set(textRewriteAgents.map((a) => a.id));
         const lorebookKeeperAgent = resolvedAgents.find((a) => a.type === "lorebook-keeper") ?? null;
         let pipelineAgents = resolvedAgents.filter(
-          (a) => !textRewriteAgentIds.has(a.id) && a.type !== "lorebook-keeper" && !roleplayCommandAgentIds.has(a.type),
+          (a) =>
+            !textRewriteAgentIds.has(a.id) &&
+            a.type !== "lorebook-keeper" &&
+            (!roleplayCommandAgentIds.has(a.type) || (a.type === "combat" && chatMeta.encounterActive === true)),
         );
         const trackerAgentTypes = getTrackerAgentTypes();
         const attachLorebooksToTrackers = chatMode === "roleplay" && chatMeta.attachLorebooksToTrackers === true;
@@ -5041,14 +5063,18 @@ export async function generateRoutes(app: FastifyInstance) {
             );
           }
         }
-        if (toolsAttached && toolDefs && toolDefs.length > 0 && conn.treatAsLocalEndpoint === "true") {
-          const toolLines = toolDefs.map(
-            (t) =>
-              `- ${t.function.name}: ${t.function.description}\n  Parameters: ${JSON.stringify(t.function.parameters)}`,
+        const appendLocalEndpointTools = (messages: typeof finalMessages, definitions: typeof toolDefs) => {
+          if (!toolsAttached || !definitions?.length || conn.treatAsLocalEndpoint !== "true") return;
+          const toolLines = definitions.map(
+            (tool) =>
+              `- ${tool.function.name}: ${tool.function.description}\n  Parameters: ${JSON.stringify(tool.function.parameters)}`,
           );
-          const toolBlock = `<available_functions>\nYou may call the following functions when appropriate. To invoke a function, include a tool_call block in your response:\n<tool_call>{"name": "function_name", "arguments": {"param_name": param_value}}</tool_call>\n\nAvailable functions:\n${toolLines.join("\n")}\n</available_functions>`;
-          appendToFirstSystemMessage(finalMessages, toolBlock);
-        }
+          appendToFirstSystemMessage(
+            messages,
+            `<available_functions>\nYou may call the following functions when appropriate. To invoke a function, include a tool_call block in your response:\n<tool_call>{"name": "function_name", "arguments": {"param_name": param_value}}</tool_call>\n\nAvailable functions:\n${toolLines.join("\n")}\n</available_functions>`,
+          );
+        };
+        if (chatMode !== "roleplay") appendLocalEndpointTools(finalMessages, toolDefs);
         // Pre-generation prompt-patch agents read the assembled prompt here; this is overwritten
         // with the fitted provider prompt before each main model call.
         agentContext.memory._mainPromptPreview = promptPreviewForAgents(finalMessages);
@@ -6418,6 +6444,46 @@ export async function generateRoutes(app: FastifyInstance) {
           const publicRoleplayPrompt = chatMode === "roleplay" ? toProviderMessages(preparedMessagesForGen) : null;
           const roleplayPrivateAvailable =
             Boolean(targetCharId) && (allCharacterIds.length === 1 || usesIndividualGroupGeneration);
+          const roleplayCallerId = roleplayPrivateAvailable && speaksOnlyTargetCharacter ? targetCharId : null;
+          const roleplayRollEnabled =
+            chatMode === "roleplay" &&
+            !input.impersonate &&
+            isRoleplayCommandAllowed(chatMeta, "roll", roleplayCallerId);
+          const roleplayActivity: RoleplayCommandActivity[] = [];
+          const responderToolDefs =
+            chatMode === "roleplay"
+              ? toolDefs
+                  ?.filter((tool) => tool.function.name !== "roll_dice" || roleplayRollEnabled)
+                  .map((tool) =>
+                    tool.function.name !== "roll_dice"
+                      ? tool
+                      : {
+                          ...tool,
+                          function: {
+                            ...tool.function,
+                            parameters: {
+                              ...tool.function.parameters,
+                              properties: {
+                                ...(tool.function.parameters.properties as Record<string, unknown>),
+                                character: {
+                                  type: "string",
+                                  enum: charInfo.map((character) => character.name),
+                                  description: "The chat participant whose action is being rolled.",
+                                },
+                                attribute: {
+                                  type: "string",
+                                  description:
+                                    "Optional assigned RPG attribute, such as Strength or STR. The engine adds its modifier; do not include that bonus in notation.",
+                                },
+                              },
+                              required: [...((tool.function.parameters.required as string[]) ?? []), "character"],
+                            },
+                          },
+                        },
+                  )
+              : toolDefs;
+          const responderToolsAttached = toolsAttached && Boolean(responderToolDefs?.length);
+          if (chatMode === "roleplay") appendLocalEndpointTools(preparedMessagesForGen, responderToolDefs);
           let roleplayPersonalContext = "";
           if (chatMode === "roleplay" && !input.impersonate) {
             const personalCharacters = [...(await getGroupHistoryCharacterNamesById())].map(([id, name]) => ({
@@ -6441,6 +6507,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 availableAgentIds: new Set(resolvedAgents.map((agent) => agent.type)),
                 format: wrapFormat,
                 characterNames: charInfo.map((character) => character.name),
+                characterId: roleplayCallerId,
               }),
               wrapFormat,
             );
@@ -6464,7 +6531,7 @@ export async function generateRoutes(app: FastifyInstance) {
               messages: limitPastReasoningMetadata(candidateMessages, chatMeta),
               policy: { ...modelAccessPolicy, effectiveMaxContext },
               maxTokens,
-              tools: gameToolConnection ? undefined : toolDefs,
+              tools: gameToolConnection ? undefined : responderToolDefs,
             });
             finalPromptSent = fit.messages;
             effectiveMaxTokensForSend = fit.maxTokensForSend;
@@ -6478,8 +6545,6 @@ export async function generateRoutes(app: FastifyInstance) {
           rememberMainPromptPreviewForAgents(initialProviderMessages);
 
           // Reset per-character accumulators
-          const roleplayRollEnabled =
-            chatMode === "roleplay" && !input.impersonate && isRoleplayCommandEnabled(chatMeta, "roll");
           roleplayCommandStreamFilter =
             chatMode === "roleplay" && !input.impersonate ? new RoleplayCommandStreamFilter(roleplayRollEnabled) : null;
           if (chatMode === "roleplay") encryptedReasoningItems = undefined;
@@ -6646,7 +6711,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 )
               : null;
           if (abortController.signal.aborted) return null;
-          if (toolsAttached && (gameToolPlan || provider.chatComplete)) {
+          if (responderToolsAttached && (gameToolPlan || provider.chatComplete)) {
             const maxToolRounds = gameToolPlan ? 1 : getMaxToolRounds();
             let loopMessages: ChatMessage[] = [...initialProviderMessages];
             let rollRequestAbort: AbortController | null = null;
@@ -6704,7 +6769,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       presencePenalty: presencePenalty || undefined,
                       minP: minP || undefined,
                       stop: stopSequences.length ? stopSequences : undefined,
-                      tools: toolDefs,
+                      tools: responderToolDefs,
                       toolChoice: resolveMainGenerationToolChoice({ chatMetadata: chatMeta, enableChatTools, round }),
                       debugMode: requestDebug,
                       enableCaching: conn.enableCaching === "true",
@@ -6806,6 +6871,8 @@ export async function generateRoutes(app: FastifyInstance) {
                         arguments: JSON.stringify({
                           notation: requestedRoll.command.notation,
                           reason: requestedRoll.command.reason,
+                          character: requestedRoll.command.character,
+                          attribute: requestedRoll.command.attribute,
                         }),
                       },
                     },
@@ -6822,11 +6889,12 @@ export async function generateRoutes(app: FastifyInstance) {
                 ...(result.providerMetadata ? { providerMetadata: result.providerMetadata } : {}),
               });
 
-              const permittedToolCalls = result.toolCalls.filter((call) =>
-                chatResolvedToolNames.has(call.function.name),
-              );
+              const permitted = (call: (typeof result.toolCalls)[number]) =>
+                chatResolvedToolNames.has(call.function.name) &&
+                (chatMode !== "roleplay" || call.function.name !== "roll_dice" || roleplayRollEnabled);
+              const permittedToolCalls = result.toolCalls.filter(permitted);
               const deniedToolResults = result.toolCalls
-                .filter((call) => !chatResolvedToolNames.has(call.function.name))
+                .filter((call) => !permitted(call))
                 .map((call) => ({
                   toolCallId: call.id,
                   name: call.function.name,
@@ -6839,6 +6907,12 @@ export async function generateRoutes(app: FastifyInstance) {
 
               const executedToolResults = await executeToolCalls(permittedToolCalls, {
                 ...baseToolExecutionContext,
+                ...(chatMode === "roleplay"
+                  ? {
+                      prepareDiceRoll: (args: Record<string, unknown>) =>
+                        prepareRoleplayRoll(args, charInfo, roleplayCallerId),
+                    }
+                  : {}),
                 applyGameStateUpdate: async ({ type, value }) => {
                   if (chatMode !== "game") throw new Error("Game-state writes are only available in Game Mode.");
                   const field = type === "location_change" ? "location" : "time";
@@ -6867,6 +6941,35 @@ export async function generateRoutes(app: FastifyInstance) {
                 .filter((toolResult): toolResult is NonNullable<typeof toolResult> => toolResult != null);
 
               for (const tr of toolResults) {
+                if (chatMode === "roleplay" && tr.name === "roll_dice") {
+                  const call = result.toolCalls.find((candidate) => candidate.id === tr.toolCallId);
+                  if (call) {
+                    let args: Record<string, unknown> = {};
+                    try {
+                      args = JSON.parse(call.function.arguments);
+                    } catch {
+                      /* The tool result reports invalid input. */
+                    }
+                    roleplayActivity.push({
+                      command: {
+                        type: "roll",
+                        notation: String(args?.notation ?? ""),
+                        reason: String(args?.reason ?? ""),
+                        ...(typeof args?.character === "string" ? { character: args.character } : {}),
+                        ...(typeof args?.attribute === "string" ? { attribute: args.attribute } : {}),
+                      },
+                      raw:
+                        textualRoleplayRoll && requestedRoll
+                          ? fullResponse.slice(
+                              roundResponseStart + requestedRoll.start,
+                              roundResponseStart + requestedRoll.end,
+                            )
+                          : `roll_dice(${call.function.arguments})`,
+                      ...(!tr.success ? { error: tr.result } : {}),
+                      ...(tr.success ? { result: tr.result } : {}),
+                    });
+                  }
+                }
                 if (tr.name === "update_game_state" && tr.success) {
                   const call = permittedToolCalls.find((call) => call.id === tr.toolCallId);
                   if (call) pendingGameStateToolCalls.push(call);
@@ -7055,7 +7158,7 @@ export async function generateRoutes(app: FastifyInstance) {
               }
             }
           }
-          if (!toolsAttached || gameToolPlan) {
+          if (!responderToolsAttached || gameToolPlan) {
             rememberMainPromptPreviewForAgents(narratorMessages);
             logPromptSentToModel(narratorMessages);
             const gen = provider.chat(narratorMessages, textChatOptions);
@@ -7175,9 +7278,7 @@ export async function generateRoutes(app: FastifyInstance) {
           }
 
           // ── Parse and strip hidden character commands ──
-          let roleplayPrivateCommands: RoleplayPrivateCommand[] = [];
           let roleplayHadCommands = false;
-          const roleplayDocuments: RoleplayDocument[] = [];
           const currentRoleplayMedia: RoleplayCommand[] = [];
           if (chatMode === "roleplay" && !input.impersonate) {
             const parsed = parseRoleplayCommands(fullResponse);
@@ -7186,18 +7287,35 @@ export async function generateRoutes(app: FastifyInstance) {
             if (!roleplayDmCommandsEnabled) fullResponse = parseDirectMessageCommands(fullResponse).cleanContent;
             contentReplaced = true;
             if (parsed.invalid) sendSseEvent(reply, { type: "roleplay_command_error", data: { invalid: true } });
-            for (const command of parsed.commands) {
-              if (!isRoleplayCommandEnabled(chatMeta, roleplayCommandKey(command))) continue;
+            for (const activity of parsed.activity) {
+              const { command } = activity;
+              if (!isRoleplayCommandAllowed(chatMeta, roleplayCommandKey(command), roleplayCallerId)) continue;
               if (
                 command.type === "notes" ||
                 command.type === "dismiss_notes" ||
                 command.type === "memory" ||
                 command.type === "dismiss_memory"
               ) {
-                if (roleplayPrivateAvailable && targetCharId) roleplayPrivateCommands.push(command);
-              } else if (command.type === "document") {
-                roleplayDocuments.push({ type: command.documentType, title: command.title, content: command.content });
-              } else if (command.type !== "roll") currentRoleplayMedia.push(command);
+                if (!roleplayPrivateAvailable || !targetCharId) continue;
+              }
+              if (command.type === "roll") continue; // Recorded with its actual tool result.
+              const requiredAgent =
+                command.type === "illustrate"
+                  ? "illustrator"
+                  : command.type === "combat"
+                    ? "combat"
+                    : command.type === "music"
+                      ? "spotify"
+                      : null;
+              if (requiredAgent && !resolvedAgents.some((agent) => agent.type === requiredAgent)) continue;
+              roleplayActivity.push(activity);
+              if (
+                command.type === "illustrate" ||
+                command.type === "combat" ||
+                command.type === "music" ||
+                command.type === "sound"
+              )
+                currentRoleplayMedia.push(command);
             }
           }
           let parsedCommands: CharacterCommand[] = [];
@@ -7322,6 +7440,10 @@ export async function generateRoutes(app: FastifyInstance) {
               for (const command of parsed.commands) {
                 const target = resolveRoleplayDmTarget(command.character, charInfo, allCharacters);
                 if (target) {
+                  roleplayActivity.push({
+                    command: { type: "dm", character: command.character, message: command.message },
+                    raw: command.raw ?? JSON.stringify(command),
+                  });
                   executableCommands.push({
                     ...command,
                     resolvedCharacterId: target.id,
@@ -7716,12 +7838,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // Exception: if the model emitted character commands (e.g. [fetch:...]) with
           // no surrounding prose, treat the commands as the useful output. Skip saving
           // a blank assistant bubble but still return the commands so they execute.
-          if (
-            !fullResponse.trim() &&
-            !roleplayPrivateCommands.length &&
-            !roleplayDocuments.length &&
-            !currentRoleplayMedia.length
-          ) {
+          if (!fullResponse.trim() && !roleplayActivity.length && !currentRoleplayMedia.length) {
             logger.warn(
               {
                 chatId: input.chatId,
@@ -8062,30 +8179,19 @@ export async function generateRoutes(app: FastifyInstance) {
               const previousExtra = input.continueMessageId
                 ? parseExtra((await chats.getMessage(savedMsg.id))?.extra)
                 : {};
-              roleplayPrivateCommands = [
-                ...(Array.isArray(previousExtra.roleplayPrivateCommands) ? previousExtra.roleplayPrivateCommands : []),
-                ...roleplayPrivateCommands,
-              ];
-              extraUpdate.roleplayPrivateCommands = roleplayPrivateCommands.length ? roleplayPrivateCommands : null;
-              extraUpdate.roleplayDocuments = [
-                ...(Array.isArray(previousExtra.roleplayDocuments) ? previousExtra.roleplayDocuments : []),
-                ...roleplayDocuments,
-              ];
+              extraUpdate.roleplayCommandActivity = [...getRoleplayCommandActivity(previousExtra), ...roleplayActivity];
+              // New records own their editable context; legacy extras are read only as a fallback.
+              extraUpdate.roleplayPrivateCommands = null;
+              extraUpdate.roleplayDocuments = null;
               extraUpdate.roleplayPrivateContext = Boolean(
                 roleplayPersonalContext || roleplayHadCommands || previousExtra.roleplayPrivateContext,
               );
-              const privateOnly =
-                !savedMsg.content.trim() &&
-                roleplayPrivateCommands.length > 0 &&
-                !(extraUpdate.roleplayDocuments as unknown[]).length &&
-                !currentRoleplayMedia.length;
-              extraUpdate.roleplayPrivateOnly = privateOnly;
+              extraUpdate.roleplayPrivateOnly = false;
               if (
-                privateOnly ||
                 previousExtra.roleplayPrivateOnly === true ||
                 parseExtra(regenMsg?.extra).roleplayPrivateOnly === true
               )
-                extraUpdate.hiddenFromUser = privateOnly;
+                extraUpdate.hiddenFromUser = false;
               const timelineMessage = { ...savedMsg, extra: { ...parseExtra(savedMsg.extra), ...extraUpdate } };
               const existingTimelineIndex = roleplayTimeline.findIndex((message) => message.id === savedMsg.id);
               if (existingTimelineIndex >= 0) roleplayTimeline[existingTimelineIndex] = timelineMessage;
@@ -8103,6 +8209,9 @@ export async function generateRoutes(app: FastifyInstance) {
                 .filter((roll): roll is DiceRollResult => roll !== null);
               extraUpdate.diceRollResults = [...retainedRolls, ...toolDiceRollResults];
               // Message-extra updates are shallow: clear a legacy card on every new swipe.
+              extraUpdate.diceRollResult = null;
+            } else if (chatMode === "roleplay" && !input.impersonate) {
+              // Roleplay results stay behind their command disclosure.
               extraUpdate.diceRollResult = null;
             } else if (toolDiceRollResults.length || !input.continueMessageId) {
               extraUpdate.diceRollResult = toolDiceRollResults.at(-1) ?? null;
@@ -9097,7 +9206,8 @@ export async function generateRoutes(app: FastifyInstance) {
           }
 
           // Persist agent runs to DB + handle game state updates
-          const roleplayMediaTargets = new Map<AgentResult, { messageId: string; swipeIndex: number }>();
+          const roleplayMediaTargets = new Map<AgentResult, (typeof roleplayMediaRequests)[number]>();
+          let combatRequested = chatMeta.encounterActive === true;
           for (const request of roleplayMediaRequests) {
             if (agentSignal.aborted) break;
             const { command } = request;
@@ -9145,9 +9255,12 @@ export async function generateRoutes(app: FastifyInstance) {
               );
               continue;
             }
-            if (command.type !== "illustrate" && command.type !== "music") continue;
+            if (command.type !== "illustrate" && command.type !== "music" && command.type !== "combat") continue;
+            if (command.type === "combat" && combatRequested) continue;
             const agent = resolvedAgents.find(
-              (candidate) => candidate.type === (command.type === "illustrate" ? "illustrator" : "spotify"),
+              (candidate) =>
+                candidate.type ===
+                (command.type === "illustrate" ? "illustrator" : command.type === "combat" ? "combat" : "spotify"),
             );
             if (!agent) {
               sendSseEvent(reply, {
@@ -9160,16 +9273,21 @@ export async function generateRoutes(app: FastifyInstance) {
             const sourceName = sourceMessage?.characterId
               ? (await getGroupHistoryCharacterNamesById()).get(sourceMessage.characterId)
               : undefined;
-            const context: AgentContext = {
+            const context = await resolveAgentContext(agent, {
               ...postAgentContext,
-              mainResponse: `${sourceName ? `${sourceName}: ` : ""}${sourceMessage?.content ?? completedResponse}\n\nExplicit scene request: ${command.type === "illustrate" ? command.subject : command.mood}`,
-            };
+              mainResponse: `${sourceName ? `${sourceName}: ` : ""}${sourceMessage?.content ?? completedResponse}\n\nExplicit scene request: ${command.type === "illustrate" ? `${command.subject}${command.characters?.length ? `\nInvolved characters: ${command.characters.join(", ")}. Depict these participants.` : ""}` : command.type === "combat" ? "Combat starts now. Establish and track the encounter from the current scene." : command.mood}`,
+            });
             try {
               let result: AgentResult;
               if (command.type === "illustrate") {
                 const plan = await writeManualIllustratorPromptPlan({
                   illustratorAgent: agent,
                   context,
+                  request: `${command.subject}${command.characters?.length ? `\nInvolved characters: ${command.characters.join(", ")}` : ""}`,
+                  imagePromptInstructions:
+                    typeof context.memory._imagePromptInstructions === "string"
+                      ? context.memory._imagePromptInstructions
+                      : undefined,
                   signal: agentSignal,
                   debugLog,
                   styleInstruction:
@@ -9181,7 +9299,12 @@ export async function generateRoutes(app: FastifyInstance) {
                   agentId: agent.id,
                   agentType: agent.type,
                   type: "image_prompt",
-                  data: { ...plan.plan, shouldGenerate: true, generateBackground: false },
+                  data: {
+                    ...plan.plan,
+                    ...(command.characters?.length ? { characters: command.characters } : {}),
+                    shouldGenerate: true,
+                    generateBackground: false,
+                  },
                   success: true,
                   error: null,
                   tokensUsed: plan.tokensUsed,
@@ -9189,9 +9312,12 @@ export async function generateRoutes(app: FastifyInstance) {
                 };
               } else {
                 const selected = await executeAgent(agent, context, agent.provider, agent.model, agent.toolContext);
-                [result] = (await applySpotifyAgentPlaybackFallbacks([selected], resolvedAgents, context)) as [
-                  AgentResult,
-                ];
+                [result] = (
+                  command.type === "music"
+                    ? await applySpotifyAgentPlaybackFallbacks([selected], resolvedAgents, context)
+                    : [selected]
+                ) as [AgentResult];
+                if (command.type === "combat" && result.success) combatRequested = true;
               }
               roleplayMediaTargets.set(result, request);
               sendAgentEvent(result, { finalized: result.agentType === "spotify" });
@@ -10538,9 +10664,11 @@ export async function generateRoutes(app: FastifyInstance) {
                       // Collect optional character visual context. Prefer avatar
                       // portraits for references, then fall back to full-body sprites.
                       const useAvatarRefs =
-                        usesChatIllustratorSettings && typeof chatMeta.illustratorUseAvatarReferences === "boolean"
+                        (commandTarget?.command.type === "illustrate" &&
+                          Boolean(commandTarget.command.characters?.length)) ||
+                        (usesChatIllustratorSettings && typeof chatMeta.illustratorUseAvatarReferences === "boolean"
                           ? chatMeta.illustratorUseAvatarReferences
-                          : imagePromptAgent?.settings?.useAvatarReferences === true;
+                          : imagePromptAgent?.settings?.useAvatarReferences === true);
                       const includeCharacterAppearance =
                         usesChatIllustratorSettings &&
                         typeof chatMeta.illustratorIncludeCharacterAppearance === "boolean"

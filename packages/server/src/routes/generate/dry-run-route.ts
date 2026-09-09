@@ -625,6 +625,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       typeof body.regenerateMessageId === "string" && body.regenerateMessageId.trim()
         ? body.regenerateMessageId.trim()
         : null;
+    if (chatMode === "roleplay" && regenerateMessageId) {
+      const index = scopedMessages.findIndex((message) => message.id === regenerateMessageId);
+      if (index >= 0) {
+        const timelineIds = new Set(scopedMessages.slice(0, index).map((message) => message.id));
+        chatMessages = chatMessages.filter((message) => timelineIds.has(message.id));
+      }
+    }
     const dryRunBeholderState = await loadPriorBeholderState({
       agentsStore: createAgentsStorage(app.db),
       chatId,
@@ -1664,6 +1671,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         }),
         buildRoleplayCommandsReminder({
           metadata: chatMeta,
+          characterId: allCharacterIds.length === 1 || individual ? target : null,
           privateAvailable: Boolean(target) && (allCharacterIds.length === 1 || individual),
           availableAgentIds,
           format: wrapFormat,

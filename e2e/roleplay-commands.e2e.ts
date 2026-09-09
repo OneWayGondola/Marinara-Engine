@@ -3,11 +3,13 @@ import { createServer } from "node:http";
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { createRequire } from "node:module";
 import { seedUIState } from "./ui-state-fixture.js";
 
 const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const extra = (value: unknown): Record<string, any> => (typeof value === "string" ? JSON.parse(value) : (value ?? {}));
 const contentOf = (body: any) => body.messages.map((message: any) => message.content).join("\n");
+const sharp = createRequire(new URL("../packages/server/package.json", import.meta.url))("sharp");
 
 async function openChat(page: Page, chatId: string) {
   page.setDefaultTimeout(10_000);
@@ -18,6 +20,7 @@ async function openChat(page: Page, chatId: string) {
     rightPanelOpen: false,
     chatHelpSeenModes: ["roleplay"],
     debugMode: false,
+    streamingSpeed: 100,
   });
   await page.addInitScript(
     ({ id, version }) => {
@@ -119,7 +122,7 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
     const off = await generate(alice);
     expect(off.content).not.toContain("OFF_SECRET");
     expect(extra(off.extra).roleplayPrivateCommands).toBeNull();
-    expect(extra(off.extra).roleplayDocuments).toEqual([]);
+    expect(extra(off.extra).roleplayCommandActivity).toEqual([]);
     expect(contentOf(requests.at(-1))).not.toContain("<commands>");
     await openChat(page, chat.id);
     await page.evaluate(async () => {
@@ -144,6 +147,7 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
       "Personal Notes",
       "Reminders",
       "Rolls",
+      "Combat",
       "Direct Messages",
     ]) {
       await expect(commands.getByRole("checkbox", { name: new RegExp(`^${label}\\b`, "u") })).not.toBeChecked();
@@ -156,7 +160,7 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
         .click();
       await expect(commands.getByRole("checkbox", { name: new RegExp(`^${label}\\b`, "u") })).toBeChecked();
     }
-    const narratorSelect = commands.getByRole("combobox", { name: /^Narrator with access to personal notes/u });
+    const narratorSelect = commands.getByRole("combobox", { name: /^Narrator character/u });
     await narratorSelect.selectOption(narrator);
     await expect
       .poll(
@@ -165,8 +169,30 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
       )
       .toBe(narrator);
     await expect(commands).not.toContainText("Scene Break");
+    await expect(commands.getByRole("checkbox", { name: /^Combat\b/u })).toBeDisabled();
+    await expect(commands.getByRole("checkbox", { name: /^Illustrations\b/u })).toBeDisabled();
+    await commands
+      .locator("label")
+      .filter({ hasText: /^Rolls$/u })
+      .click();
+    const rollAudience = commands.getByRole("combobox", { name: "Who can roll dice", exact: true });
+    await expect(rollAudience).toHaveValue("all");
+    await rollAudience.selectOption("narrator");
+    await expect
+      .poll(
+        async () => extra((await (await request.get(`/api/chats/${chat.id}`)).json()).metadata).roleplayRollAudience,
+      )
+      .toBe("narrator");
+    await narratorSelect.selectOption("");
+    await expect(rollAudience).toHaveAccessibleName("Who can roll dice");
+    await expect(rollAudience).toHaveAccessibleDescription("Choose a Narrator character below to allow this command.");
+    await narratorSelect.selectOption(narrator);
+    await expect(rollAudience).not.toHaveAttribute("aria-describedby");
+    expect(await preview(alice)).not.toContain("roll_dice");
+    expect(await preview(alice)).not.toContain("[roll:");
+    expect(await preview(narrator)).toContain("[roll:");
     await testInfo.attach(`roleplay-commands-${testInfo.project.name}.png`, {
-      body: await commands.screenshot({ animations: "disabled", path: testInfo.outputPath("roleplay-commands.png") }),
+      body: await page.screenshot({ animations: "disabled", path: testInfo.outputPath("roleplay-commands.png") }),
       contentType: "image/png",
     });
     const bounds = await commands.boundingBox();
@@ -177,11 +203,11 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
     const noteMessage = await generate(alice);
     expect(contentOf(requests.at(-1))).toContain("<commands>");
     expect(noteMessage.content).not.toContain("ALICE_SECRET");
-    expect(extra(noteMessage.extra).roleplayPrivateCommands).toHaveLength(2);
+    expect(extra(noteMessage.extra).roleplayCommandActivity).toHaveLength(3);
     await page.reload();
     const document = page.locator("[data-roleplay-command-results]");
-    await expect(document).toContainText("Invitation");
-    await document.getByLabel("Read Invitation", { exact: true }).click();
+    await expect(document).not.toContainText("Invitation");
+    await document.getByRole("button", { name: "Alice used document command!", exact: true }).click();
     await expect(document).toContainText("Meet at dawn.");
     await expect(page.locator("body")).not.toContainText("ALICE_SECRET");
     await expect(page.locator("body")).not.toContainText("ALICE_REMINDER");
@@ -191,7 +217,7 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
     expect(contentOf(requests.at(-1))).not.toContain("ALICE_SECRET");
     expect(contentOf(requests.at(-1))).not.toContain("ALICE_REMINDER");
     expect(contentOf(requests.at(-1))).toContain("Meet at dawn.");
-    output = "A carriage passes outside.";
+    output = 'A carriage passes outside. [document: title="Future letter" content="FUTURE_DOCUMENT"]';
     await generate(narrator);
     expect(contentOf(requests.at(-1))).toContain("ALICE_SECRET");
     expect(contentOf(requests.at(-1))).toContain("ALICE_REMINDER");
@@ -203,6 +229,12 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
     await generate(alice, { regenerateMessageId: noteMessage.id });
     // A regenerated turn cannot read notes created by itself or later messages.
     expect(contentOf(requests.at(-1))).not.toContain("ALICE_SECRET");
+    expect(contentOf(requests.at(-1))).not.toContain("ALICE_REMINDER");
+    expect(contentOf(requests.at(-1))).not.toContain("Meet at dawn.");
+    expect(contentOf(requests.at(-1))).not.toContain("FUTURE_DOCUMENT");
+    expect(
+      extra((await rows()).find((message) => message.id === noteMessage.id).extra).roleplayCommandActivity,
+    ).toHaveLength(1);
     expect(await preview(alice)).toContain("REPLACEMENT_SECRET");
     expect(await preview(alice)).not.toContain("ALICE_REMINDER");
     const switched = await request.put(`/api/chats/${chat.id}/messages/${noteMessage.id}/active-swipe`, {
@@ -219,21 +251,25 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
     output = '[notes: content="CONTINUED_SECRET"]';
     await generate(alice, { continueMessageId: noteMessage.id });
     expect(contentOf(requests.at(-1))).toContain("ALICE_SECRET");
+    expect(contentOf(requests.at(-1))).toContain("Meet at dawn.");
+    expect(contentOf(requests.at(-1))).not.toContain("FUTURE_DOCUMENT");
     expect(await preview(alice)).toContain("CONTINUED_SECRET");
     expect(await preview(alice)).toContain("ALICE_REMINDER");
     const continued = (await rows()).find((message) => message.id === noteMessage.id);
-    expect(extra(continued.extra).roleplayDocuments).toHaveLength(1);
+    expect(
+      extra(continued.extra).roleplayCommandActivity.filter((item: any) => item.command.type === "document"),
+    ).toHaveLength(1);
     expect(extra(continued.extra).hiddenFromUser).not.toBe(true);
     output = '[dismiss_notes] [dismiss_memory: id="key"]';
     const dismissed = await generate(alice);
-    expect(extra(dismissed.extra).hiddenFromUser).toBe(true);
+    expect(extra(dismissed.extra).hiddenFromUser).not.toBe(true);
     expect(await preview(alice)).not.toContain("ALICE_SECRET");
     expect(await preview(alice)).not.toContain("ALICE_REMINDER");
     expect(await preview(alice)).not.toContain("CONTINUED_SECRET");
     expect(await preview(alice, branched.id)).toContain("ALICE_SECRET");
     output = "She speaks instead.";
     const visibleSwipe = await generate(alice, { regenerateMessageId: dismissed.id });
-    expect(extra(visibleSwipe.extra).hiddenFromUser).toBe(false);
+    expect(extra(visibleSwipe.extra).hiddenFromUser).not.toBe(true);
     expect(await preview(alice)).toContain("CONTINUED_SECRET");
     await request.patch(`/api/chats/${chat.id}/metadata`, { data: { groupResponseOrder: "sequential" } });
     const beforeBatch = requests.length;
@@ -248,6 +284,61 @@ test("Roleplay commands default off, scope private notes, and follow swipes and 
     expect(contentOf(requests[beforeBatch + 1])).not.toContain("BATCH_SECRET");
     expect(contentOf(requests[beforeBatch + 1])).toContain("BATCH_DOCUMENT");
     expect(contentOf(requests[beforeBatch + 2])).toContain("BATCH_SECRET");
+
+    await page.reload();
+    const note = page.locator('[data-roleplay-command="notes"]').last();
+    await expect(note).not.toContainText("BATCH_SECRET");
+    await note.getByRole("button", { name: "Alice used notes command!", exact: true }).click();
+    await note.getByRole("button", { name: "Edit", exact: true }).click();
+    const editor = page.locator('[data-component="ExpandedTextarea"]');
+    await editor.locator("textarea").fill("EDITED_BATCH_SECRET");
+    const editUrl = `**/api/chats/${chat.id}/messages/*/extra?swipeIndex=*`;
+    await page.route(editUrl, (route) => route.fulfill({ status: 500, json: { error: "Synthetic save failure" } }), {
+      times: 1,
+    });
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(editor.getByRole("alert")).toHaveText("Could not save this change. Please try again.");
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(editor).toBeHidden();
+    expect(await preview(alice)).toContain("EDITED_BATCH_SECRET");
+    expect(await preview(narrator)).toContain("EDITED_BATCH_SECRET");
+    expect(await preview(bob)).not.toContain("EDITED_BATCH_SECRET");
+    await expect(note).toContainText('[notes: content="BATCH_SECRET"]');
+    await testInfo.attach(`roleplay-command-edit-${testInfo.project.name}.png`, {
+      body: await page.screenshot({ animations: "disabled", path: testInfo.outputPath("roleplay-command-edit.png") }),
+      contentType: "image/png",
+    });
+    for (const command of ["notes", "document", "memory"]) {
+      const notice = page.locator(`[data-roleplay-command="${command}"]`).last();
+      const disclosure = notice.getByRole("button", { name: `Alice used ${command} command!`, exact: true });
+      if ((await disclosure.getAttribute("aria-expanded")) !== "true") await disclosure.click();
+      await notice.getByRole("button", { name: "Delete", exact: true }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click();
+      await expect(notice).toContainText("Removed from future context.");
+    }
+    const afterDelete = await preview(alice);
+    expect(afterDelete).not.toMatch(/BATCH_SECRET|CONTINUED_SECRET|ALICE_SECRET|ALICE_REMINDER|BATCH_DOCUMENT/u);
+    expect(afterDelete).not.toContain("used notes command!");
+    // A delayed edit must stay on the original swipe, even after another swipe is selected.
+    const beforeSwitch = (await rows()).find((message) => message.id === noteMessage.id);
+    await request.put(`/api/chats/${chat.id}/messages/${noteMessage.id}/active-swipe`, { data: { index: 1 } });
+    const delayed = await request.patch(`/api/chats/${chat.id}/messages/${noteMessage.id}/extra?swipeIndex=0`, {
+      data: { roleplayCommandActivity: extra(beforeSwitch.extra).roleplayCommandActivity },
+    });
+    expect(delayed.ok(), await delayed.text()).toBeTruthy();
+    const active = (await rows()).find((message) => message.id === noteMessage.id);
+    expect(active.activeSwipeIndex).toBe(1);
+    expect(JSON.stringify(extra(active.extra).roleplayCommandActivity)).toContain("REPLACEMENT_SECRET");
+    expect(
+      (
+        await request.patch(`/api/chats/${branched.id}/messages/${noteMessage.id}/extra?swipeIndex=0`, { data: {} })
+      ).status(),
+    ).toBe(404);
+    expect(
+      (
+        await request.patch(`/api/chats/${chat.id}/messages/${noteMessage.id}/extra?swipeIndex=-1`, { data: {} })
+      ).status(),
+    ).toBe(400);
   } finally {
     await fixture.cleanup();
     provider.closeAllConnections();
@@ -325,8 +416,9 @@ test("Roleplay sound commands reuse cached audio and play the attachment URL", a
     await page.locator("textarea[data-chat-composer]").fill("Ring the bell.");
     await page.locator(".mari-chat-send-btn").click();
     await playbackRequest;
+    await page.getByRole("button", { name: "Alice used sound command!", exact: true }).click();
     await expect(page.locator(`[data-roleplay-command-results] audio[src="${audioUrl}"]`)).toBeVisible();
-    await expect(page.locator("body")).not.toContainText("[sound:");
+    await expect(page.locator("body")).toContainText("[sound:");
     const messages = await (await request.get(`/api/chats/${fixture.chat.id}/messages`)).json();
     const message = messages.filter((row: any) => row.role === "assistant").at(-1);
     expect(extra(message.extra).attachments).toMatchObject([{ roleplaySound: true, url: audioUrl }]);
@@ -383,7 +475,10 @@ for (const native of [true, false]) {
                   index: 0,
                   id: "real-roll",
                   type: "function",
-                  function: { name: "roll_dice", arguments: JSON.stringify({ notation: "1d6+3" }) },
+                  function: {
+                    name: "roll_dice",
+                    arguments: JSON.stringify({ notation: "1d6+3", character: "Alice", attribute: "Strength" }),
+                  },
                 },
               ],
             },
@@ -397,7 +492,9 @@ for (const native of [true, false]) {
             firstStreamClosed = true;
           });
           write({ content: " [ro" });
-          write({ content: 'll: notation="1d6+3", reason="Need four"] INVENTED_OUTCOME' });
+          write({
+            content: 'll: character="Alice" notation="1d6+3" attribute="Strength" reason="Need four"] INVENTED_OUTCOME',
+          });
         }
       } else {
         const resultMessage = body.messages.find((message: any) =>
@@ -429,6 +526,17 @@ for (const native of [true, false]) {
     if (!address || typeof address === "string") throw new Error("Fixture did not bind");
     const fixture = await createFixture(request, `http://127.0.0.1:${address.port}/v1`, ["Alice"]);
     try {
+      const stats = await request.patch(`/api/characters/${fixture.characters[0].id}`, {
+        data: {
+          data: {
+            name: "Alice",
+            extensions: {
+              rpgStats: { enabled: true, attributes: [{ name: "STR", value: 12 }], hp: { value: 10, max: 10 } },
+            },
+          },
+        },
+      });
+      expect(stats.ok(), await stats.text()).toBeTruthy();
       const metadataResponse = await request.patch(`/api/chats/${fixture.chat.id}/metadata`, {
         data: { roleplayCommandsEnabled: true, roleplayCommandToggles: { roll: true } },
       });
@@ -440,16 +548,20 @@ for (const native of [true, false]) {
       expect(firstRequestTools).toEqual(["roll_dice"]);
       expect(resultMessageFound).toBe(true);
       expect(followupPrompt).not.toContain("INVENTED_OUTCOME");
-      expect(total).toBeGreaterThanOrEqual(4);
-      expect(total).toBeLessThanOrEqual(9);
+      expect(total).toBeGreaterThanOrEqual(5);
+      expect(total).toBeLessThanOrEqual(10);
       if (!native) await expect.poll(() => firstStreamClosed).toBe(true);
-      await expect(page.getByText(`1d6+3: ${total}`, { exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByText(`1d6+3: ${total}`, { exact: true })).not.toBeVisible();
+      // WebKit can buffer these tiny SSE frames until the 15-second keepalive
+      // while the synthetic follow-up deliberately sends no more content.
       await expect
-        .poll(() =>
-          page.evaluate(async () => {
-            const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
-            return { streaming: useChatStore.getState().isStreaming, text: useChatStore.getState().streamBuffer };
-          }),
+        .poll(
+          () =>
+            page.evaluate(async () => {
+              const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+              return { streaming: useChatStore.getState().isStreaming, text: useChatStore.getState().streamBuffer };
+            }),
+          { timeout: 20_000 },
         )
         .toEqual({ streaming: true, text: native ? "I attempt the lock." : "I attempt the lock. " });
       await expect(page.locator("body")).not.toContainText("INVENTED_OUTCOME");
@@ -464,7 +576,16 @@ for (const native of [true, false]) {
       const saved = messages.filter((message: any) => message.role === "assistant").at(-1);
       expect(saved.content).not.toContain("[roll");
       expect(saved.content).not.toContain("INVENTED_OUTCOME");
-      expect(extra(saved.extra).diceRollResult.total).toBe(total);
+      expect(extra(saved.extra).diceRollResult).toBeNull();
+      const activity = extra(saved.extra).roleplayCommandActivity;
+      expect(activity).toHaveLength(1);
+      expect(JSON.parse(activity[0].result).total).toBe(total);
+      expect(JSON.parse(activity[0].result).modifier).toBe(4);
+      const notice = page.locator('[data-roleplay-command="roll"]');
+      await expect(notice).not.toContainText("1d6+3");
+      await notice.getByRole("button", { name: "Alice used roll command!", exact: true }).click();
+      await expect(notice).toContainText("1d6+3");
+      await expect(notice).toContainText(String(total));
       expect(requestCount).toBe(2);
     } finally {
       finishFollowup?.();
@@ -475,3 +596,238 @@ for (const native of [true, false]) {
     }
   });
 }
+
+test("Roleplay commands require attached agents, enforce combat audience, and forward Illustrator settings and named avatars", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  let output = '[combat] [illustrate: subject="A duel" characters="Alice"]';
+  const chatRequests: any[] = [],
+    combatRequests: any[] = [],
+    illustrationPlans: any[] = [];
+  const imageRequests: { url: string; data: Buffer }[] = [];
+  const portrait: Buffer = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#cc4477" } })
+    .png()
+    .toBuffer();
+  const provider = createServer(async (incoming, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+    const data = Buffer.concat(chunks);
+    if (incoming.url?.includes("/images/")) {
+      imageRequests.push({ url: incoming.url, data });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: [{ b64_json: portrait.toString("base64") }] }));
+      return;
+    }
+    const body = JSON.parse(data.toString("utf8"));
+    const prompt = contentOf(body);
+    let content: string;
+    if (prompt.includes("You are the Illustrator prompt writer")) {
+      illustrationPlans.push(body);
+      content = JSON.stringify({
+        prompt: "Alice at the gate",
+        style: "ink sketch",
+        characters: ["Narrator"],
+        aspectRatio: "square",
+      });
+    } else if (prompt.includes("COMBAT_FIXTURE")) {
+      combatRequests.push(body);
+      content = JSON.stringify({
+        encounterActive: true,
+        event: "start",
+        combatants: [{ name: "Alice", hp: 10, maxHp: 10 }],
+        roundNumber: 1,
+      });
+    } else {
+      chatRequests.push(body);
+      content = output;
+    }
+    if (body.stream) {
+      response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
+      response.end(
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+      );
+    } else {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+        }),
+      );
+    }
+  });
+  await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  const address = provider.address();
+  if (!address || typeof address === "string") throw new Error("Fixture did not bind");
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+  const fixture = await createFixture(request, baseUrl, ["Alice", "Narrator"]);
+  const alice = fixture.characters[0].id,
+    narrator = fixture.characters[1].id;
+  const avatarDirectory = resolve(
+    ".tmp/playwright-data",
+    testInfo.project.name.includes("mobile") ? "mobile" : "desktop",
+    "avatars",
+  );
+  const avatarName = `roleplay-command-${alice}.png`;
+  mkdirSync(avatarDirectory, { recursive: true });
+  writeFileSync(resolve(avatarDirectory, avatarName), portrait);
+  const create = async (path: string, data: unknown) => {
+    const response = await request.post(path, { data });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const row = await response.json();
+    fixture.resources.unshift(`${path}/${row.id}`);
+    return row;
+  };
+  const metadata = async (data: unknown) => {
+    const response = await request.patch(`/api/chats/${fixture.chat.id}/metadata`, { data });
+    expect(response.ok(), await response.text()).toBeTruthy();
+  };
+  const generate = async (characterId: string) => {
+    const response = await request.post("/api/generate", {
+      data: { chatId: fixture.chat.id, forCharacterId: characterId },
+    });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    expect(await response.text()).not.toContain("event: error\n");
+    const messages = await (await request.get(`/api/chats/${fixture.chat.id}/messages`)).json();
+    return messages.filter((message: any) => message.role === "assistant").at(-1);
+  };
+  try {
+    const connection = await create("/api/connections", {
+      name: "Local image fixture",
+      provider: "custom",
+      model: "gpt-image-2",
+      baseUrl,
+      apiKey: "synthetic-test-key",
+      treatAsLocalEndpoint: true,
+      imageGenerationSource: "openai",
+      imageService: "openai",
+      imagePromptInstructions: "IMAGE_CONNECTION_OVERRIDE",
+    });
+    const chatConnection = fixture.chat.connectionId;
+    for (const type of ["combat", "illustrator"]) {
+      await create("/api/agents", {
+        type,
+        name: type,
+        phase: "post_processing",
+        connectionId: chatConnection,
+        promptTemplate: type === "combat" ? "COMBAT_FIXTURE: Track the encounter as JSON." : "DEFAULT_ILLUSTRATOR_MODE",
+        settings: {
+          runInterval: 0,
+          enabledTools: [],
+          customCapabilities: { edit_trackers: true, trigger_image_generation: true },
+          promptTemplates: [
+            { id: "chat-mode", name: "Chat mode", promptTemplate: "CHAT_ILLUSTRATOR_MODE: Draw an ink sketch." },
+          ],
+          imagePositivePrompt: "POSITIVE_OVERRIDE",
+          imageNegativePrompt: "NEGATIVE_OVERRIDE",
+        },
+      });
+    }
+    const avatarUpdate = await request.patch(`/api/characters/${alice}`, {
+      data: { data: { name: "Alice" }, avatarPath: `/api/avatars/file/${avatarName}` },
+    });
+    expect(avatarUpdate.ok(), await avatarUpdate.text()).toBeTruthy();
+    expect((await avatarUpdate.json()).avatarPath).toBe(`/api/avatars/file/${avatarName}`);
+    expect((await request.get(`/api/avatars/file/${avatarName}`)).ok()).toBeTruthy();
+    await metadata({
+      roleplayCommandsEnabled: true,
+      roleplayCommandToggles: { combat: true, illustrate: true },
+      roleplayCommandNarratorId: narrator,
+      roleplayCombatAudience: "narrator",
+      activeAgentIds: [],
+      encounterActive: false,
+    });
+    await generate(alice);
+    expect(combatRequests).toHaveLength(0);
+    expect(illustrationPlans).toHaveLength(0);
+    expect(contentOf(chatRequests.at(-1))).not.toMatch(/\[combat\]|\[illustrate:/u);
+    await metadata({
+      activeAgentIds: ["combat", "illustrator"],
+      illustratorImageConnectionId: connection.id,
+      illustratorUseAvatarReferences: false,
+      agentPromptTemplateIds: { illustrator: "chat-mode" },
+    });
+    output = "She waits. [combat]";
+    await generate(alice);
+    expect(combatRequests).toHaveLength(0);
+    expect(contentOf(chatRequests.at(-1))).not.toContain("[combat]");
+    await generate(narrator);
+    expect(combatRequests).toHaveLength(1);
+    expect(contentOf(combatRequests[0])).toContain("Combat starts now.");
+    expect(extra((await (await request.get(`/api/chats/${fixture.chat.id}`)).json()).metadata).encounterActive).toBe(
+      true,
+    );
+    await metadata({ encounterActive: false, roleplayCombatAudience: "all" });
+    await generate(alice);
+    expect(combatRequests).toHaveLength(2);
+    await metadata({ encounterActive: false });
+    output = 'She lifts her sword. [illustrate: subject="A duel" characters="Alice"]';
+    const illustrated = await generate(alice);
+    expect(illustrationPlans).toHaveLength(1);
+    expect(contentOf(illustrationPlans[0])).toContain("CHAT_ILLUSTRATOR_MODE");
+    expect(contentOf(illustrationPlans[0])).toContain("IMAGE_CONNECTION_OVERRIDE");
+    expect(contentOf(illustrationPlans[0])).toContain("Involved characters: Alice");
+    expect(imageRequests).toHaveLength(1);
+    expect(imageRequests[0]!.url, imageRequests[0]!.data.toString("utf8")).toContain("/images/edits");
+    expect(imageRequests[0]!.data.includes(portrait)).toBe(true);
+    const multipart = imageRequests[0]!.data.toString("utf8");
+    expect(multipart).toContain("POSITIVE_OVERRIDE");
+    expect(multipart).toContain("NEGATIVE_OVERRIDE");
+    expect(extra(illustrated.extra).attachments).toHaveLength(1);
+    expect(extra(illustrated.extra).roleplayCommandActivity[0].raw).toBe(
+      '[illustrate: subject="A duel" characters="Alice"]',
+    );
+
+    await page.route("**/api/capability-packages/agents", (route) =>
+      route.fulfill({
+        json: ["combat", "illustrator"].map((id) => ({
+          id,
+          name: id,
+          description: "Fixture",
+          author: "Fixture",
+          phase: "post_processing",
+          execution: "host",
+          enabledByDefault: false,
+          category: "misc",
+          modeAllowlist: ["roleplay"],
+          defaultPromptTemplate: "Fixture",
+        })),
+      }),
+    );
+    await openChat(page, fixture.chat.id);
+    await page.evaluate(async () => {
+      const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+      useChatStore.getState().setShouldOpenSettings(true);
+    });
+    const section = page.locator('[data-chat-settings-section="roleplay-agents"]');
+    const header = section.locator('[role="button"][aria-expanded]').first();
+    if ((await header.getAttribute("aria-expanded")) === "false") await header.click();
+    const commands = page.locator("[data-roleplay-commands]");
+    await commands.getByRole("button", { name: "Expand Commands", exact: true }).click();
+    await expect(commands.getByRole("checkbox", { name: /^Combat\b/u })).toBeChecked();
+    await expect(commands.getByRole("checkbox", { name: /^Illustrations\b/u })).toBeChecked();
+    const combatAudience = commands.getByRole("combobox", { name: "Who can start combat", exact: true });
+    await combatAudience.selectOption("narrator");
+    for (const theme of ["dark", "light"] as const) {
+      await page.evaluate(async (theme) => {
+        const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.getState().setTheme(theme);
+      }, theme);
+      await combatAudience.scrollIntoViewIfNeeded();
+      await testInfo.attach(`roleplay-command-agents-${theme}-${testInfo.project.name}.png`, {
+        body: await page.screenshot({
+          animations: "disabled",
+          path: testInfo.outputPath(`roleplay-command-agents-${theme}.png`),
+        }),
+        contentType: "image/png",
+      });
+    }
+  } finally {
+    await fixture.cleanup();
+    rmSync(resolve(avatarDirectory, avatarName), { force: true });
+    provider.closeAllConnections();
+    await new Promise<void>((resolve) => provider.close(() => resolve()));
+  }
+});

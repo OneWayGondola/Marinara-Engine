@@ -2165,16 +2165,25 @@ export async function chatsRoutes(app: FastifyInstance) {
   });
 
   // Update message extra (partial merge) — also syncs to the active swipe
-  app.patch<{ Params: { chatId: string; messageId: string } }>(
+  app.patch<{ Params: { chatId: string; messageId: string }; Querystring: { swipeIndex?: string } }>(
     "/:chatId/messages/:messageId/extra",
     async (req, reply) => {
+      const message = await storage.getMessage(req.params.messageId);
+      if (!message || message.chatId !== req.params.chatId)
+        return reply.status(404).send({ error: "Message not found" });
+      const swipeIndex = req.query.swipeIndex === undefined ? undefined : Number(req.query.swipeIndex);
+      if (swipeIndex !== undefined && (!Number.isSafeInteger(swipeIndex) || swipeIndex < 0))
+        return reply.status(400).send({ error: "Invalid swipe index" });
       const partial = { ...(req.body as Record<string, unknown>) };
       for (const key of ["hiddenFromAICharacterIds", "conversationStartForCharacterIds"] as const) {
         if (Object.prototype.hasOwnProperty.call(partial, key)) {
           partial[key] = normalizeMessageCharacterIds(partial[key]);
         }
       }
-      const updated = await storage.updateMessageExtra(req.params.messageId, partial);
+      const updated =
+        swipeIndex === undefined
+          ? await storage.updateMessageExtra(req.params.messageId, partial)
+          : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
       if (!updated) return reply.status(404).send({ error: "Message not found" });
       // A lone user reaction (no text after it) is a valid turn: feed it to the
       // autonomous-messaging cadence so a character may notice and respond,

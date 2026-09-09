@@ -1393,9 +1393,20 @@ export function useUpdateMessage(chatId: string | null) {
 export function useUpdateMessageExtra(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ messageId, extra }: { messageId: string; extra: Record<string, unknown> }) =>
-      api.patch<Message>(`/chats/${chatId}/messages/${messageId}/extra`, extra),
-    onMutate: async ({ messageId, extra }) => {
+    mutationFn: ({
+      messageId,
+      extra,
+      swipeIndex,
+    }: {
+      messageId: string;
+      extra: Record<string, unknown>;
+      swipeIndex?: number;
+    }) =>
+      api.patch<Message>(
+        `/chats/${chatId}/messages/${messageId}/extra${swipeIndex === undefined ? "" : `?swipeIndex=${swipeIndex}`}`,
+        extra,
+      ),
+    onMutate: async ({ messageId, extra, swipeIndex }) => {
       if (!chatId) return;
       await qc.cancelQueries({ queryKey: chatKeys.messages(chatId) });
       const previous = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
@@ -1405,7 +1416,7 @@ export function useUpdateMessageExtra(chatId: string | null) {
           ...old,
           pages: old.pages.map((page) =>
             page.map((msg) => {
-              if (msg.id !== messageId) return msg;
+              if (msg.id !== messageId || (swipeIndex !== undefined && msg.activeSwipeIndex !== swipeIndex)) return msg;
               let currentExtra: Record<string, unknown> = {};
               try {
                 currentExtra =

@@ -215,6 +215,8 @@ type SpotifyPlayRequestBody = {
 const spotifyTrackIndexCache = new Map<string, SpotifyTrackIndexCacheEntry>();
 
 export interface ToolExecutionContext {
+  /** Apply the active chat's character attributes before the shared dice service rolls. */
+  prepareDiceRoll?: (args: Record<string, unknown>) => Record<string, unknown>;
   gameState?: Record<string, unknown>;
   /** Returns a stored patch, or an explicit pending patch until the turn is saved. */
   applyGameStateUpdate?: (update: { type: string; value: string }) => Promise<Record<string, unknown>>;
@@ -318,7 +320,7 @@ async function executeBuiltInTool(
 ): Promise<unknown> {
   switch (name) {
     case "roll_dice":
-      return rollDice(args);
+      return rollDice(context?.prepareDiceRoll ? context.prepareDiceRoll(args) : args);
     case "update_game_state":
       return updateGameState(args, context?.applyGameStateUpdate);
     case "set_expression":

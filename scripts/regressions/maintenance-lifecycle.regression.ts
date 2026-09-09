@@ -22,9 +22,10 @@ const generateRouteSource = readFileSync(
 assert.doesNotMatch(generateRouteSource, /encryptedReasoningCache/u);
 
 const reasoningRecoveryIndex = generateRouteSource.indexOf("const pastReasoning = collectPastReasoningMetadata(");
-// The branch is keyed on toolsAttached, not enableChatTools: Game Mode attaches the dice tool
+// The branch is keyed on the responder's attached tools, not enableChatTools: Game Mode attaches the dice tool
 // without the chat's tool toggle being on.
-const toolBranchIndex = /if \(toolsAttached &&[^{}]*provider\.chatComplete/u.exec(generateRouteSource)?.index ?? -1;
+const toolBranchIndex =
+  /if \(responderToolsAttached &&[^{}]*provider\.chatComplete/u.exec(generateRouteSource)?.index ?? -1;
 assert.ok(reasoningRecoveryIndex >= 0 && reasoningRecoveryIndex < toolBranchIndex);
 assert.match(
   generateRouteSource.slice(reasoningRecoveryIndex, toolBranchIndex),
