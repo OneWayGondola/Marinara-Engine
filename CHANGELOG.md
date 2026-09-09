@@ -99,6 +99,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Package persistence now requires declared chat-read/chat-write permissions for chat and spatial snapshot access, including transactions. The package detail view distinguishes installed and catalog permissions and explains which permissions are API gates or trusted-code access declarations (#5899).
+
 - Gemini reasoning replies now stream on Google's official API endpoint, including tool-using turns. Other endpoints retain the compatibility workaround that preserves proxy thought parts (#5904).
 - Professor Mari now executes a frame's edits before checking its completion claim, recovers common command formats, and repairs unrecognized commands instead of silently dropping them. Requested lorebook edits use the real save/review path; explicit previews remain read-only (#5966, #5967).
 
