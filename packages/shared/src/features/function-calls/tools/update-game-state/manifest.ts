@@ -3,7 +3,7 @@ import type { ToolDefinition } from "../../tool-definitions.js";
 export const updateGameStateToolManifest = {
   name: "update_game_state",
   description:
-    "Move the game clock or the party's location. Stats, inventory and quests are tracked elsewhere — narrate those instead of calling this.",
+    "Set the game's shared clock or party location. Reports success only after storage; locked fields and Spatial Context-owned locations are refused. Stats, inventory and quests are tracked elsewhere.",
   parameters: {
     type: "object",
     properties: {
@@ -15,9 +15,7 @@ export const updateGameStateToolManifest = {
         description: "Type of update",
         enum: ["location_change", "time_advance"],
       },
-      target: { type: "string", description: "Who or what is being updated (character name or 'player')" },
-      key: { type: "string", description: "Optional label for the location or time being changed" },
-      value: { type: "string", description: "The new value or change amount" },
+      value: { type: "string", description: "The new stored location or time text, not a relative duration" },
       description: { type: "string", description: "Human-readable description of the change" },
     },
     required: ["type", "value"],

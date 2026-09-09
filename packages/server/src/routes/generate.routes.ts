@@ -77,7 +77,6 @@ import { shouldSuppressIllustratorForegroundForStoryboard } from "../services/ga
 import {
   formatOwnerSpatialBreadcrumb,
   injectOwnerSpatialPrompt,
-  omitAuthoritativeGameLocation,
   projectGameSnapshotLocation,
   resolveOwnerSpatialProjection,
 } from "../services/spatial-context/projection.js";
@@ -6717,6 +6716,19 @@ export async function generateRoutes(app: FastifyInstance) {
 
               const executedToolResults = await executeToolCalls(permittedToolCalls, {
                 ...baseToolExecutionContext,
+                applyGameStateUpdate: async ({ type, value }) => {
+                  if (chatMode !== "game") throw new Error("Game-state writes are only available in Game Mode.");
+                  const field = type === "location_change" ? "location" : "time";
+                  const patch = await gameStateStore.updateFromTool(
+                    input.chatId,
+                    field,
+                    value,
+                    ownerSpatialProjection?.ownerMode === "game",
+                  );
+                  logger.debug("[game_state_patch] tool update_game_state: %j", patch);
+                  sendSseEvent(reply, { type: "game_state_patch", data: patch });
+                  return patch;
+                },
                 // The character whose turn this is — update_about_me writes their about-me.
                 // Only attribute when this generation voices exactly one character and the
                 // user isn't impersonating; otherwise the caller is ambiguous (merged group)
@@ -6760,41 +6772,6 @@ export async function generateRoutes(app: FastifyInstance) {
                     ...(rolled && chatMode === "roleplay" ? { mode: "roleplay" } : {}),
                   },
                 });
-
-                // Persist update_game_state tool calls to the game state DB
-                if (tr.name === "update_game_state" && tr.success) {
-                  try {
-                    const parsed = JSON.parse(tr.result);
-                    if (parsed.applied && parsed.update) {
-                      const latest = await gameStateStore.getLatest(input.chatId);
-                      if (latest) {
-                        const u = parsed.update;
-                        let updates: Record<string, unknown> = {};
-                        if (u.type === "location_change") updates.location = u.value;
-                        if (u.type === "time_advance") updates.time = u.value;
-                        if (u.type === "location_change" && ownerSpatialProjection?.ownerMode === "game") {
-                          logger.debug(
-                            "[generate/game] Ignored update_game_state location because Spatial Context is authoritative",
-                          );
-                        }
-                        updates = omitAuthoritativeGameLocation(updates, ownerSpatialProjection);
-                        if (Object.keys(updates).length > 0) {
-                          const lockedUpdates = applyTrackerFieldLocksToGameStatePatch(
-                            updates,
-                            parseGameStateRow(latest as Record<string, unknown>),
-                          );
-                          await gameStateStore.updateLatest(input.chatId, lockedUpdates);
-                          updates = lockedUpdates;
-                          // Send game_state_patch so HUD updates live
-                          logger.debug("[game_state_patch] tool update_game_state: %j", updates);
-                          sendSseEvent(reply, { type: "game_state_patch", data: updates });
-                        }
-                      }
-                    }
-                  } catch {
-                    // Non-critical
-                  }
-                }
 
                 // update_about_me public scope: route the proposed edit through the
                 // character-card approval modal (the chat scope already persisted itself).

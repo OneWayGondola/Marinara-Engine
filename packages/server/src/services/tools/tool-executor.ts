@@ -216,6 +216,8 @@ const spotifyTrackIndexCache = new Map<string, SpotifyTrackIndexCacheEntry>();
 
 export interface ToolExecutionContext {
   gameState?: Record<string, unknown>;
+  /** Returns the stored patch only after the host has validated and persisted it. */
+  applyGameStateUpdate?: (update: { type: string; value: string }) => Promise<Record<string, unknown>>;
   chatMeta?: Record<string, unknown>;
   hiddenContext?: CustomToolHiddenContext;
   /** The character whose turn invoked the tool (Conversation mode; used by update_about_me). */
@@ -318,7 +320,7 @@ async function executeBuiltInTool(
     case "roll_dice":
       return rollDice(args);
     case "update_game_state":
-      return updateGameState(args, context?.gameState);
+      return updateGameState(args, context?.applyGameStateUpdate);
     case "set_expression":
       return setExpression(args);
     case "trigger_event":
@@ -539,7 +541,10 @@ function rollDice(args: Record<string, unknown>): Record<string, unknown> {
 // below is defence in depth for any caller that reaches it without that schema.
 export const PERSISTED_GAME_STATE_UPDATE_TYPES = ["location_change", "time_advance"] as const;
 
-function updateGameState(args: Record<string, unknown>, _gameState?: Record<string, unknown>): Record<string, unknown> {
+async function updateGameState(
+  args: Record<string, unknown>,
+  applyUpdate?: ToolExecutionContext["applyGameStateUpdate"],
+): Promise<Record<string, unknown>> {
   const type = String(args.type ?? "");
   if (!(PERSISTED_GAME_STATE_UPDATE_TYPES as readonly string[]).includes(type)) {
     return {
@@ -549,17 +554,20 @@ function updateGameState(args: Record<string, unknown>, _gameState?: Record<stri
     };
   }
 
-  // Returns the update instruction — the client/agent pipeline applies it
+  const value = typeof args.value === "string" ? args.value.trim() : "";
+  if (!value) throw new Error("A non-empty location or time value is required.");
+  if (!applyUpdate) throw new Error("Game-state writes are not available in this context.");
+  const stored = await applyUpdate({ type, value });
+  const field = type === "location_change" ? "location" : "time";
+  if (stored[field] !== value) throw new Error("The requested game-state value was not stored.");
   return {
     applied: true,
     update: {
       type: args.type,
-      target: args.target,
-      key: args.key,
-      value: args.value,
+      value,
       description: args.description ?? "",
     },
-    display: `📊 ${type}${args.target || args.key ? `: ${[args.target, args.key].filter(Boolean).join(" — ")}` : ""} → ${args.value}`,
+    display: `📊 ${type} → ${value}`,
   };
 }
 

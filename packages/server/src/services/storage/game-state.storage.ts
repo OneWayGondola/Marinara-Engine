@@ -8,6 +8,7 @@ import { newId, now } from "../../utils/id-generator.js";
 import { ensureTimestampAfter } from "../import/import-timestamps.js";
 import {
   coerceGameStateTextValue,
+  applyTrackerFieldLocksToGameStatePatch,
   normalizeWorldCustomFields,
   normalizeTrackerFieldLocks,
   normalizeTrackerFieldLocksForState,
@@ -368,6 +369,23 @@ export function createGameStateStorage(db: DB) {
         createdAt: ensureTimestampAfter(now(), latestBeforeInsert?.createdAt),
       });
       return id;
+    },
+
+    /** Apply one model-requested field with its lock check and write in the same transaction. */
+    async updateFromTool(chatId: string, field: "location" | "time", value: string, locationIsAuthoritative: boolean) {
+      if (field === "location" && locationIsAuthoritative) {
+        throw new Error("Location is controlled by Spatial Context. Use the game's movement controls.");
+      }
+      return db.transaction(async (tx) => {
+        const store = createGameStateStorage(tx);
+        const latest = await store.getLatest(chatId);
+        if (!latest) throw new Error("No game-state snapshot is available to update.");
+        const patch = applyTrackerFieldLocksToGameStatePatch({ [field]: value }, buildLockMigrationState(latest));
+        if (patch[field] !== value) throw new Error(`The ${field} field is locked; no change was applied.`);
+        const stored = await store._applyUpdate(latest, patch);
+        if (stored[field] !== value) throw new Error("The game-state update could not be stored.");
+        return { [field]: stored[field] };
+      });
     },
 
     async updateLatest(
