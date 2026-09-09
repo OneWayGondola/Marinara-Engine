@@ -43,6 +43,7 @@ import {
   DEFAULT_CONVERSATION_PROMPT,
   DEFAULT_GENERATION_PARAMS,
   extractLeadingThinkingBlocks,
+  formatSkillCheckResultSummary,
   unwrapConversationInstructions,
   findKnownModel,
   isOpenAIGpt6AstraModel,
@@ -173,6 +174,7 @@ import {
   withLlmRequestTimeout,
   yieldToEventLoop,
   type ChatMessage,
+  type ChatOptions,
   type LLMUsage,
 } from "../services/llm/base-provider.js";
 import { executeToolCalls, formatToolExecutionResultForModel } from "../services/tools/tool-executor.js";
@@ -512,7 +514,11 @@ import { createAgentLorebookTriggerResolver } from "../services/generation/agent
 import { addInventoryEntry, addLocationEntry, upsertQuest, addNpcEntry } from "../services/game/journal.service.js";
 import { updateJournal } from "../services/generation/game-journal-runtime.js";
 import { buildGmFormatReminder } from "../services/game/gm-prompts.js";
-import { parseRollDiceToolResult } from "../services/game/dice.service.js";
+import {
+  createGameRollTagRegex,
+  parseRollDiceToolResult,
+  resolveGameDiceRequests,
+} from "../services/game/dice.service.js";
 import {
   loadSkillCheckModifierContext,
   resolveSkillCheckTagsInContent,
@@ -6453,9 +6459,8 @@ export async function generateRoutes(app: FastifyInstance) {
             await writeContentChunked(assistantPrefill);
           }
           let geminiResponseParts: unknown[] | null = null;
-          // The last roll_dice this turn produced, saved on the message so the animated
-          // dice card renders the same way a /roll does.
-          let toolDiceRollResult: DiceRollResult | null = null;
+          // Each generation attempt owns its rolls; swipes never inherit this list.
+          const toolDiceRollResults: DiceRollResult[] = [];
           let chatCompletionsReasoning: Record<string, unknown> | null = null;
           const rememberChatCompletionsReasoning = (metadata: Record<string, unknown>) => {
             chatCompletionsReasoning = readChatCompletionsReasoningMetadata(metadata) ?? metadata;
@@ -6545,6 +6550,45 @@ export async function generateRoutes(app: FastifyInstance) {
                 };
               }),
             });
+          };
+
+          const textChatOptions: ChatOptions = {
+            model: conn.model,
+            temperature,
+            maxTokens: effectiveMaxTokensForSend,
+            maxContext: effectiveMaxContext,
+            topP,
+            topK: providerTopK,
+            frequencyPenalty: frequencyPenalty || undefined,
+            presencePenalty: presencePenalty || undefined,
+            minP: minP || undefined,
+            stop: stopSequences.length ? stopSequences : undefined,
+            stream: input.streaming,
+            enableCaching: conn.enableCaching === "true",
+            anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
+            cachingAtDepth: conn.cachingAtDepth ?? 5,
+            enableThinking,
+            captureReasoning,
+            reasoningEffort: providerReasoningEffort,
+            excludePastReasoning,
+            verbosity: verbosity ?? undefined,
+            serviceTier,
+            customParameters,
+            enabledParameters,
+            suppressModelParameters,
+            openrouterProvider: conn.openrouterProvider ?? undefined,
+            onThinking,
+            onResponseParts: (parts) => {
+              geminiResponseParts = parts;
+            },
+            signal: abortController.signal,
+            encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
+            onEncryptedReasoning: excludePastReasoning
+              ? undefined
+              : (items) => {
+                  encryptedReasoningItems = items;
+                },
+            onChatCompletionsReasoning: rememberChatCompletionsReasoning,
           };
 
           let narratorMessages = initialProviderMessages;
@@ -6784,7 +6828,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   tr.name === "roll_dice" &&
                   tr.success;
                 const rolled = cardEligible ? parseRollDiceToolResult(tr.result) : null;
-                if (rolled) toolDiceRollResult = rolled;
+                if (rolled) toolDiceRollResults.push(rolled);
                 // A roll the model was handed but the player never sees cannot be diagnosed
                 // from the transcript alone, so say when a card is dropped.
                 if (cardEligible && !rolled) {
@@ -6996,44 +7040,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (!toolsAttached || gameToolPlan) {
             rememberMainPromptPreviewForAgents(narratorMessages);
             logPromptSentToModel(narratorMessages);
-            const gen = provider.chat(narratorMessages, {
-              model: conn.model,
-              temperature,
-              maxTokens: effectiveMaxTokensForSend,
-              maxContext: effectiveMaxContext,
-              topP,
-              topK: providerTopK,
-              frequencyPenalty: frequencyPenalty || undefined,
-              presencePenalty: presencePenalty || undefined,
-              minP: minP || undefined,
-              stop: stopSequences.length ? stopSequences : undefined,
-              stream: input.streaming,
-              enableCaching: conn.enableCaching === "true",
-              anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
-              cachingAtDepth: conn.cachingAtDepth ?? 5,
-              enableThinking,
-              captureReasoning,
-              reasoningEffort: providerReasoningEffort,
-              excludePastReasoning,
-              verbosity: verbosity ?? undefined,
-              serviceTier,
-              customParameters,
-              enabledParameters,
-              suppressModelParameters,
-              openrouterProvider: conn.openrouterProvider ?? undefined,
-              onThinking,
-              onResponseParts: (parts) => {
-                geminiResponseParts = parts;
-              },
-              signal: abortController.signal,
-              encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
-              onEncryptedReasoning: excludePastReasoning
-                ? undefined
-                : (items) => {
-                    encryptedReasoningItems = items;
-                  },
-              onChatCompletionsReasoning: rememberChatCompletionsReasoning,
-            });
+            const gen = provider.chat(narratorMessages, textChatOptions);
             try {
               let result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => gen.next());
               await recordAcceptedLongTermMemoryPrompt(narratorMessages);
@@ -7085,7 +7092,7 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          const durationMs = Date.now() - genStartTime;
+          let durationMs = Date.now() - genStartTime;
 
           if (input.debugMode && chatMode === "game") {
             debugLog(
@@ -7501,27 +7508,9 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          // ── Game post-processing seam: verbs are stripped, then checks are rolled ──
-          // Two Game-mode passes share this point, and the order between them is load-bearing
-          // rather than incidental, so it is stated here once instead of implied twice.
-          //
-          // The verb pass DELETES text: a matched verb tag leaves `fullResponse` entirely. The
-          // check pass only REWRITES a `[skill_check:]` tag in place, never adding or removing a
-          // bracket tag. The dependency therefore runs one way only. Strip first and the roller
-          // sees exactly the text that survives into the saved turn; roll first and a check the
-          // strip was about to carry off would still have thrown a real die and read the chat's
-          // modifier snapshot to write numbers nothing will ever display.
-          //
-          // A turn carrying both gets both: the verb executes (further down, against the turn's
-          // saved message) and the resolved check rides the same content_replace frame and the
-          // same save, so the number the model reads back next turn is the engine's.
-          //
-          // A verb-only turn strips to empty, and the roller early-returns on empty content — it
-          // can neither make an empty response non-empty nor empty a non-empty one. The
-          // `!fullResponse.trim()` anchor gate below therefore reaches the same verdict whether
-          // or not a check was in the turn, which is what keeps the verb-only anchor path intact
-          // and keeps a mixed turn off it: a surviving check tag is content, so a mixed turn
-          // falls through to the ordinary saved-message path and executes its verbs there.
+          // Strip package verbs before looking for roll tags, so a tag inside
+          // a verb's argument never rolls. If real dice require new narration,
+          // its commands are parsed afresh before any package verb executes.
 
           // ── Parse and strip package-declared GM verbs (#5798) ──
           // Game mode only, and a narrow path of its own: `conversationCommandsEnabled` gates the
@@ -7541,42 +7530,123 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          // ── Roll the GM's skill checks before anyone reads them ──
-          // The GM emits checks sparse and the engine owns the die, so every
-          // [skill_check:] tag that still owes a roll is resolved here and
-          // rewritten in place — all of them, not just the first, and including
-          // a tag whose self-reported d20 arithmetic fails the shared audit.
-          // This runs before the content_replace frame so the client renders the
-          // resolved text, and before the save so the number the model reads back
-          // next turn is the engine's, never its own invention.
-          //
-          // On a continue the whole message body is rewritten later from
-          // `fullResponse`; here `fullResponse` is still only the new segment,
-          // so already-resolved earlier text is never re-scanned.
-          //
-          // No try/catch here on purpose. A roll that cannot happen — the chat's
-          // modifiers failing to load is the realistic one — is the resolver's own
-          // failure to own, and it owns it by writing the tags back SPARSE rather
-          // than by throwing. Catching here and saving `fullResponse` unchanged is
-          // what saved the model's invented rolls/total/result, which is the whole
-          // dishonesty this path exists to end; it must not come back through the
-          // error door. The content therefore decides the frame and the save on
-          // both paths, because on both paths the text changed.
+          // Resolve this new segment before content_replace and persistence.
+          // A continuation's already-saved segment is never rolled again.
           if (chatMode === "game" && !input.impersonate) {
             const rolled = await resolveSkillCheckTagsInContent(fullResponse, {
               loadContext: () => loadSkillCheckModifierContext(app.db, input.chatId),
               chatId: input.chatId,
             });
-            if (rolled.content !== fullResponse) {
-              fullResponse = rolled.content;
+            const generalRolls = resolveGameDiceRequests(rolled.content, toolDiceRollResults);
+            if (generalRolls.content !== fullResponse) {
+              fullResponse = generalRolls.content;
               contentReplaced = true;
-              logger.debug(
-                "[generate/game] Resolved %d skill check tag(s) for chat %s (%d left as the GM wrote them, %d saved sparse)",
-                rolled.resolved,
-                input.chatId,
-                rolled.left,
-                rolled.sparse,
-              );
+            }
+            for (const result of generalRolls.diceRolls) {
+              toolDiceRollResults.push(result);
+              sendSseEvent(reply, {
+                type: "tool_result",
+                data: {
+                  name: "roll_dice",
+                  result: JSON.stringify(result),
+                  success: true,
+                  diceRollResult: result,
+                },
+              });
+            }
+            if (rolled.resolved || generalRolls.rolled) {
+              // The first draft predates these results. Rewrite it with the real
+              // outcomes in context, including on providers without a tools API.
+              const records = [...fullResponse.matchAll(createGameRollTagRegex())].map((match) => match[0]);
+              const resolvedSummary = [
+                ...(rolled.results ?? []).map(formatSkillCheckResultSummary),
+                ...generalRolls.checkResults.map(formatSkillCheckResultSummary),
+                ...generalRolls.diceRolls.map((result) => `🎲 ${result.notation} = ${result.total}`),
+              ].join("\n");
+              const continuationMessages = fitPromptForSend([
+                ...narratorMessages,
+                { role: "assistant", content: fullResponse },
+                {
+                  role: "user",
+                  content: `The engine has now rolled the requested dice:\n${resolvedSummary}\nRewrite your entire last narration using these real results, correcting any contradictory outcome before or after a check. Narrate the consequences now. Do not repeat this player's action, invent numbers, request more rolls, or include dice/check tags: the engine keeps their records. If another request remains unresolved, leave its outcome open. Include only commands still justified by these outcomes. Return only the complete revised GM narration in the game's language.`,
+                },
+              ]);
+              logPromptSentToModel(continuationMessages, "Game narration after engine rolls");
+              rememberMainPromptPreviewForAgents(continuationMessages);
+              // The replacement is a new assistant response; old native parts
+              // and reasoning envelopes cannot describe it.
+              geminiResponseParts = null;
+              chatCompletionsReasoning = null;
+              encryptedReasoningItems = undefined;
+              let narration = "";
+              const followup = provider.chat(continuationMessages, {
+                ...textChatOptions,
+                maxTokens: effectiveMaxTokensForSend,
+                encryptedReasoningItems: undefined,
+              });
+              try {
+                let next = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next());
+                while (!next.done) {
+                  if (abortController.signal.aborted) return null;
+                  narration += next.value;
+                  next = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => followup.next());
+                }
+                if (next.value) {
+                  const prior = usage;
+                  usage = { ...next.value };
+                  for (const key of [
+                    "promptTokens",
+                    "completionTokens",
+                    "totalTokens",
+                    "cachedPromptTokens",
+                    "cacheWritePromptTokens",
+                    "completionReasoningTokens",
+                    "completionAudioTokens",
+                    "acceptedPredictionTokens",
+                    "rejectedPredictionTokens",
+                  ] as const) {
+                    if (prior?.[key] != null) usage[key] = (usage[key] ?? 0) + prior[key];
+                  }
+                  finishReason = next.value.finishReason ?? finishReason;
+                }
+                const thinking = extractLeadingThinkingBlocks(narration, customThinkingTags);
+                narration = thinking.content;
+                if (thinking.thinking) fullThinking = [fullThinking, thinking.thinking].filter(Boolean).join("\n\n");
+              } catch (err) {
+                if (abortController.signal.aborted) return null;
+                geminiResponseParts = null;
+                chatCompletionsReasoning = null;
+                encryptedReasoningItems = undefined;
+                logger.warn(
+                  err,
+                  "[generate/game] Outcome narration failed; preserving the resolved rolls for chat %s",
+                  input.chatId,
+                );
+                narration = "";
+              } finally {
+                await followup.return?.().catch((closeError: unknown) => {
+                  logger.warn(closeError, "[generate/game] Failed to close the outcome narration stream");
+                });
+              }
+              // Keep the engine's records exactly once, even if the rewrite
+              // echoed or changed them. On failure, save the real results rather
+              // than the first draft's guessed outcome or a partial replacement.
+              narration = narration.replace(createGameRollTagRegex(), "").trim() || resolvedSummary;
+              fullResponse = [narration, ...records].join("\n");
+              if (hierarchicalMapsEnabledForChat) {
+                const spatial = extractAssistantSpatialDirective(fullResponse);
+                assistantSpatialDirectiveDetected = spatial.directive !== null;
+                assistantSpatialDirective = shouldSuppressAssistantSpatialMutation(input) ? null : spatial.directive;
+                fullResponse = spatial.cleanContent;
+              }
+              collectedGmVerbCalls = [];
+              if (gmVerbTable) {
+                const verbs = parseAndStripGmVerbCalls(fullResponse, gmVerbTable);
+                collectedGmVerbCalls = verbs.calls;
+                fullResponse = verbs.content;
+              }
+              contentReplaced = true;
+              durationMs = Date.now() - genStartTime;
             }
           }
 
@@ -8004,13 +8074,18 @@ export async function generateRoutes(app: FastifyInstance) {
             }
             extraUpdate.generationReplay = buildGenerationReplay(input);
             extraUpdate.startsNewAssistantBubble = startsNewAssistantBubble;
-            // Same message-extra /roll writes, so a GM-called roll survives a reload wherever
-            // the chat surfaces render it. The Game surface itself still draws its card from
-            // the live store, exactly as it does for /roll, so dismissing it there still
-            // dismisses it. Only the last roll of a multi-roll turn is kept. Cleared when this
-            // swipe rolled nothing, so a reroll of a swipe that did cannot leave its card behind.
-            // A continuation still contains the original roll, unless this extension replaces it.
-            if (toolDiceRollResult || !input.continueMessageId) extraUpdate.diceRollResult = toolDiceRollResult;
+            if (chatMode === "game") {
+              const previousExtra = input.continueMessageId ? parseExtra(savedMsg.extra) : {};
+              const previousRolls = previousExtra.diceRollResults ?? previousExtra.diceRollResult;
+              const retainedRolls = (Array.isArray(previousRolls) ? previousRolls : [previousRolls])
+                .map((roll) => parseRollDiceToolResult(JSON.stringify(roll) ?? ""))
+                .filter((roll): roll is DiceRollResult => roll !== null);
+              extraUpdate.diceRollResults = [...retainedRolls, ...toolDiceRollResults];
+              // Message-extra updates are shallow: clear a legacy card on every new swipe.
+              extraUpdate.diceRollResult = null;
+            } else if (toolDiceRollResults.length || !input.continueMessageId) {
+              extraUpdate.diceRollResult = toolDiceRollResults.at(-1) ?? null;
+            }
             // Cache the final prompt (what was actually sent to the model) for Peek Prompt
             extraUpdate.cachedPrompt = finalPromptSent.map((m) => ({
               role: m.role,

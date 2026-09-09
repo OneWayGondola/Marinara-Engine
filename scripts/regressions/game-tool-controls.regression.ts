@@ -33,6 +33,7 @@ const order: string[] = [];
 let expectPlan = true;
 let emptyPlan = false;
 let rejectPlan = false;
+let requestTextRoll = false;
 const originalPlanner = OpenAIProvider.prototype.chatComplete;
 OpenAIProvider.prototype.chatComplete = async (messages, options) => {
   order.push("planner");
@@ -75,10 +76,12 @@ async function* narrator(messages: ChatMessage[], options: ChatOptions): AsyncGe
   assert.doesNotMatch(JSON.stringify(messages), /PRIVATE PLANNER/);
   assert.ok(messages.every((message) => !message.tool_calls && !message.tool_call_id && message.role !== "tool"));
   if (expectPlan && !emptyPlan) {
-    assert.match(messages.at(-1)!.content, /"total":[2-4]/);
-    assert.match(messages.at(-1)!.content, /Tool not allowed in this context: web_search/);
+    const context = messages.map((message) => message.content).join("\n");
+    assert.match(context, /"total":[2-4]/);
+    assert.match(context, /Tool not allowed in this context: web_search/);
   }
-  yield "The gate opens with the recorded result.";
+  const outcomeRewrite = messages.at(-1)?.content.includes("The engine has now rolled the requested dice:");
+  yield requestTextRoll && !outcomeRewrite ? "[dice: d1]" : "The gate opens with the recorded result.";
   return { promptTokens: 11, completionTokens: 5, totalTokens: 16, finishReason: "stop" };
 }
 const originals = [
@@ -158,6 +161,21 @@ try {
       assert.equal(extra.generationInfo.tokensPrompt, 11, "planner usage cannot be charged to the narrator model");
       assert.doesNotMatch(JSON.stringify(extra), /PRIVATE PLANNER|private-signature/);
       if (!noCalls) assert.match(response.body, /"diceRollResult":/);
+    }
+    if (provider === "claude_subscription") {
+      requestTextRoll = true;
+      emptyPlan = false;
+      order.length = 0;
+      const rolled = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
+      assert.ok(!rolled.body.includes('"type":"error"'), rolled.body);
+      assert.deepEqual(order, ["planner", "narrator", "narrator"]);
+      const message = (await chats.listMessages(chat.id)).at(-1)!;
+      assert.match(
+        message.content,
+        /The gate opens with the recorded result/,
+        "the outcome rewrite keeps the separate planner's results",
+      );
+      requestTextRoll = false;
     }
     if (provider !== "google") {
       expectPlan = false;
