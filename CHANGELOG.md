@@ -60,6 +60,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Roleplay Commands now offer narrator-only dice rolls and combat, apply a named character’s RPG attribute modifiers, and pass named avatars and chat settings to Illustrator. Combat and illustration commands require their agents in the chat. Collapsed command notices reveal original requests on tap and let you edit or remove attached notes, reminders, and documents per swipe. Command settings and prompts are clearer (#5990).
 
+- Roleplay documents appear inside messages with built-in note, letter, journal, report, poster, and terminal styles. The model supplies plain text while the Engine handles formatting, including in Visual Novel mode; saved documents remain editable and removable (#6030).
+
 - Game chats can use a separate connection for one tool-planning request before narration and enable semantic lorebook search independently. Tool settings explain unsupported subscription connections, vectorization prerequisites, and the extra requests (#5955, #5957, #5958).
 
 - Added OpenAI GPT Image 2.5 Flare and Sunburst for image generation and reference edits, including transparent PNGs, custom image sizes, and the new Extra high and Max quality settings.
@@ -119,10 +121,11 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 - Preset `{{model}}` macros now use the model selected for the generation or preview, including connection overrides (#6018).
 - Restored the character DM switch under Roleplay Connected Chats, using the same permissions as Roleplay Commands (#6019).
-- Illustrator respects its automatic Run Interval when Roleplay illustration commands are enabled; an explicit turn illustration takes precedence (#6020).
+- Illustrator keeps its automatic Run Interval when Roleplay illustration commands are enabled. Character requests add extra images, including on turns with an automatic illustration (#6020).
 - Deleting a library character removes it from Game parties and saved setup choices, and party counts ignore already deleted cards (#6021).
 - Reply actions appear only in Conversation, with an explanation in its Help legend (#6023).
 - Visual Novel history opens at the latest message with compact controls attached to its box. Sprites retain configured sizes, inactive characters fade, and turn illustrations appear above the message behind sprites and open at full size on tap (#6024).
+- Visual Novel's expanded history border ends above its attached collapse arrow, and the empty-scene instruction follows the selected chat chroma text color (#6032).
 - New Game setup uses the character library for its Game Master and party pickers (#6025).
 
 - Conversation swipe controls align with the start of the message row. Hidden mobile actions and disabled swipe controls no longer leave unused space below messages (#6009).
