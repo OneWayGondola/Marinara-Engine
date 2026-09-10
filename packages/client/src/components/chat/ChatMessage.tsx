@@ -70,6 +70,7 @@ import { createMessageMacroResolver } from "../../lib/chat-macros";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { getDefaultChatTextColor, useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
+import { hasActiveTextSelection } from "../../lib/text-selection";
 import { parseChatMetadata } from "../../lib/chat-display";
 import { useTranslate } from "../../hooks/use-translate";
 import { api } from "../../lib/api-client";
@@ -2089,6 +2090,7 @@ export const ChatMessage = memo(function ChatMessage({
         return false;
       }
       if (isMessageQuickEditIgnoredTarget(target)) return false;
+      if (matchMedia("(pointer: coarse)").matches && hasActiveTextSelection()) return false;
       window.getSelection()?.removeAllRanges();
       setShowActions(false);
       startEditing();
@@ -2125,6 +2127,10 @@ export const ChatMessage = memo(function ChatMessage({
 
   const handleMobileTap = useCallback(
     (e: React.MouseEvent) => {
+      if (matchMedia("(pointer: coarse)").matches && hasActiveTextSelection()) {
+        lastQuickTapRef.current = null;
+        return;
+      }
       // In multi-select mode, clicking toggles selection on any device
       if (multiSelectMode) {
         onToggleSelect?.({

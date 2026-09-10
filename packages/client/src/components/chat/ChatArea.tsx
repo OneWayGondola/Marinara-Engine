@@ -33,6 +33,7 @@ import {
 } from "../../hooks/use-chats";
 
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
+import { hasActiveTextSelection } from "../../lib/text-selection";
 import { useGenerate } from "../../hooks/use-generate";
 import { useGenerateGallerySelfie } from "../../hooks/use-gallery";
 import {
@@ -284,6 +285,7 @@ const shouldIgnoreIntuitiveSwipeTarget = (
   target: EventTarget | null,
   { allowEmptyMainComposer = false }: { allowEmptyMainComposer?: boolean } = {},
 ): boolean => {
+  if (hasActiveTextSelection()) return true;
   if (!(target instanceof Element)) return false;
   if (
     allowEmptyMainComposer &&
@@ -2509,6 +2511,7 @@ export const ChatArea = memo(function ChatArea() {
   const openedAtBottomChatIdRef = useRef<string | null>(null);
   const streamScrollFrameRef = useRef(0);
   const scrollToMessagesBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    if (hasActiveTextSelection()) return;
     const el = scrollRef.current;
     if (el) {
       el.scrollTo({ top: el.scrollHeight, behavior });
@@ -2567,19 +2570,26 @@ export const ChatArea = memo(function ChatArea() {
 
     let frame = 0;
     const scrollWhenSurfaceIsReady = () => {
+      if (frame) cancelAnimationFrame(frame);
+      if (hasActiveTextSelection()) return;
       if (!scrollRef.current && !messagesEndRef.current) {
         frame = requestAnimationFrame(scrollWhenSurfaceIsReady);
         return;
       }
 
+      document.removeEventListener("selectionchange", scrollWhenSurfaceIsReady);
       openedAtBottomChatIdRef.current = activeChatId;
       userScrolledAwayRef.current = false;
       isNearBottomRef.current = true;
       scheduleScrollToMessagesBottom("auto");
     };
 
+    document.addEventListener("selectionchange", scrollWhenSurfaceIsReady);
     scrollWhenSurfaceIsReady();
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", scrollWhenSurfaceIsReady);
+    };
   }, [activeChatId, isFetchingNextPage, isLoading, loadedMessageCount, scheduleScrollToMessagesBottom]);
 
   useEffect(() => {

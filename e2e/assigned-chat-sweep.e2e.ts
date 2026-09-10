@@ -390,3 +390,202 @@ test("Conversation Help explains the Reply action", async ({ page, request, isMo
     await data.cleanup();
   }
 });
+
+for (const mode of ["roleplay", "conversation"] as const) {
+  test(`${mode}: native text selection pauses automatic scrolling and touch shortcuts`, async ({
+    page,
+    request,
+    isMobile,
+  }, info) => {
+    const data = await fixture(request, mode);
+    const landingChat = await (
+      await request.post("/api/chats", {
+        data: { name: "Before opening selected history", mode, characterIds: [] },
+      })
+    ).json();
+    try {
+      for (let index = 0; index < 8; index++) {
+        const response = await request.post(`/api/chats/${data.chat.id}/messages`, {
+          data: {
+            role: "assistant",
+            characterId: data.character.id,
+            content: `Selection history ${index}. ${"A quiet laboratory. ".repeat(12)}`,
+          },
+        });
+        expect(response.ok()).toBeTruthy();
+      }
+      await open(page, landingChat.id, {
+        editMessageOnDoubleClick: true,
+        intuitiveSwipeNavigation: true,
+        streamingSpeed: 100,
+      });
+      // An existing browser selection must delay, rather than consume, the
+      // incoming chat's one-time initial scroll to its latest message.
+      await page.evaluate(async (chatId) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        const marker = document.createElement("span");
+        marker.id = "native-selection-fixture";
+        marker.style.position = "fixed";
+        marker.textContent = "Selection while opening chat";
+        document.body.append(marker);
+        const range = document.createRange();
+        range.selectNodeContents(marker);
+        document.getSelection()!.removeAllRanges();
+        document.getSelection()!.addRange(range);
+        useChatStore.getState().setActiveChatId(chatId);
+      }, data.chat.id);
+      const transcript = page.locator("[data-chat-scroll]:visible").first();
+      const composer = page.locator("textarea[data-chat-composer]:visible");
+      const lastRow = transcript.locator("[data-message-id]").last();
+      await expect(lastRow).toContainText("Selection history 7");
+      await expect.poll(() => transcript.evaluate((el) => el.scrollTop)).toBe(0);
+      await page.evaluate(() => {
+        document.getSelection()?.removeAllRanges();
+        document.getElementById("native-selection-fixture")?.remove();
+      });
+      await expect
+        .poll(() => transcript.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(3);
+      const row = transcript.locator(`[data-message-id="${await lastRow.getAttribute("data-message-id")}"]`);
+      await page.evaluate(async (chatId) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        useChatStore.getState().setStreaming(true, chatId);
+        useChatStore.getState().setStreamBuffer("A new turn begins.", chatId);
+      }, data.chat.id);
+      await expect(transcript.getByText("A new turn begins.", { exact: true })).toBeVisible();
+      await expect
+        .poll(() => transcript.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(3);
+
+      for (const selectionTarget of ["message", "composer"] as const) {
+        if (selectionTarget === "message") {
+          await row.evaluate((el) => {
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const index = walker.currentNode.textContent?.indexOf("quiet laboratory") ?? -1;
+              if (index < 0) continue;
+              const range = document.createRange();
+              range.setStart(walker.currentNode, index);
+              range.setEnd(walker.currentNode, index + "quiet laboratory".length);
+              document.getSelection()!.removeAllRanges();
+              document.getSelection()!.addRange(range);
+              break;
+            }
+          });
+          await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("quiet laboratory");
+          if (isMobile) {
+            // Native selection handles are OS UI. These events exercise the app's
+            // competing handlers while a real browser Selection remains active.
+            await row.dispatchEvent("click", { clientX: 80, clientY: 250 });
+            await row.dispatchEvent("click", { clientX: 80, clientY: 250 });
+            await row.dispatchEvent("dblclick", { clientX: 80, clientY: 250 });
+            await expect(page.locator("[data-chat-message-editor]")).toHaveCount(0);
+            await expect.poll(() => page.evaluate(() => document.getSelection()?.toString())).toBe("quiet laboratory");
+          }
+        } else {
+          await composer.fill("Keep this selected draft text.");
+          await composer.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(5, 18));
+          const shell = composer.locator("..");
+          await shell.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+          await expect
+            .poll(() =>
+              composer.evaluate((el: HTMLTextAreaElement) => el.value.slice(el.selectionStart, el.selectionEnd)),
+            )
+            .toBe("this selected");
+        }
+        const before = await transcript.evaluate((el) => el.scrollTop);
+        const nextText = `A new turn begins. ${selectionTarget} continuation. ${"More narrative arrives while text is selected. ".repeat(selectionTarget === "message" ? 8 : 16)}`;
+        await page.evaluate(
+          async ({ chatId, text }) => {
+            const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+            useChatStore.getState().setStreamBuffer(text, chatId);
+          },
+          { chatId: data.chat.id, text: nextText },
+        );
+        await expect(transcript.getByText(nextText, { exact: true })).toBeVisible();
+        // Allow both scheduled bottom-follow frames to run after the DOM paint.
+        await page.evaluate(
+          () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+        );
+        expect(Math.abs((await transcript.evaluate((el) => el.scrollTop)) - before)).toBeLessThan(3);
+        await info.attach(`${mode}-${selectionTarget}-selection-${info.project.name}.png`, {
+          body: await page.screenshot({ path: info.outputPath(`${mode}-${selectionTarget}-selection.png`) }),
+          contentType: "image/png",
+        });
+        await page.evaluate(() => {
+          document.getSelection()?.removeAllRanges();
+          const el = document.activeElement;
+          if (el instanceof HTMLTextAreaElement) el.setSelectionRange(el.value.length, el.value.length);
+        });
+        await transcript.evaluate((el) => {
+          el.scrollTop = el.scrollHeight;
+        });
+      }
+      await composer.blur();
+      await transcript.evaluate(
+        (el) =>
+          new Promise<void>((resolve) => {
+            el.scrollTop = el.scrollHeight;
+            // The scroll listener must observe the user's return before the next token.
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+      await page.evaluate(async (chatId) => {
+        const { useChatStore } = await import("/src/stores/chat.store.ts" as string);
+        useChatStore
+          .getState()
+          .setStreamBuffer(`Normal following resumes. ${"Continue the scene. ".repeat(80)}`, chatId);
+      }, data.chat.id);
+      await expect
+        .poll(() => transcript.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(3);
+    } finally {
+      await data.cleanup();
+      await request.delete(`/api/chats/${landingChat.id}`);
+    }
+  });
+}
+
+test("Echo Chamber rejects malformed saved and live reactions without crashing the chat", async ({ page, request }) => {
+  const data = await fixture(request, "roleplay");
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    expect(
+      (
+        await request.patch(`/api/chats/${data.chat.id}/metadata`, {
+          data: { enableAgents: true, activeAgentIds: ["echo-chamber"] },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    await page.route(`**/api/agents/echo-messages/${data.chat.id}`, (route) =>
+      route.fulfill({
+        json: [
+          null,
+          { reaction: "No name" },
+          { characterName: 123, reaction: "Invalid name" },
+          { characterName: "Reader", reaction: { text: "Invalid reaction" } },
+          { characterName: "Reader", reaction: "Valid saved reaction", timestamp: 1 },
+        ],
+      }),
+    );
+    await open(page, data.chat.id, { echoChamberOpen: true });
+    const echo = page.locator('[data-roleplay-agent-window="echo"]');
+    await expect(echo.getByText("Valid saved reaction", { exact: true })).toBeVisible();
+    await page.evaluate(async () => {
+      const { useAgentStore } = await import("/src/stores/agent.store.ts" as string);
+      const store = useAgentStore.getState();
+      store.enqueueEchoMessages([
+        null,
+        { reaction: "Missing name" },
+        { characterName: "Reader", reaction: "Valid live reaction" },
+      ]);
+      store.revealNextEchoMessage();
+    });
+    await expect(echo.getByText("Valid live reaction", { exact: true })).toBeVisible();
+    await expect(page.locator("textarea[data-chat-composer]")).toBeVisible();
+    expect(errors).toEqual([]);
+  } finally {
+    await data.cleanup();
+  }
+});
