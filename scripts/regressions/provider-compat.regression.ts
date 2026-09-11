@@ -16,6 +16,7 @@ import {
 } from "../../packages/server/src/services/llm/providers/glm-request-compat.js";
 import {
   describeEmptyModelResponse,
+  sentOutputBudget,
   GENERIC_EMPTY_RESPONSE_MESSAGE,
 } from "../../packages/server/src/services/generation/empty-response-reason.js";
 import {
@@ -1608,6 +1609,22 @@ assert.equal(
   'The AI returned an empty response (finish reason "stop"). Try sending your message again.',
 );
 assert.equal(describeEmptyModelResponse({ hadThinking: false }), GENERIC_EMPTY_RESPONSE_MESSAGE);
+// The quoted budget is the one the provider sent: the route's number capped by the
+// connection override, as BaseLLMProvider.applyMaxTokensCap does on the way out.
+// Seen live 2026-09-11: override 16, route 4096, wire max_tokens=16, message said "16 of 4096".
+assert.equal(sentOutputBudget(4096, 16), 16);
+assert.equal(sentOutputBudget(4096, null), 4096);
+assert.equal(sentOutputBudget(4096, 0), 4096, "a zero override is no override");
+assert.equal(sentOutputBudget(undefined, 16), undefined, "no route budget stays unknown");
+assert.equal(
+  describeEmptyModelResponse({
+    finishReason: "length",
+    usage: { completionTokens: 16, completionReasoningTokens: 16 },
+    maxTokens: sentOutputBudget(4096, 16),
+    hadThinking: true,
+  }),
+  "The model used its whole output budget (16 of 16 output tokens, 16 of them reasoning) before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.",
+);
 
 const nanogptMandatoryGlmBody: Record<string, unknown> = {};
 applyGlmThinkingParameters(nanogptMandatoryGlmBody, {

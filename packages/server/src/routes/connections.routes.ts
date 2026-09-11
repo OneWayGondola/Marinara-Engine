@@ -28,7 +28,7 @@ import { canRefreshLocalContext, fetchLocalContextLimit } from "../services/llm/
 import { resetMemoryRecallVectorizerCache } from "../services/memory-recall-embedding.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
-import { describeEmptyModelResponse } from "../services/generation/empty-response-reason.js";
+import { describeEmptyModelResponse, sentOutputBudget } from "../services/generation/empty-response-reason.js";
 import { isGlm53MandatoryReasoningModel } from "../services/llm/providers/glm-request-compat.js";
 import { fetchOpenAIChatGPTModels, getOpenAIChatGPTAuth } from "../services/llm/openai-chatgpt-auth.js";
 import { fetchGrokCliModels } from "../services/llm/providers/grok-subscription.provider.js";
@@ -1572,7 +1572,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
         : describeEmptyModelResponse({
             finishReason: usage?.finishReason,
             usage,
-            maxTokens,
+            maxTokens: sentOutputBudget(maxTokens, conn.maxTokensOverride),
             hadThinking: (usage?.completionReasoningTokens ?? 0) > 0,
           });
 

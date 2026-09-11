@@ -394,7 +394,7 @@ import {
   tryClaimCustomLorebookReadBehindRun,
 } from "./generate/lorebook-keeper-utils.js";
 import { registerDryRunRoute } from "./generate/dry-run-route.js";
-import { describeEmptyModelResponse } from "../services/generation/empty-response-reason.js";
+import { describeEmptyModelResponse, sentOutputBudget } from "../services/generation/empty-response-reason.js";
 import { registerRawRoute } from "./generate/raw-route.js";
 import { registerRetryAgentsRoute, type ActiveAgentRun } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
@@ -7861,7 +7861,7 @@ export async function generateRoutes(app: FastifyInstance) {
             const emptyResponseMessage = describeEmptyModelResponse({
               finishReason,
               usage,
-              maxTokens: effectiveMaxTokensForSend,
+              maxTokens: sentOutputBudget(effectiveMaxTokensForSend, conn.maxTokensOverride),
               hadThinking: providerThinking.trim().length > 0 || fullThinking.trim().length > 0,
             });
             logger.warn(
@@ -7879,7 +7879,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 finishReason: finishReason ?? null,
                 completionTokens: usage?.completionTokens ?? null,
                 completionReasoningTokens: usage?.completionReasoningTokens ?? null,
-                maxTokens: effectiveMaxTokensForSend ?? null,
+                maxTokens: sentOutputBudget(effectiveMaxTokensForSend, conn.maxTokensOverride) ?? null,
               },
               "[generate] Empty response after post-processing",
             );
