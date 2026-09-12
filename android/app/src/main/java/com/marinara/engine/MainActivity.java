@@ -104,6 +104,7 @@ public class MainActivity extends Activity {
     private static final String INSTALL_SESSION_PREF = "termux_install_session";
     private static final String INSTALL_NONCE_PREF = "termux_install_nonce";
     private static final String SETUP_IN_PROGRESS_PREF = "termux_setup_in_progress";
+    private static final String START_REQUESTED_PREF = "termux_start_requested";
     private static final String TERMUX_HOME = "/data/data/com.termux/files/home";
     private static final String TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash";
     private static final String TERMUX_EXTERNAL_APPS_COMMAND =
@@ -122,7 +123,6 @@ public class MainActivity extends Activity {
     private boolean isDownloadingTermux;
     private boolean pendingStartAfterTermuxInstall;
     private boolean isCheckingServer;
-    private boolean startRequested;
     private boolean mainFrameLoadFailed;
     private boolean connectionRetryPaused;
     private volatile boolean bridgeEnabled;
@@ -368,13 +368,13 @@ public class MainActivity extends Activity {
                     ? prepareBrowserTicket(attempt.session) : null;
             runOnUiThread(() -> {
                 isCheckingServer = false;
-                if (connectionRetryPaused) return;
+                if (isDestroyed() || connectionRetryPaused) return;
                 if (openInBrowser != shouldOpenInBrowser()) {
                     tryConnect();
                     return;
                 }
                 if (attempt.session != null) {
-                    startRequested = false;
+                    setStartRequested(false);
                     setTermuxSetupInProgress(false);
                     if (openInBrowser) {
                         pauseConnectionRetryLoop();
@@ -392,10 +392,10 @@ public class MainActivity extends Activity {
                             attempt.session.formBody().getBytes(StandardCharsets.UTF_8)
                     );
                 } else if (attempt.manualServerDetected) {
-                    startRequested = false;
+                    setStartRequested(false);
                     showManualServerOption();
-                } else if (startRequested) {
-                    startRequested = false;
+                } else if (isStartRequested()) {
+                    setStartRequested(false);
                     beginTermuxSetup();
                 } else {
                     retryConnection();
@@ -475,6 +475,7 @@ public class MainActivity extends Activity {
     }
 
     private void pauseConnectionRetryLoop() {
+        setStartRequested(false);
         connectionRetryPaused = true;
         cancelPendingConnectionRetry();
     }
@@ -780,7 +781,7 @@ public class MainActivity extends Activity {
             return;
         }
         // Authenticate a running server before asking Termux to start another session.
-        startRequested = true;
+        setStartRequested(true);
         resumeConnectionRetryLoop();
         tryConnect();
     }
@@ -1103,6 +1104,16 @@ public class MainActivity extends Activity {
             setTermuxSetupInProgress(false);
             showManualTermuxSetupInstructions("Android blocked the Termux setup launch.");
         }
+    }
+
+    private boolean isStartRequested() {
+        return getSharedPreferences(SECURITY_PREFS, MODE_PRIVATE).getBoolean(START_REQUESTED_PREF, false);
+    }
+
+    private void setStartRequested(boolean requested) {
+        // A pending authenticated probe must survive Activity recreation too.
+        getSharedPreferences(SECURITY_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(START_REQUESTED_PREF, requested).apply();
     }
 
     private void setTermuxSetupInProgress(boolean inProgress) {
@@ -1630,6 +1641,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (isFinishing()) setStartRequested(false);
         bridgeEnabled = false;
         bridgeToken = null;
         cancelPendingConnectionRetry();

@@ -295,3 +295,16 @@ assert.equal(
   "",
   "an oversized first appearance is omitted instead of truncating its text",
 );
+
+assert.equal(
+  buildUncaptionedCharacterAppearanceBlock(
+    [
+      { name: "Aster", appearance: atLimitAppearance + "x" },
+      { name: "Briar", appearance: "blue hair" },
+    ],
+    ["Aster", "Briar"],
+    [],
+  ),
+  "Briar's Appearance: blue hair",
+  "an oversized entry does not discard later appearances that fit the budget",
+);

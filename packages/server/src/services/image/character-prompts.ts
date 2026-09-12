@@ -258,7 +258,7 @@ export function buildUncaptionedCharacterAppearanceBlock(
       if (!name || covered.has(name) || !segment.appearance) continue;
       const line = `${name}'s Appearance: ${segment.appearance}`;
       const length = line.length + (lines.length > 0 ? 1 : 0);
-      if (used + length > MAX_APPEARANCE_REFERENCE_CHARS) return lines.join("\n");
+      if (used + length > MAX_APPEARANCE_REFERENCE_CHARS) continue;
       used += length;
       covered.add(name);
       lines.push(line);
