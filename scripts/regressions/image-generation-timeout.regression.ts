@@ -46,7 +46,9 @@ try {
     assert.equal((await generate(path)).base64, png, `${path} must honor the configured image timeout`);
   }
 
+  const abortStartedAt = Date.now();
   await assert.rejects(generate("stall", AbortSignal.timeout(50)), /timeout|aborted/i);
+  assert.ok(Date.now() - abortStartedAt < 1000, "Caller cancellation must settle before the image deadline");
   await assert.rejects(generate("stall"), /5000|5 seconds/);
 } finally {
   server.closeAllConnections();
