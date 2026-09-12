@@ -407,6 +407,7 @@ try {
   const routeApp = {
     server: routeServer,
     hasRoute: () => false,
+    addContentTypeParser: () => routeApp,
     route: () => {
       registeredRoutes++;
     },
@@ -445,6 +446,7 @@ try {
   const rootRouteApp = {
     server: { listening: false },
     hasRoute: () => false,
+    addContentTypeParser: () => rootRouteApp,
     route: (definition: { url: string }) => assert.equal(definition.url, "/api/root-package"),
   } as Parameters<typeof registerCapabilityPrivilegedRoutes>[0];
   const rootRoutePackage = installedPackage("root-package", ["agent"]);

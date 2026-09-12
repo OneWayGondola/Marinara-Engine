@@ -28,6 +28,7 @@ type RouteSlot = {
 };
 type PreparedRoute = RouteDefinition & { key: string; path: string; existing?: RouteSlot };
 type InternalRouteState = { packageId: string; active: boolean; registrations: number; token: string };
+type ContentTypeParser = Parameters<FastifyInstance["addContentTypeParser"]>;
 
 const slotsByApp = new WeakMap<FastifyInstance, Map<string, RouteSlot>>();
 const internalRoutesByApp = new WeakMap<FastifyInstance, Map<string, InternalRouteState>>();
@@ -62,6 +63,14 @@ function createRouteCollector(definitions: RouteDefinition[]) {
   };
 }
 
+function createCapabilityRouteApi(definitions: RouteDefinition[], parsers: ContentTypeParser[]) {
+  return Object.assign(createRouteCollector(definitions), {
+    addContentTypeParser: (...args: ContentTypeParser) => {
+      parsers.push(args);
+    },
+  });
+}
+
 export async function registerCapabilityPrivilegedRoutes(
   app: FastifyInstance,
   installed: InstalledCapabilityPackage,
@@ -77,7 +86,8 @@ export async function registerCapabilityPrivilegedRoutes(
   }
 
   const definitions: RouteDefinition[] = [];
-  await routes(createRouteCollector(definitions) as unknown as FastifyInstance, {});
+  const parsers: ContentTypeParser[] = [];
+  await routes(createCapabilityRouteApi(definitions, parsers) as unknown as FastifyInstance, {});
   const slots = slotsByApp.get(app) ?? new Map<string, RouteSlot>();
   slotsByApp.set(app, slots);
   const internalRoutes = internalRoutesByApp.get(app) ?? new Map<string, InternalRouteState>();
@@ -107,6 +117,11 @@ export async function registerCapabilityPrivilegedRoutes(
       `Capability package ${installed.id} must be restarted before new privileged routes can be activated`,
     );
   }
+  if (app.server.listening && parsers.length > 0) {
+    throw new Error(
+      `Capability package ${installed.id} must be restarted before new content type parsers can be activated`,
+    );
+  }
 
   const ownedSlots: RouteSlot[] = [];
   const internalRouteState = internalRoutes.get(options.prefix) ?? {
@@ -119,7 +134,12 @@ export async function registerCapabilityPrivilegedRoutes(
     RouteSlot,
     Pick<RouteSlot, "active" | "handler" | "internalRouteState" | "registrations">
   >();
+  const appliedParsers: ContentTypeParser[] = [];
   try {
+    for (const parser of parsers) {
+      app.addContentTypeParser(...parser);
+      appliedParsers.push(parser);
+    }
     internalRouteState.registrations += 1;
     internalRouteState.active = true;
     internalRoutes.set(options.prefix, internalRouteState);
@@ -163,6 +183,11 @@ export async function registerCapabilityPrivilegedRoutes(
       } as RouteOptions);
     }
   } catch (error) {
+    if (!app.server.listening) {
+      for (const parser of appliedParsers) {
+        app.removeContentTypeParser(parser[0]);
+      }
+    }
     internalRouteState.registrations = Math.max(0, internalRouteState.registrations - 1);
     internalRouteState.active = internalRouteState.registrations > 0;
     for (const slot of ownedSlots) {
@@ -180,6 +205,9 @@ export async function registerCapabilityPrivilegedRoutes(
     for (const slot of ownedSlots) {
       slot.registrations = Math.max(0, slot.registrations - 1);
       if (slot.registrations === 0) slot.active = false;
+    }
+    if (!app.server.listening) {
+      for (const parser of appliedParsers) app.removeContentTypeParser(parser[0]);
     }
     if (internalRoutes.get(options.prefix) === internalRouteState) {
       internalRouteState.registrations = Math.max(0, internalRouteState.registrations - 1);
