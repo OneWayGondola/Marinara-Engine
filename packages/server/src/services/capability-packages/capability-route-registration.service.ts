@@ -209,6 +209,9 @@ export async function registerCapabilityPrivilegedRoutes(
       slot.registrations = Math.max(0, slot.registrations - 1);
       if (slot.registrations === 0) slot.active = false;
     }
+    if (!app.server.listening) {
+      for (const parser of appliedParsers) app.removeContentTypeParser(parser[0]);
+    }
     if (internalRoutes.get(options.prefix) === internalRouteState) {
       internalRouteState.registrations = Math.max(0, internalRouteState.registrations - 1);
       internalRouteState.active = internalRouteState.registrations > 0;
