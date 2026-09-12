@@ -284,7 +284,7 @@ function hashStringToUint32(value: string): number {
   return hash >>> 0;
 }
 
-function seededUnitRandom(seed: string): number {
+export function seededUnitRandom(seed: string): number {
   let state = hashStringToUint32(seed) || 0x9e3779b9;
   state ^= state << 13;
   state ^= state >>> 17;
@@ -453,7 +453,7 @@ export const SUPPORTED_MACROS: readonly SupportedMacroDefinition[] = [
   {
     category: "Game",
     syntax: "{{gameStoryboardKeyframeCount}}",
-    description: "Current Game Mode Keyframes per Turn target (1-6, default 3)",
+    description: "Current Game Mode Keyframes per Turn target (1-200, default 3)",
   },
   { category: "Time", syntax: "{{date}}", description: "Current real date in the user's timezone" },
   { category: "Time", syntax: "{{time}}", description: "Current real time in the user's timezone" },
@@ -587,9 +587,10 @@ export function resolveCharacterScopedMacros(
   const scopedContext = macroContextForCharacterProfile(profile, baseContext);
   const scoped = resolveConditionalBlocks(stripMacroComments(template), scopedContext, {});
   return scoped
-    .replace(/\{\{\s*char(?:Name)?\s*\}\}/gi, profile.name)
-    .replace(/\{\{\s*char(?:Name)?Phonetic\s*\}\}/gi, profile.phoneticName ?? profile.name)
-    .replace(/\{\{\s*group\s*\}\}/gi, resolveGroupCharacters(scopedContext))
+    .replace(/\{\{\s*original\s*\}\}/gi, "")
+    .replace(/\{\{\s*char(?:Name)?\s*\}\}/gi, () => profile.name)
+    .replace(/\{\{\s*char(?:Name)?Phonetic\s*\}\}/gi, () => profile.phoneticName ?? profile.name)
+    .replace(/\{\{\s*group\s*\}\}/gi, () => resolveGroupCharacters(scopedContext))
     .replace(/\{\{\s*description\s*\}\}/gi, () =>
       resolveCharacterFieldValue(profile, "description", depth, baseContext),
     )
@@ -1543,6 +1544,26 @@ function parseElseIfCondition(body: string): string | null {
   return match ? (match[1] ?? "").trim() : null;
 }
 
+/** Detect authored field references without treating comments or literal prose as macros. */
+export function templateReferencesAnyMacro(template: string, names: readonly string[]): boolean {
+  const aliases = new Set(names.map((name) => name.toLowerCase()));
+  for (const [, body] of stripMacroComments(template).matchAll(/\{\{([^{}]*?)\}\}/g)) {
+    if (aliases.has(body!.toLowerCase())) return true;
+    const condition = parseIfCondition(body!.trim()) ?? parseElseIfCondition(body!.trim());
+    if (condition === null) continue;
+    if (
+      parseConditionComparisons(condition).some(({ left, right }) =>
+        [left, right].some(
+          (operand) =>
+            operand !== undefined && stripOuterQuotes(operand) === null && aliases.has(normalizeConditionKey(operand)),
+        ),
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
 function findConditionalStart(input: string, fromIndex: number): ConditionalStartTag | null {
   let searchIndex = fromIndex;
   while (searchIndex < input.length) {
@@ -1847,7 +1868,8 @@ const AGENT_CONDITIONAL_ENTITY_REPLACEMENTS: ReadonlyArray<readonly [RegExp, str
   [/&amp;|&#38;|&#x26;/gi, "&"],
 ];
 
-function decodeAgentConditionalTextEntities(input: string): string {
+/** Decode one layer of XML protocol escaping, not authored prompt/content leaves. */
+export function decodeAgentXmlEntities(input: string): string {
   return AGENT_CONDITIONAL_ENTITY_REPLACEMENTS.reduce(
     (value, [pattern, replacement]) => value.replace(pattern, replacement),
     input,
@@ -1857,7 +1879,7 @@ function decodeAgentConditionalTextEntities(input: string): string {
 function decodeAgentConditionalEntities(input: string): string {
   return replaceBalancedMacros(input, (body) => {
     if (parseIfCondition(body) === null && parseElseIfCondition(body) === null) return undefined;
-    return `{{${decodeAgentConditionalTextEntities(body)}}}`;
+    return `{{${decodeAgentXmlEntities(body)}}}`;
   });
 }
 
@@ -1871,9 +1893,7 @@ export function flattenAgentConditionalMacros(input: string): string {
 }
 
 function flattenAgentConditionalMacrosInner(input: string, decodeTextEntities: boolean): string {
-  const normalized = decodeAgentConditionalEntities(
-    decodeTextEntities ? decodeAgentConditionalTextEntities(input) : input,
-  );
+  const normalized = decodeAgentConditionalEntities(decodeTextEntities ? decodeAgentXmlEntities(input) : input);
   let result = "";
   let index = 0;
 
@@ -2172,7 +2192,8 @@ export function resolveMacros(template: string, ctx: MacroContext, options: Reso
   result = resolveConditionalBlocks(result, ctx, options);
 
   // ── No-op & banned ──
-  result = result.replace(/\{\{noop\}\}/gi, "");
+  // SillyTavern's original instruction has no counterpart in preset-owned prompts.
+  result = result.replace(/\{\{\s*(?:noop|original)\s*\}\}/gi, "");
   result = replaceBalancedMacros(result, (body) => (/^banned(?:\s+[\s\S]*)?$/i.test(body.trim()) ? "" : undefined));
 
   // ── Static substitutions ──
@@ -2203,18 +2224,18 @@ export function resolveMacros(template: string, ctx: MacroContext, options: Reso
   result = result.replace(/\{\{personaScenario\}\}/gi, () =>
     resolveNestedFieldMacros(ctx.personaFields?.scenario ?? ""),
   );
-  result = result.replace(/\{\{char(?:Name)?\}\}/gi, characterReplacement("char"));
-  result = result.replace(/\{\{char(?:Name)?Phonetic\}\}/gi, characterReplacement("charPhonetic"));
-  result = result.replace(/\{\{characters\}\}/gi, ctx.characters.join(", "));
-  result = result.replace(/\{\{group\}\}/gi, characterReplacement("group"));
-  result = result.replace(/\{\{description\}\}/gi, characterReplacement("description"));
-  result = result.replace(/\{\{personality\}\}/gi, characterReplacement("personality"));
-  result = result.replace(/\{\{backstory\}\}/gi, characterReplacement("backstory"));
-  result = result.replace(/\{\{appearance\}\}/gi, characterReplacement("appearance"));
-  result = result.replace(/\{\{scenario\}\}/gi, characterReplacement("scenario"));
-  result = result.replace(/\{\{example\}\}/gi, characterReplacement("example"));
-  result = result.replace(/\{\{charSysInfo\}\}/gi, characterReplacement("systemPrompt"));
-  result = result.replace(/\{\{charPostHistory\}\}/gi, characterReplacement("postHistoryInstructions"));
+  result = result.replace(/\{\{char(?:Name)?\}\}/gi, () => characterReplacement("char"));
+  result = result.replace(/\{\{char(?:Name)?Phonetic\}\}/gi, () => characterReplacement("charPhonetic"));
+  result = result.replace(/\{\{characters\}\}/gi, () => ctx.characters.join(", "));
+  result = result.replace(/\{\{group\}\}/gi, () => characterReplacement("group"));
+  result = result.replace(/\{\{description\}\}/gi, () => characterReplacement("description"));
+  result = result.replace(/\{\{personality\}\}/gi, () => characterReplacement("personality"));
+  result = result.replace(/\{\{backstory\}\}/gi, () => characterReplacement("backstory"));
+  result = result.replace(/\{\{appearance\}\}/gi, () => characterReplacement("appearance"));
+  result = result.replace(/\{\{scenario\}\}/gi, () => characterReplacement("scenario"));
+  result = result.replace(/\{\{example\}\}/gi, () => characterReplacement("example"));
+  result = result.replace(/\{\{charSysInfo\}\}/gi, () => characterReplacement("systemPrompt"));
+  result = result.replace(/\{\{charPostHistory\}\}/gi, () => characterReplacement("postHistoryInstructions"));
   // Conversation-mode-only macros. `convoFields` is set only by the convo prompt
   // branch, so these are "" in every other mode.
   result = result.replace(/\{\{convo_display\}\}/gi, () =>

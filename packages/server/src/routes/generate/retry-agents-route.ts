@@ -1,3 +1,4 @@
+import { allowsDefaultChatModel } from "../../services/llm/local-context-limit.js";
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "crypto";
 import { logger, logDebugOverride } from "../../lib/logger.js";
@@ -106,6 +107,13 @@ import type { GenerationFallbackNotifier } from "../../services/generation/fallb
 import { createReplyFallbackNotifier } from "./fallback-notification.js";
 import { runImageGenerationRequest } from "../../services/image/image-generation-queue.js";
 import { generateIllustratorImageVariants } from "../../services/image/illustrator-image-variants.js";
+import {
+  buildCharacterAppearanceReferenceBlock,
+  buildUncaptionedCharacterAppearanceBlock,
+  readCharacterPrompts,
+  resolveNovelAiCharacterPromptLimit,
+  supportsNovelAiCharacterPrompts,
+} from "../../services/image/character-prompts.js";
 import { resolveImagePromptReviewSize } from "../../services/image/image-prompt-review.js";
 import {
   parseIllustratorPromptReviewOverride,
@@ -214,6 +222,7 @@ import {
   parseIllustratorBackgroundPlan,
   previewIllustratorSceneBackground,
   resolveIllustratorImageConnectionId,
+  resolveIllustratorCharacterPromptInstruction,
   resolveIllustratorPromptStyle,
 } from "../../services/generation/illustrator-background-generation.js";
 import { writeManualIllustratorPromptPlan } from "../../services/generation/illustrator-manual-prompt-generation.js";
@@ -387,6 +396,7 @@ function markRetryLorebookResultForApproval(args: {
         updates,
         preferredTargetLorebookId,
         writableLorebookIds,
+        allowTargetRouting: !isBuiltInLorebookAgent || agentContext.memory._lorebookKeeperTargetIsExplicit !== true,
         writableLorebooks,
         lorebookNamingScheme: getLorebookNamingScheme(resultAgent?.settings),
         worldName: agentContext.characters[0]?.world ?? chatName,
@@ -572,10 +582,35 @@ async function executeManualIllustratorPromptRequest(args: {
     );
     let imageConnection = imageConnectionId ? await args.conns.getById(imageConnectionId).catch(() => null) : null;
     imageConnection ??= await args.conns.getDefaultForImageGeneration().catch(() => null);
+    const { instruction: characterPromptInstruction } = await resolveIllustratorCharacterPromptInstruction({
+      connections: args.conns,
+      illustratorAgent: args.illustratorEntry.resolved,
+      chatMode: args.chat.mode,
+      chatMetadata: args.chatMeta,
+    });
+    const manualAttachCardAppearance =
+      typeof args.chatMeta.illustratorIncludeCharacterAppearance === "boolean"
+        ? args.chatMeta.illustratorIncludeCharacterAppearance
+        : args.illustratorEntry.resolved.settings.includeCharacterAppearance === true;
+    const manualCharacterPromptInstruction =
+      characterPromptInstruction && manualAttachCardAppearance
+        ? [
+            characterPromptInstruction,
+            buildCharacterAppearanceReferenceBlock([
+              ...args.agentContext.characters.map((char) => ({ name: char.name, appearance: char.appearance ?? "" })),
+              ...(args.agentContext.persona
+                ? [{ name: args.agentContext.persona.name, appearance: args.agentContext.persona.appearance ?? "" }]
+                : []),
+            ]),
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : characterPromptInstruction;
     const generated = await writeManualIllustratorPromptPlan({
       illustratorAgent: args.illustratorEntry.resolved,
       context: args.agentContext,
       styleInstruction,
+      characterPromptInstruction: manualCharacterPromptInstruction || undefined,
       imagePromptInstructions: normalizeImagePromptInstructions(imageConnection?.imagePromptInstructions) ?? undefined,
       signal: args.agentContext.signal,
       debugLog: (message, ...values) => logDebugOverride(args.debugMode || isDebugAgentsEnabled(), message, ...values),
@@ -952,7 +987,9 @@ async function buildRetryAgentContext(args: {
   ).flatMap((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
     const row = entry as Record<string, unknown>;
-    return typeof row.id === "string" && typeof row.content === "string" ? [{ id: row.id, content: row.content }] : [];
+    return typeof row.id === "string" && typeof row.content === "string"
+      ? [{ id: row.id, name: typeof row.name === "string" ? row.name : undefined, content: row.content }]
+      : [];
   });
   const semanticLorebookEntries = (
     Array.isArray(rawLorebookScan.activatedEntries) ? rawLorebookScan.activatedEntries : []
@@ -1059,6 +1096,13 @@ async function buildRetryAgentContext(args: {
       return nextMessage;
     }),
     mainResponse: resolvedLastAssistantContent,
+    loadPreviousOutput: (agentId) =>
+      createAgentsStorage(db).getPreviousOutput(
+        agentId,
+        chatId,
+        agentSlice.at(-1)?.id,
+        typeof lastAssistant?.id === "string" ? lastAssistant.id : undefined,
+      ),
     gameState: null,
     characters: charInfo,
     characterTrackerHistory: characterTrackerHistory as unknown as AgentContext["characterTrackerHistory"],
@@ -1146,6 +1190,8 @@ async function buildRetryAgentContext(args: {
       });
     agentContext.writableLorebookIds = writableLorebookIds;
     agentContext.memory._writableLorebooks = writableLorebooks;
+    agentContext.memory._lorebookKeeperTargetIsExplicit =
+      !!targetLorebookId && targetLorebookId === lorebookKeeperSettings.targetLorebookId;
     if (targetLorebookId) {
       agentContext.memory._lorebookKeeperTargetLorebookId = targetLorebookId;
     }
@@ -1566,7 +1612,7 @@ async function resolveRetryAgents(args: {
     storedConn: any,
   ): RetryAgentConnectionResolution => {
     const model = typeof storedConn.model === "string" ? storedConn.model.trim() : "";
-    if (!model) {
+    if (!model && !allowsDefaultChatModel(storedConn)) {
       return { entry: null, unavailableReason: "no model is selected", connectionName: storedConn.name };
     }
 
@@ -2599,6 +2645,7 @@ async function executeLorebookKeeperRetries(args: {
             chatName,
             preferredTargetLorebookId,
             writableLorebookIds: retryContext.writableLorebookIds,
+            allowTargetRouting: retryContext.memory._lorebookKeeperTargetIsExplicit !== true,
             writableLorebooks: Array.isArray(retryContext.memory._writableLorebooks)
               ? (retryContext.memory._writableLorebooks as Array<{ id: string; name: string }>)
               : undefined,
@@ -3145,6 +3192,7 @@ async function applyRetryResultEffects(args: {
             chatName: (chat as any).name,
             preferredTargetLorebookId,
             writableLorebookIds,
+            allowTargetRouting: !isBuiltInLorebookAgent || agentContext.memory._lorebookKeeperTargetIsExplicit !== true,
             writableLorebooks: Array.isArray(agentContext.memory._writableLorebooks)
               ? (agentContext.memory._writableLorebooks as Array<{ id: string; name: string }>)
               : undefined,
@@ -3373,6 +3421,21 @@ async function applyRetryResultEffects(args: {
             const notifyImageFallback = createReplyFallbackNotifier(reply);
 
             const imgModel = imgConnFull.model || "";
+            const characterPromptLimit = supportsNovelAiCharacterPrompts(imgConnFull)
+              ? resolveNovelAiCharacterPromptLimit(imgModel)
+              : 0;
+            const illustratorCharacterPrompts = readCharacterPrompts(
+              illData,
+              illCharacters.filter((name): name is string => typeof name === "string"),
+              characterPromptLimit,
+            );
+            if (illustratorCharacterPrompts.length > 0) {
+              logger.debug(
+                "[retry-agents] Illustrator sending %d native NovelAI character caption(s): %s",
+                illustratorCharacterPrompts.length,
+                illustratorCharacterPrompts.map((entry) => entry.name).join(", "),
+              );
+            }
             const imgBaseUrl = imgConnFull.baseUrl || "https://image.pollinations.ai";
             const imgApiKey = imgConnFull.apiKey || "";
             const imgSource = (imgConnFull as any).imageGenerationSource || imgModel;
@@ -3422,19 +3485,25 @@ async function applyRetryResultEffects(args: {
 
             // Collect optional character visual context. Prefer avatar portraits
             // for references, then fall back to full-body sprites.
+            const subjectOnly = illustratorPromptReviewOverride?.subjectOnly === true;
             const useAvatarRefs =
-              usesChatIllustratorSettings && typeof chatMeta.illustratorUseAvatarReferences === "boolean"
+              !subjectOnly &&
+              (usesChatIllustratorSettings && typeof chatMeta.illustratorUseAvatarReferences === "boolean"
                 ? chatMeta.illustratorUseAvatarReferences
-                : imagePromptAgent?.resolved.settings?.useAvatarReferences === true;
+                : imagePromptAgent?.resolved.settings?.useAvatarReferences === true);
             const includeCharacterAppearance =
-              usesChatIllustratorSettings && typeof chatMeta.illustratorIncludeCharacterAppearance === "boolean"
+              !subjectOnly &&
+              (usesChatIllustratorSettings && typeof chatMeta.illustratorIncludeCharacterAppearance === "boolean"
                 ? chatMeta.illustratorIncludeCharacterAppearance
-                : imagePromptAgent?.resolved.settings?.includeCharacterAppearance === true;
-            const spatialLocationReferenceImage = await resolveSpatialLocationReferenceImage({
-              db: app.db,
-              chatId,
-              projection: retryOwnerSpatialProjection?.ownerMode === "roleplay" ? retryOwnerSpatialProjection : null,
-            });
+                : imagePromptAgent?.resolved.settings?.includeCharacterAppearance === true);
+            const spatialLocationReferenceImage = subjectOnly
+              ? null
+              : await resolveSpatialLocationReferenceImage({
+                  db: app.db,
+                  chatId,
+                  projection:
+                    retryOwnerSpatialProjection?.ownerMode === "roleplay" ? retryOwnerSpatialProjection : null,
+                });
             assertRetryActive();
             let referenceImages: string[] | undefined;
             const retryIdentityId =
@@ -3507,12 +3576,23 @@ async function applyRetryResultEffects(args: {
               maxReferences: spatialLocationReferenceImage ? 5 : 6,
             });
             assertRetryActive();
-            if (includeCharacterAppearance && referenceResolution.appearanceBlock) {
-              fullPrompt += `\n\n${referenceResolution.appearanceBlock}`;
-              logger.debug(
-                "[retry-agents] Illustrator added character appearance notes for: %s",
-                referenceResolution.appearanceNames.join(", "),
-              );
+            if (includeCharacterAppearance) {
+              const appearanceBlock =
+                illustratorCharacterPrompts.length > 0
+                  ? buildUncaptionedCharacterAppearanceBlock(
+                      [
+                        ...agentContext.characters,
+                        ...(agentContext.persona ? [agentContext.persona] : []),
+                        ...referenceResolution.appearanceSources,
+                      ],
+                      illCharacters.filter((name): name is string => typeof name === "string"),
+                      illustratorCharacterPrompts,
+                    )
+                  : referenceResolution.appearanceBlock;
+              if (appearanceBlock) {
+                fullPrompt += `\n\n${appearanceBlock}`;
+                logger.debug("[retry-agents] Illustrator Added appearance for characters without native captions");
+              }
             }
             if (useAvatarRefs && referenceResolution.referenceImages.length > 0) {
               if (referenceResolution.referenceLine && !suppressReferencePromptLine)
@@ -3626,6 +3706,9 @@ async function applyRetryResultEffects(args: {
                     ...(promptSubmission.negativePrompt ? { negativePrompt: promptSubmission.negativePrompt } : {}),
                     width: previewSize.width,
                     height: previewSize.height,
+                    ...(illustratorCharacterPrompts.length > 0
+                      ? { characterPrompts: illustratorCharacterPrompts }
+                      : {}),
                   },
                   resultData: illData,
                 },
@@ -3676,6 +3759,9 @@ async function applyRetryResultEffects(args: {
                       imageDefaults,
                       quality: resolveConnectionImageQuality(imgConnFull),
                       referenceImages,
+                      ...(illustratorCharacterPrompts.length > 0
+                        ? { characterPrompts: illustratorCharacterPrompts }
+                        : {}),
                       signal: agentContext.signal,
                       fallback: providerAwareImageFallback,
                       onFallback: (notice) => {
@@ -4199,9 +4285,10 @@ export async function registerRetryAgentsRoute(
 
     startSseReply(reply, { "X-Accel-Buffering": "no" });
 
-    // Abort in-flight agent LLM calls when the client disconnects, and stop
-    // writing to a closed socket. Mirrors the main /generate handler so a dropped
-    // retry tab does not leak upstream provider requests to completion.
+    // Illustrator saves its output to the chat even if the mobile tab disappears.
+    // Explicit Stop still cancels through activeAgentRuns; other retries retain
+    // their existing disconnect cancellation.
+    const preserveIllustratorOnDisconnect = agentTypes.every((agentType) => agentType === "illustrator");
     const abortController = new AbortController();
     const assertRetrySetupActive = () => abortController.signal.throwIfAborted();
     const notifyFallback = createReplyFallbackNotifier(reply);
@@ -4223,7 +4310,7 @@ export async function registerRetryAgentsRoute(
     const stopSseKeepalive = startSseKeepalive(reply);
     const onClientClose = () => {
       clientDisconnected = true;
-      abortController.abort();
+      if (!preserveIllustratorOnDisconnect) abortController.abort();
     };
     reply.raw.on("close", onClientClose);
 
@@ -4584,7 +4671,36 @@ export async function registerRetryAgentsRoute(
           if (abortController.signal.aborted) throw error;
           logger.warn(error, "[retry-agents] Failed to resolve image style instruction for the prompt writer");
         }
+        try {
+          const { instruction: characterPromptInstruction } = await runRetrySetupPhase(abortController.signal, () =>
+            resolveIllustratorCharacterPromptInstruction({
+              connections: conns,
+              illustratorAgent: retryIllustratorPromptAgent.resolved,
+              chatMode,
+              chatMetadata: chatMeta,
+            }),
+          );
+          if (characterPromptInstruction) {
+            const attachCardAppearance =
+              typeof chatMeta.illustratorIncludeCharacterAppearance === "boolean"
+                ? chatMeta.illustratorIncludeCharacterAppearance
+                : retryIllustratorPromptAgent.resolved.settings.includeCharacterAppearance === true;
+            agentContext.memory._illustratorCharacterPromptInstruction = characterPromptInstruction;
+            if (attachCardAppearance) agentContext.memory._illustratorCaptionAppearanceReference = true;
+            if (preGenerationAgentContext) {
+              preGenerationAgentContext.memory._illustratorCharacterPromptInstruction = characterPromptInstruction;
+              if (attachCardAppearance) preGenerationAgentContext.memory._illustratorCaptionAppearanceReference = true;
+            }
+          }
+        } catch (error) {
+          if (abortController.signal.aborted) throw error;
+          logger.warn(error, "[retry-agents] Failed to resolve character prompt instruction for the prompt writer");
+        }
       }
+      agentContext.agentProgress = (event) => {
+        if (!abortController.signal.aborted) sendSseEvent(reply, { type: "agent_progress", data: event });
+      };
+      if (preGenerationAgentContext) preGenerationAgentContext.agentProgress = agentContext.agentProgress;
       if (debugMode) {
         const emitRetryAgentDebug = (event: AgentCallDebugEvent) => {
           if (abortController.signal.aborted) return;

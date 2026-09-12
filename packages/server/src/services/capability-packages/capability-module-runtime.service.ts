@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, InjectOptions, LightMyRequestResponse as InjectResponse } from "fastify";
 import {
   registerTurnGameEngine,
   type AnyTurnGameEngine,
@@ -32,7 +32,10 @@ import {
 } from "./capability-embedding.service.js";
 import { createCapabilityPersistenceHost } from "./capability-persistence.service.js";
 import { createCapabilityResourceHost } from "./capability-resources.service.js";
-import { registerCapabilityPrivilegedRoutes } from "./capability-route-registration.service.js";
+import {
+  registerCapabilityPrivilegedRoutes,
+  runCapabilityInternalRoute,
+} from "./capability-route-registration.service.js";
 import {
   registerCapabilityPromptContext,
   type CapabilityPromptContextContributor,
@@ -54,10 +57,16 @@ type CapabilityActivationContext = {
       routes: import("fastify").FastifyPluginAsync,
       options: { prefix: string },
     ): Promise<Cleanup>;
+    /** Run an active route owned by this package as trusted server work. */
+    runInternalRoute?: (options: InjectOptions | string) => Promise<InjectResponse>;
   };
 };
 
-async function createCapabilityRuntimeHost(app: FastifyInstance, packageId: string): Promise<CapabilityRuntimeHost> {
+async function createCapabilityRuntimeHost(
+  app: FastifyInstance,
+  packageId: string,
+  permissions: readonly string[],
+): Promise<CapabilityRuntimeHost> {
   const agents = app.db ? createAgentsStorage(app.db) : null;
   const config = await agents?.getByType(packageId);
   const embeddings = app.db
@@ -90,7 +99,7 @@ async function createCapabilityRuntimeHost(app: FastifyInstance, packageId: stri
       debugOverride: (overrideEnabled: boolean, message: string, ...args: CapabilityRuntimeLogArgument[]) =>
         logDebugOverride(overrideEnabled, message, ...args),
     }),
-    persistence: createCapabilityPersistenceHost(app.db),
+    persistence: createCapabilityPersistenceHost(app.db, permissions),
     resources: createCapabilityResourceHost(app.db),
   });
 }
@@ -209,7 +218,7 @@ class CapabilityModuleRuntime {
         dataDir: DATA_DIR,
         package: installed,
         api: {
-          runtime: await createCapabilityRuntimeHost(app, installed.id),
+          runtime: await createCapabilityRuntimeHost(app, installed.id, installed.manifest.permissions ?? []),
           registerTurnGameEngine: (engine) => trackCleanup(registerTurnGameEngine(engine)),
           registerConversationCommand: (registration) => {
             if (registration.handler && !installed.manifest.permissions?.includes("conversation-actions")) {
@@ -235,6 +244,7 @@ class CapabilityModuleRuntime {
           },
           registerPrivilegedRoutes: async (routes, options) =>
             trackCleanup(await registerCapabilityPrivilegedRoutes(app, installed, routes, options)),
+          runInternalRoute: (options) => runCapabilityInternalRoute(app, installed.id, options),
         },
       };
       const cleanup = await module.activate(context);

@@ -785,7 +785,7 @@ import {
   parseAssistantWorkspaceAction,
   professorMariWorkspaceResponseFormat,
   resolveWorkspaceMutationVerification,
-  workspaceActionNeedsVerification,
+  auditWorkspaceCompletionClaim,
   workspaceTextClaimsMutationCompletion,
   type WorkspaceCommandResult,
 } from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
@@ -1207,7 +1207,12 @@ const cases: RegressionCase[] = [
         "utf8",
       );
       assert.match(generateRouteSource, /shouldSuppressIllustratorForegroundForStoryboard\(\{/u);
-      assert.match(generateRouteSource, /if \(automaticBackgroundsEnabled && illustratorBackgroundAgent\)/u);
+      // Explicit image commands request foreground art; automatic backgrounds
+      // retain their independent setting when Storyboard owns foreground art.
+      assert.match(
+        generateRouteSource,
+        /if \(!commandTarget && automaticBackgroundsEnabled && illustratorBackgroundAgent\)/u,
+      );
       assert.match(generateRouteSource, /if \(!storyboardSuppressesForeground && shouldGenerate && imagePrompt\)/u);
     },
   },
@@ -1763,6 +1768,26 @@ const cases: RegressionCase[] = [
         ],
       );
 
+      // Reassigned persona snapshot name reflects immediately into historical speaker prefixing
+      const reassignedPersonaName = readPersonaSnapshotName({
+        personaSnapshot: { personaId: "new-identity", name: "Reassigned Hero" },
+      });
+      const updatedMessages = prefixGroupIndividualHistorySpeakers(
+        [
+          {
+            role: "user" as const,
+            content: "A decree from the old Persona.",
+            personaSnapshotName: reassignedPersonaName,
+          },
+          { role: "assistant" as const, content: "An answer.", characterId: "dottore" },
+        ],
+        {
+          personaName: "Mari",
+          characterNamesById: new Map([["dottore", "Dottore"]]),
+        },
+      );
+      assert.equal(updatedMessages[0]?.content, "Reassigned Hero: A decree from the old Persona.");
+
       const generateRouteSource = readFileSync(
         new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
         "utf8",
@@ -1780,7 +1805,7 @@ const cases: RegressionCase[] = [
       }
       assert.match(
         generateRouteSource,
-        /usesIndividualGroupGeneration && requestedNarrativeDirectorMode && directorAgent[\s\S]{0,700}appendSeparateAgentInjectionMessage\([\s\S]{0,400}requestedNarrativeDirectorMode === "random"/u,
+        /chatMode === "roleplay" && requestedNarrativeDirectorMode && directorAgent[\s\S]{0,700}appendSeparateAgentInjectionMessage\([\s\S]{0,400}requestedNarrativeDirectorMode === "random"/u,
         "individual group prompts should retain the armed Narrative Director instruction at the responder boundary",
       );
     },
@@ -3815,7 +3840,7 @@ const cases: RegressionCase[] = [
 
       assert.equal(normalizeGameStoryboardKeyframeCount(undefined), 3);
       assert.equal(normalizeGameStoryboardKeyframeCount(0), 1);
-      assert.equal(normalizeGameStoryboardKeyframeCount(12), 6);
+      assert.equal(normalizeGameStoryboardKeyframeCount(12), 12);
       assert.doesNotMatch(sharedPlannerSource, /You are Marinara's/u);
       assert.doesNotMatch(sharedImageSource, /promptTemplate:/u);
       assert.equal(listPromptOverrideKeys().includes("game.storyboardIllustrationDirector"), false);
@@ -4213,7 +4238,7 @@ const cases: RegressionCase[] = [
       assert.doesNotMatch(gameRouteSource, /ltxDirectorPrompt:\s*promptBuild|storyboardVideoTemplateId/);
       assert.match(gameRouteSource, /generateStoryboardVideos && !usedFallbackStoryboardPlanner/);
       assert.match(gameRouteSource, /if \(storyboardAbortSignal\.aborted\)/);
-      assert.match(gameRouteSource, /Storyboard Illustrator returned no usable keyframes/);
+      assert.match(gameRouteSource, /completeStoryboardPlan\(\{/);
       assert.match(gameRouteSource, /Storyboard keyframe is missing its planned animation prompt/);
       assert.doesNotMatch(
         gameRouteSource,
@@ -5832,7 +5857,18 @@ const cases: RegressionCase[] = [
         characters: ["Mari", "Dottore"],
         aspectRatio: "landscape",
         reason: "Manual Gallery illustration request.",
+        characterPrompts: [],
       });
+
+      const captionRoster = Array.from({ length: 25 }, (_, index) => `Guest ${index + 1}`);
+      const fullCastPlan = parseManualIllustratorPromptPlan(
+        JSON.stringify({ prompt: "A crowded banquet", characters: captionRoster }),
+      );
+      assert.deepEqual(
+        fullCastPlan.characters,
+        captionRoster.slice(0, 22),
+        "manual Illustrator keeps the complete V5 caption roster",
+      );
 
       const quarantinePrompt =
         "A cramped quarantine berth inside the Fontaine border checkpoint at night. A narrow iron-framed cot stands against a damp stone wall beside a battered table holding folded linen, simple medical supplies, an enamel basin, and a sprig of dried lavender. Heavy checkpoint doors and exposed brass pipes occupy the opposite wall. A high reinforced window reveals cold downpour streaming across the glass. A compact radiator and low amber utility lamp contrast with the blue-gray storm light. Chipped plaster, rust stains, patched bedding, old cargo crates, and hastily cleaned floorboards suggest an austere freight facility adapted for recovery.";
@@ -8751,6 +8787,90 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
+    name: "identity aliases cannot cross macro boundaries or suppress ordinary prose",
+    run() {
+      const character = {
+        id: "alias-character",
+        name: "Alias Character",
+        description: "CHAR_DESCRIPTION",
+        personality: "CHAR_PERSONALITY",
+        backstory: "CHAR_BACKSTORY",
+        appearance: "CHAR_APPEARANCE",
+        scenario: "CHAR_SCENARIO",
+        systemPrompt: "CHAR_SYSTEM",
+        mesExample: "CHAR_EXAMPLE",
+        creatorNotes: "",
+        firstMes: "",
+        postHistoryInstructions: "",
+        tags: [],
+        talkativeness: 0.5,
+        avatarPath: null,
+        avatarCrop: null,
+      };
+      const markers = [
+        "CHAR_DESCRIPTION",
+        "CHAR_PERSONALITY",
+        "CHAR_BACKSTORY",
+        "CHAR_APPEARANCE",
+        "CHAR_SCENARIO",
+        "CHAR_SYSTEM",
+        "CHAR_EXAMPLE",
+        "PERSONA_DESCRIPTION",
+        "PERSONA_PERSONALITY",
+        "PERSONA_BACKSTORY",
+        "PERSONA_APPEARANCE",
+        "PERSONA_SCENARIO",
+      ];
+      const cases = [
+        {
+          source:
+            "{{charName}} follows their personality and description.\nRespond to the user/persona as {{charName}}.",
+          omitted: [],
+        },
+        {
+          source: "{{charName}} backstory appearance scenario charSysInfo example personaAppearance {{charName}}",
+          omitted: [],
+        },
+        { source: "{{descriptionExtra}} {{personalityExtra}}", omitted: [] },
+        { source: "{{ description }} {{ personality }}", omitted: [] },
+        { source: "{{description}} {{personality}}", omitted: ["CHAR_DESCRIPTION", "CHAR_PERSONALITY"] },
+        { source: "{{persona}}", omitted: markers.filter((marker) => marker.startsWith("PERSONA_")) },
+        { source: "{{personaAppearance}}", omitted: ["PERSONA_APPEARANCE"] },
+        { source: "{{// description}} {{if personality}}", omitted: [] },
+        { source: '{{#if personality != ""}}Authored choice{{/if}}', omitted: ["CHAR_PERSONALITY"] },
+        { source: '{{#if "x" == @personaAppearance}}Authored choice{{/if}}', omitted: ["PERSONA_APPEARANCE"] },
+        { source: '{{#if "personality" == "description"}}Literal words{{/if}}', omitted: [] },
+        { source: "{{#if false}}No{{else if description}}Yes{{/if}}", omitted: ["CHAR_DESCRIPTION"] },
+        { source: "{{setvar::label::personality}}", omitted: [] },
+      ];
+      for (const wrapFormat of ["xml", "markdown", "none"] as const) {
+        for (const { source, omitted } of cases) {
+          const messages: ChatMLMessage[] = [{ role: "system", content: "Conversation instructions." }];
+          injectIdentityFallbackMessages({
+            messages,
+            charInfo: [character],
+            promptTargetCharacterId: null,
+            promptMacroContext: { user: "Persona", char: character.name, variables: {} },
+            wrapFormat,
+            personaName: "Persona",
+            personaDescription: "PERSONA_DESCRIPTION",
+            personaFields: {
+              personality: "PERSONA_PERSONALITY",
+              backstory: "PERSONA_BACKSTORY",
+              appearance: "PERSONA_APPEARANCE",
+              scenario: "PERSONA_SCENARIO",
+            },
+            promptTemplateSources: [source],
+            resolvePromptMacros: (value) => value,
+          });
+          const text = messages.map((message) => message.content).join("\n");
+          for (const marker of markers)
+            assert.equal(text.includes(marker), !omitted.includes(marker), `${wrapFormat}: ${source}: ${marker}`);
+        }
+      }
+    },
+  },
+  {
     name: "Conversation named profiles cannot suppress character System Prompts",
     run() {
       const messages: ChatMLMessage[] = [
@@ -9293,6 +9413,63 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
+    name: "lorebook markers insert each world-info position at most once per prompt build",
+    async run() {
+      const makeMarkerCtx = (): MarkerContext => ({
+        db: undefined as unknown as DB,
+        chatId: "chat-lorebook-marker-dedupe",
+        characterIds: [],
+        personaName: "Mari",
+        personaDescription: "",
+        chatMessages: [],
+        chatSummary: null,
+        wrapFormat: "xml" as const,
+        enableAgents: true,
+        activeAgentIds: [],
+        activeLorebookIds: [],
+        macroCtx: { user: "Mari", char: "Dottore", characters: ["Dottore"], variables: {} },
+        lorebookScanResult: {
+          worldInfoBefore: "LORE_BEFORE_ENTRY",
+          worldInfoAfter: "LORE_AFTER_ENTRY",
+          depthEntries: [],
+          outlets: {},
+          totalEntries: 2,
+          totalTokensEstimate: 8,
+          activatedEntryIds: ["entry-before", "entry-after"],
+          activatedEntries: [],
+          budgetSkippedEntries: [],
+        },
+      });
+
+      // Two combined "All" markers (issue #5716): the second placeholder must not repeat the entries.
+      const twoCombined = makeMarkerCtx();
+      const firstAll = await expandMarker({ type: "lorebook" }, twoCombined);
+      const secondAll = await expandMarker({ type: "lorebook" }, twoCombined);
+      assert.equal(firstAll.content, "LORE_BEFORE_ENTRY\n\nLORE_AFTER_ENTRY");
+      assert.equal(secondAll.content, "");
+
+      // A "Before" marker followed by an "All" marker: the combined marker only adds the after position.
+      const beforeThenAll = makeMarkerCtx();
+      const before = await expandMarker({ type: "world_info_before" }, beforeThenAll);
+      const remainder = await expandMarker({ type: "lorebook" }, beforeThenAll);
+      assert.equal(before.content, "LORE_BEFORE_ENTRY");
+      assert.equal(remainder.content, "LORE_AFTER_ENTRY");
+
+      // Dedicated Before + After markers keep their own positions and stay independent of each other.
+      const typed = makeMarkerCtx();
+      const typedBefore = await expandMarker({ type: "world_info_before" }, typed);
+      const typedAfter = await expandMarker({ type: "world_info_after" }, typed);
+      const repeatedBefore = await expandMarker({ type: "world_info_before" }, typed);
+      assert.equal(typedBefore.content, "LORE_BEFORE_ENTRY");
+      assert.equal(typedAfter.content, "LORE_AFTER_ENTRY");
+      assert.equal(repeatedBefore.content, "");
+
+      // A fresh prompt build starts with no claimed positions.
+      const fresh = await expandMarker({ type: "lorebook" }, makeMarkerCtx());
+      assert.equal(fresh.content, "LORE_BEFORE_ENTRY\n\nLORE_AFTER_ENTRY");
+    },
+  },
+  {
     name: "mode-specific prompt gates keep known behavior stable",
     run() {
       assert.equal(shouldInjectIdentityFallback({ chatMode: "conversation", presetId: "preset" }), true);
@@ -9331,6 +9508,38 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         }),
         false,
       );
+    },
+  },
+  {
+    name: "prompt assembly resolves the request model and keeps an absent model empty",
+    async run() {
+      for (const model of [undefined, "vendor/model-a", "override-model-b"]) {
+        const result = await assemblePrompt({
+          db: undefined as unknown as DB,
+          model,
+          preset: {
+            id: "model-macro",
+            name: "Model macro",
+            sectionOrder: JSON.stringify(["main"]),
+            groupOrder: "[]",
+            wrapFormat: "xml",
+            parameters: "{}",
+            variableGroups: "[]",
+            variableValues: "{}",
+          },
+          sections: [promptSection({ id: "main", identifier: "main", name: "Main", content: "Model: {{model}}." })],
+          groups: [],
+          choiceBlocks: [],
+          chatChoices: {},
+          chatId: "model-macro",
+          characterIds: [],
+          personaName: "Mari",
+          personaDescription: "",
+          chatMessages: [],
+          disableLorebooks: true,
+        });
+        assert.ok(result.messages.some((message) => message.content.includes(`Model: ${model ?? ""}.`)));
+      }
     },
   },
   {
@@ -10106,6 +10315,11 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         randomPick: "true",
       };
 
+      assert.equal(
+        resolveChoiceVariableValue({ ...input, randomPick: false, separator: "" }),
+        "tenderdramaticplayful",
+        "an explicitly empty multi-choice separator is preserved",
+      );
       assert.equal(resolveChoiceVariableValue({ ...input, random: () => 0 }), "tender");
       assert.equal(resolveChoiceVariableValue({ ...input, random: () => 0.5 }), "dramatic");
       assert.equal(resolveChoiceVariableValue({ ...input, random: () => 0.999999 }), "playful");
@@ -11159,17 +11373,89 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(fencedTrailingComma.commands[0]?.arguments.action, "lorebook.search");
       assert.equal(fencedTrailingComma.protocolValid, true);
 
+      const updateArgs = {
+        action: "lorebook.updateEntry",
+        entryId: "entry-1",
+        patch: { content: "Changed" },
+        apply: true,
+      };
+      for (const raw of [
+        { name: "app_data", parameters: updateArgs },
+        { tool: "app_data", arguments: updateArgs },
+        { tool_name: "app_data", parameters: updateArgs },
+        { type: "function", function: { name: "app_data", arguments: JSON.stringify(updateArgs) } },
+      ]) {
+        for (const commands of [[raw], raw]) {
+          const recovered = parseAssistantWorkspaceAction(
+            JSON.stringify({ say: "I’ve updated the entry.", commands, stop: false }),
+          );
+          assert.equal(recovered.protocolValid, true);
+          assert.equal(recovered.commands.length, 1);
+          assert.deepEqual(recovered.commands[0]?.arguments, updateArgs);
+        }
+      }
+      const nestedCalls = [
+        { name: "app_data", arguments: updateArgs },
+        { name: "read", arguments: { path: "README.md" } },
+      ];
+      const nestedFrame = parseAssistantWorkspaceAction(
+        JSON.stringify({ commands: [{ tool_calls: nestedCalls }], stop: false }),
+      );
+      assert.equal(nestedFrame.protocolValid, true);
+      assert.equal(nestedFrame.commands.length, 2);
+      for (const commands of [
+        [{ tool_calls: nestedCalls }, { name: "unknown_tool" }],
+        [{ tool_calls: [...nestedCalls, { name: "unknown_tool" }] }],
+      ]) {
+        const invalid = parseAssistantWorkspaceAction(JSON.stringify({ commands, stop: false }));
+        assert.equal(invalid.protocolValid, false, "expanded nested commands cannot cancel out an unrecognized entry");
+        assert.deepEqual(invalid.commands, []);
+      }
+      const malformed = parseAssistantWorkspaceAction(
+        JSON.stringify({
+          say: "Done!",
+          commands: [{ name: "app_data", arguments: updateArgs }, { name: "unknown_tool" }],
+          stop: true,
+        }),
+      );
+      assert.equal(malformed.protocolValid, false, "a dropped command must enter protocol repair");
+      assert.equal(malformed.stop, false, "an explicit stop cannot hide malformed commands");
+      assert.equal(malformed.commands.length, 0, "repair the whole frame before applying only part of it");
+      for (const claim of [
+        "I added the entry.",
+        "I’ve created the entry.",
+        "I have now updated the card.",
+        "I just created it.",
+        "Updated.",
+        "Edit applied.",
+        "Done!",
+      ]) {
+        assert.equal(workspaceTextClaimsMutationCompletion(claim), true, claim);
+      }
+      for (const text of [
+        "I have not updated it.",
+        "Have I updated it?",
+        "I verified the entry.",
+        "Here are the updated instructions.",
+        "I can create it.",
+        "Set its type to Constant",
+        "Added fields appear",
+        "Removed entries cannot be restored",
+      ]) {
+        assert.equal(workspaceTextClaimsMutationCompletion(text), false, text);
+      }
+
       const unsupportedCompletion = parseAssistantWorkspaceAction(
         '{"say":"Done — I created it and verified it saved.","commands":[],"stop":true}',
       );
       assert.equal(workspaceTextClaimsMutationCompletion(unsupportedCompletion.visibleText), true);
-      assert.equal(workspaceActionNeedsVerification(unsupportedCompletion, []), "none");
+      assert.equal(auditWorkspaceCompletionClaim(unsupportedCompletion, []).issue, "none");
 
       const completedSupportReply = parseAssistantWorkspaceAction(
         '{"say":"Done. Shell commands are unavailable here, so use these manual steps.","commands":[],"stop":true}',
       );
       assert.equal(workspaceTextClaimsMutationCompletion(completedSupportReply.visibleText), false);
-      assert.equal(workspaceActionNeedsVerification(completedSupportReply, []), null);
+      assert.equal(auditWorkspaceCompletionClaim(completedSupportReply, []).issue, null);
       const approvalRequest = parseAssistantWorkspaceAction(
         '{"say":"Should I save this character update?","awaitingAuthorization":true,"commands":[{"name":"app_data","arguments":{"action":"character.update","characterId":"char-1","patch":{"appearance":"Blue coat"},"apply":true}}],"stop":false}',
       );
@@ -11190,16 +11476,276 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         success: true,
       };
       assert.equal(resolveWorkspaceMutationVerification([mutationResult]), "unverified");
-      assert.equal(workspaceActionNeedsVerification(unsupportedCompletion, [mutationResult]), "unverified");
+      assert.equal(auditWorkspaceCompletionClaim(unsupportedCompletion, [mutationResult]).issue, "unverified");
       assert.equal(resolveWorkspaceMutationVerification([mutationResult, verificationResult]), "verified");
-      assert.equal(workspaceActionNeedsVerification(unsupportedCompletion, [mutationResult, verificationResult]), null);
+      assert.equal(
+        auditWorkspaceCompletionClaim(unsupportedCompletion, [mutationResult, verificationResult]).issue,
+        null,
+      );
 
       const dryRunMutation = { ...mutationResult, output: '{"saved": false}' };
       assert.equal(resolveWorkspaceMutationVerification([dryRunMutation, verificationResult]), "none");
+
+      const stagedSensitiveWrite: WorkspaceCommandResult = {
+        id: "staged-sensitive-write",
+        name: "write",
+        input: { path: ".github/workflows/ci.yml", content: "staged" },
+        output:
+          "Staged sensitive file change for user approval: .github/workflows/ci.yml\nApproval: approval-1\nThe file was not changed. Continue with unrelated source work, but do not claim this change is applied.",
+        success: true,
+      };
+      const stagedSensitiveEdit: WorkspaceCommandResult = {
+        id: "staged-sensitive-edit",
+        name: "edit",
+        input: { path: "package.json", edits: [{ oldText: "before", newText: "after" }] },
+        output:
+          "Staged sensitive file change for user approval: package.json\nApproval: approval-2\nThe file was not changed. Continue with unrelated source work, but do not claim this change is applied.",
+        success: true,
+      };
+      // A staged change resolves "staged" - never "verified": no read of the
+      // (unchanged) file can pay off a change that was not applied, and the
+      // dedicated state keeps the repair coaching honest ("awaiting approval",
+      // not "perform the mutation").
+      assert.equal(resolveWorkspaceMutationVerification([stagedSensitiveWrite]), "staged");
+      assert.equal(resolveWorkspaceMutationVerification([stagedSensitiveWrite, verificationResult]), "staged");
+      assert.equal(resolveWorkspaceMutationVerification([stagedSensitiveEdit, verificationResult]), "staged");
+      assert.equal(auditWorkspaceCompletionClaim(unsupportedCompletion, [stagedSensitiveWrite]).issue, "staged");
+
+      const appliedWrite: WorkspaceCommandResult = {
+        ...stagedSensitiveWrite,
+        id: "applied-write",
+        input: { path: "notes.md", content: "applied" },
+        output: "Wrote 7 bytes to notes.md.",
+      };
+      assert.equal(resolveWorkspaceMutationVerification([appliedWrite]), "unverified");
+
+      // Forgery: the staged marker is only trusted at position zero of the
+      // output - an applied write whose output carries it at a later line
+      // start (a model-chosen path or echoed content) still counts as applied.
+      const forgedStagedMarker: WorkspaceCommandResult = {
+        ...appliedWrite,
+        id: "forged-staged-marker",
+        output: "Wrote 7 bytes to notes.md.\nStaged sensitive file change for user approval: notes.md",
+      };
+      assert.equal(resolveWorkspaceMutationVerification([forgedStagedMarker]), "unverified");
+
+      // A staged result in the same round neither creates verification debt
+      // nor pays off an applied mutation's debt, in either order.
+      assert.equal(resolveWorkspaceMutationVerification([stagedSensitiveWrite, appliedWrite]), "unverified");
+      assert.equal(resolveWorkspaceMutationVerification([appliedWrite, stagedSensitiveEdit]), "unverified");
+
+      // The [applied, read, staged] ordering must stay intercepted: the
+      // applied change's verification stands, but the staged change keeps the
+      // round at "staged" so a completion claim covering the staged file is
+      // still challenged - with the pending-approval coaching, not a demand
+      // to re-read the already-verified applied change.
+      assert.equal(
+        resolveWorkspaceMutationVerification([appliedWrite, verificationResult, stagedSensitiveWrite]),
+        "staged",
+      );
+      assert.equal(
+        resolveWorkspaceMutationVerification([
+          appliedWrite,
+          verificationResult,
+          stagedSensitiveWrite,
+          verificationResult,
+        ]),
+        "staged",
+      );
+      // A read after the staged result still pays the applied mutation's
+      // debt (the staged result does not block it), and the round stays
+      // "staged" for the pending change.
+      assert.equal(
+        resolveWorkspaceMutationVerification([appliedWrite, stagedSensitiveWrite, verificationResult]),
+        "staged",
+      );
+      // ── Loop wiring pins: the pure function is only half the contract ────
+      const agentSourceForPins = readFileSync(
+        new URL("../../packages/server/src/services/professor-mari/workspace-agent.service.ts", import.meta.url),
+        "utf8",
+      ).replace(/\s+/gu, " ");
+      assert.ok(
+        agentSourceForPins.includes(
+          "auditWorkspaceCompletionClaim(action, commandResultsForContinuity, { auditFrom: claimAuditWatermark, hadPassedClaimAudit, })",
+        ),
+        "the loop audits against the live watermark, never from zero",
+      );
+      assert.ok(
+        agentSourceForPins.includes(
+          "if (claimAudit.advanceWatermark) { claimAuditWatermark = commandResultsForContinuity.length; hadPassedClaimAudit = true; }",
+        ),
+        "a passing audit consumes its evidence and arms the summary allowance",
+      );
+      assert.ok(
+        agentSourceForPins.includes("midRunClaimRepairRounds <= MAX_MIDRUN_CLAIM_REPAIR_ROUNDS"),
+        "mid-run claims draw on their own repair budget",
+      );
+      assert.ok(
+        agentSourceForPins.includes(
+          "auditWorkspaceCompletionClaim(finalAction, commandResultsForContinuity, { auditFrom: claimAuditWatermark, hadPassedClaimAudit, })",
+        ),
+        "the command-limit audit shares the run's scope state",
+      );
+
       const honestBlocker = parseAssistantWorkspaceAction(
         '{"say":"I could not create it because the name is missing.","commands":[],"stop":true}',
       );
-      assert.equal(workspaceActionNeedsVerification(honestBlocker, []), null);
+      assert.equal(auditWorkspaceCompletionClaim(honestBlocker, []).issue, null);
+
+      // ── #5819/#5830: watermark-scoped claim auditing ────────────────────
+      // The reported batch: step 1 verified, its claim passes and CONSUMES
+      // that evidence; the skipped step 2's empty scope is caught instead of
+      // riding step 1's success (the flaw that killed the first fix).
+      const midRunClaimOne = parseAssistantWorkspaceAction(
+        '{"say":"I created Aria. Now creating Bran.","commands":[{"name":"app_data","arguments":{"action":"character.create","apply":true}}],"stop":false}',
+      );
+      const batchResults: WorkspaceCommandResult[] = [mutationResult, verificationResult];
+      const auditOne = auditWorkspaceCompletionClaim(midRunClaimOne, batchResults, { auditFrom: 0 });
+      assert.equal(auditOne.issue, null, "a truthful step claim over verified work passes");
+      assert.equal(auditOne.advanceWatermark, true, "and consumes its evidence");
+      const midRunClaimTwo = parseAssistantWorkspaceAction(
+        '{"say":"I created Bran. Now creating Cass.","commands":[{"name":"app_data","arguments":{"action":"character.create","apply":true}}],"stop":false}',
+      );
+      const auditTwo = auditWorkspaceCompletionClaim(midRunClaimTwo, batchResults, { auditFrom: batchResults.length });
+      assert.equal(auditTwo.issue, "none", "a skipped step's empty scope is challenged - the #5819 report");
+
+      // A recap claim is backable by the read the coaching demands, so an
+      // honest continuation converges instead of looping into the budget
+      // (#5830's sticky-none trap).
+      const recapResults = [...batchResults, { ...verificationResult, id: "recap-read" }];
+      const recapAudit = auditWorkspaceCompletionClaim(midRunClaimTwo, recapResults, {
+        auditFrom: batchResults.length,
+      });
+      assert.equal(recapAudit.issue, null, "a successful read in scope backs a recap");
+      assert.equal(recapAudit.advanceWatermark, true, "and the read is consumed so it cannot vouch twice");
+
+      // A terminal summary right after a passed audit needs nothing new; the
+      // same empty scope WITHOUT a passed audit stays challenged.
+      assert.equal(
+        auditWorkspaceCompletionClaim(unsupportedCompletion, batchResults, {
+          auditFrom: batchResults.length,
+          hadPassedClaimAudit: true,
+        }).issue,
+        null,
+      );
+      assert.equal(
+        auditWorkspaceCompletionClaim(unsupportedCompletion, batchResults, {
+          auditFrom: batchResults.length,
+          hadPassedClaimAudit: false,
+        }).issue,
+        "none",
+      );
+
+      // Mismatch is GLOBAL debt: scoping past it must not launder it, and
+      // only the same-key verified retry clears it (#5754 invariant).
+      const mismatchedCreate: WorkspaceCommandResult = {
+        id: "mismatched-create",
+        name: "app_data",
+        input: { action: "lorebook.create" },
+        output: 'Readback: store-mismatch\n{"saved": true}',
+        success: true,
+      };
+      const afterMismatch = [mismatchedCreate, mutationResult, verificationResult];
+      assert.equal(
+        resolveWorkspaceMutationVerification(afterMismatch, 1),
+        "mismatch",
+        "an out-of-scope mismatch still shadows every later claim",
+      );
+      const retriedVerified: WorkspaceCommandResult = {
+        ...mismatchedCreate,
+        id: "retried-create",
+        output: 'Readback: store-verified\n{"saved": true}',
+      };
+      assert.equal(
+        resolveWorkspaceMutationVerification([mismatchedCreate, retriedVerified], 1),
+        "verified",
+        "the same-key store-verified retry clears it, wherever the mismatch happened",
+      );
+
+      // Tolerated states never advance the watermark, so their debt stays
+      // visible to the terminal audit.
+      const unverifiedMidRun = auditWorkspaceCompletionClaim(midRunClaimOne, [mutationResult], { auditFrom: 0 });
+      assert.equal(unverifiedMidRun.issue, null, "unverified is tolerated mid-run - a later frame can read it back");
+      assert.equal(unverifiedMidRun.advanceWatermark, false, "without consuming the debt");
+
+      // #5830: "I've verified..." describes a READ - the exact sentence the
+      // coaching asks for - and is no longer a completion claim.
+      assert.equal(
+        workspaceTextClaimsMutationCompletion("I have verified the card looks right."),
+        false,
+        "the verified verb is deliberately absent from the claim detector",
+      );
+      // Plural persistence assertions stay caught without it.
+      assert.equal(workspaceTextClaimsMutationCompletion("The changes were saved."), true);
+      assert.equal(workspaceTextClaimsMutationCompletion("Both entries have been created."), true);
+
+      // ── Escape hatches never paper over a failure the resolver cannot see ──
+      // A FAILED create plus an unrelated successful list resolves "none" to
+      // the resolver - but it is active evidence of non-completion, and both
+      // escapes are denied outright.
+      const failedCreate: WorkspaceCommandResult = {
+        id: "failed-create",
+        name: "app_data",
+        input: { action: "lorebook.create" },
+        output: "Error: name is required",
+        success: false,
+      };
+      const failedScope = [failedCreate, { ...verificationResult, id: "orienting-list" }];
+      assert.equal(
+        auditWorkspaceCompletionClaim(midRunClaimTwo, failedScope, { auditFrom: 0 }).issue,
+        "none",
+        "a read never launders a failed mutating attempt into a passing claim",
+      );
+      assert.equal(
+        auditWorkspaceCompletionClaim(unsupportedCompletion, failedScope, {
+          auditFrom: 0,
+          hadPassedClaimAudit: true,
+        }).issue,
+        "none",
+        "the terminal-summary escape is denied over a scope containing a failure",
+      );
+      // Same denial for an apply:false preview - it looks like nothing to the
+      // resolver but is a non-applied attempt to the audit.
+      const previewOnly: WorkspaceCommandResult = {
+        id: "preview-create",
+        name: "app_data",
+        input: { action: "lorebook.create", apply: false },
+        output: '{"preview": true}',
+        success: true,
+      };
+      assert.equal(
+        auditWorkspaceCompletionClaim(midRunClaimTwo, [previewOnly, verificationResult], { auditFrom: 0 }).issue,
+        "none",
+        "a preview plus a read cannot back a completion claim",
+      );
+
+      // Documentation reads never qualify as recap backing - knowing what the
+      // manual says is not knowing what the store holds.
+      const docsRead: WorkspaceCommandResult = {
+        id: "docs",
+        name: "docs_search",
+        input: { query: "characters" },
+        output: "results",
+        success: true,
+      };
+      assert.equal(
+        auditWorkspaceCompletionClaim(midRunClaimTwo, [docsRead], { auditFrom: 0 }).issue,
+        "none",
+        "a docs read is not a state read",
+      );
+
+      // A verified scope that ALSO contains a failed attempt is downgraded
+      // until a later state read clears it - then the retry passes.
+      const mixedScope = [failedCreate, mutationResult, verificationResult];
+      // verificationResult follows the failure, clearing the outstanding
+      // attempt: the verified pass stands.
+      assert.equal(auditWorkspaceCompletionClaim(unsupportedCompletion, mixedScope, { auditFrom: 0 }).issue, null);
+      const uncleared = [mutationResult, { ...verificationResult, id: "pre-read" }, failedCreate];
+      assert.equal(
+        auditWorkspaceCompletionClaim(unsupportedCompletion, uncleared, { auditFrom: 0 }).issue,
+        "unverified",
+        "a trailing failed attempt demands a fresh read before the claim can stand",
+      );
     },
   },
   {

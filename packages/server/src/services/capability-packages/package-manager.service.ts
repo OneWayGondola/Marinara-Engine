@@ -9,15 +9,20 @@ import {
   capabilityPackageManifestSchema,
   compareCapabilityPackageVersions,
   getCapabilityApiCompatibilityIssue,
+  GM_VERB_TABLE_ASSET_PATH,
+  GM_VERB_TABLE_MAX_BYTES,
   isInstalledCapabilityReady,
   installedCapabilityRegistrySchema,
   packagedAgentDefinitionsSchema,
+  capabilityReleaseNotesSchema,
   type CapabilityCatalog,
   type CapabilityCatalogPackage,
   type StampedCapabilityCatalog,
   type StampedCapabilityCatalogPackage,
   type PackagedAgentDefinition,
   type CapabilityPackageUpdate,
+  type CapabilityPackageVersionNote,
+  type CapabilityReleaseNotes,
   type InstalledCapabilityPackage,
 } from "@marinara-engine/shared";
 import { DATA_DIR } from "../../utils/data-dir.js";
@@ -174,6 +179,26 @@ export function resolvePreviewCatalogUrl(
   const match = ENGINE_RELEASE_VERSION_PATTERN.exec(engineVersion.trim());
   return match ? `${previewRoot}/v${Number(match[1])}/catalog.json` : `${previewRoot}/catalog.json`;
 }
+
+/** URL of the release-notes sidecar for a catalog, or null when none can be derived.
+ *
+ *  Release notes are published as `notes.json` beside the `catalog.json` they
+ *  describe, in every lane and in the preview overlay. Deriving the sibling keeps
+ *  this working for the official lanes, a fork, and a local file server without a
+ *  second environment variable.
+ *
+ *  A configured catalog URL that does not end in `/catalog.json` yields null rather
+ *  than a guess. Appending `notes.json` to an arbitrary operator-supplied path would
+ *  fetch a URL nobody pointed us at. */
+export function resolveCapabilityReleaseNotesUrl(catalogUrl: string | null): string | null {
+  if (!catalogUrl) return null;
+  const trimmed = catalogUrl.trim();
+  if (!trimmed.endsWith("/catalog.json")) return null;
+  return `${trimmed.slice(0, -"catalog.json".length)}notes.json`;
+}
+
+const RELEASE_NOTES_URL = resolveCapabilityReleaseNotesUrl(CATALOG_URL);
+const RELEASE_NOTES_TTL_MS = 5 * 60 * 1000;
 
 const PREVIEW_CATALOG_URL = resolvePreviewCatalogUrl();
 const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
@@ -584,6 +609,22 @@ export function findCompatibleCapabilityPackageUpdates(
   });
 }
 
+/** Decorate pending updates with the notes published for their target version.
+ *
+ *  Pure and separate from the fetch so the mapping is testable without a network,
+ *  and so a notes document that is absent, unreadable, or missing this package
+ *  provably returns the update list unchanged. */
+export function attachCapabilityReleaseNotes(
+  updates: CapabilityPackageUpdate[],
+  notes: CapabilityReleaseNotes | null,
+): CapabilityPackageUpdate[] {
+  if (!notes) return updates;
+  return updates.map((update) => {
+    const note = notes.packages[update.id]?.versions.find((entry) => entry.version === update.version);
+    return note ? { ...update, releaseNotes: note.notes, releaseHighlight: note.highlight } : update;
+  });
+}
+
 export function findPendingCapabilityPackageUpdates(
   installedPackages: InstalledCapabilityPackage[],
   catalog: CapabilityCatalog,
@@ -790,6 +831,70 @@ async function fetchPreviewCatalogPackages(
     logger.warn(error, "Could not read the Agent preview overlay; continuing with the published catalog");
     return [];
   }
+}
+
+/** Cached merged notes document, or null when nothing could be read.
+ *
+ *  One cache serves both the update prompt and the catalog detail sheet, so opening
+ *  Download Agents right after dismissing a prompt costs no second request. */
+let releaseNotesCache: { at: number; notes: CapabilityReleaseNotes | null } | null = null;
+
+/** Read one notes document. Never throws and never rejects: notes are decoration.
+ *
+ *  Absent (404), unreachable, malformed, or over a cap all mean the same thing to
+ *  every caller — no notes — and must leave installing and updating exactly as they
+ *  behave on a catalog that publishes none. */
+async function fetchReleaseNotesDocument(
+  url: string,
+  fetchNotes: typeof safeFetch,
+): Promise<CapabilityReleaseNotes | null> {
+  try {
+    const response = await fetchCatalogDocument(url, fetchNotes);
+    if (response.status === 404) {
+      logger.debug("No Agent release notes are published at %s", url);
+      return null;
+    }
+    if (!response.ok) {
+      logger.warn("Agent release notes request failed with HTTP %d", response.status);
+      return null;
+    }
+    const parsed = capabilityReleaseNotesSchema.safeParse(await response.json());
+    if (!parsed.success) {
+      logger.warn("Ignoring an Agent release notes document this Engine cannot parse: %s", parsed.error.message);
+      return null;
+    }
+    return parsed.data;
+  } catch (error) {
+    logger.warn(error, "Could not read Agent release notes; continuing without them");
+    return null;
+  }
+}
+
+async function readReleaseNotes(
+  fetchNotes: typeof safeFetch = safeFetch,
+  notesUrl: string | null = RELEASE_NOTES_URL,
+  previewNotesUrl: string | null = resolveCapabilityReleaseNotesUrl(PREVIEW_CATALOG_URL),
+): Promise<CapabilityReleaseNotes | null> {
+  if (releaseNotesCache && Date.now() - releaseNotesCache.at < RELEASE_NOTES_TTL_MS) return releaseNotesCache.notes;
+  if (!notesUrl) {
+    releaseNotesCache = { at: Date.now(), notes: null };
+    return null;
+  }
+  const published = await fetchReleaseNotesDocument(notesUrl, fetchNotes);
+  // Preview-overlay packages publish their notes in the overlay's own sidecar. A
+  // published id always wins, mirroring how catalog() resolves the same collision.
+  const preview = previewNotesUrl ? await fetchReleaseNotesDocument(previewNotesUrl, fetchNotes) : null;
+  const notes =
+    published || preview
+      ? { schemaVersion: 1 as const, packages: { ...(preview?.packages ?? {}), ...(published?.packages ?? {}) } }
+      : null;
+  releaseNotesCache = { at: Date.now(), notes };
+  return notes;
+}
+
+/** Test seam: drops the cached notes document so a regression can serve a new one. */
+export function resetCapabilityReleaseNotesCache() {
+  releaseNotesCache = null;
 }
 
 export const capabilityPackageManager = {
@@ -1017,6 +1122,94 @@ export const capabilityPackageManager = {
     };
   },
 
+  /** The verified bytes of a package's declared GM verb table (#5798), or null when this package has
+   *  no verbs the Engine may act on. The whole gate chain lives here because
+   *  `readVerifiedInstalledPackageFile` is module-private and this is the one narrow export the verb
+   *  runtime gets — it never receives an `InstalledCapabilityPackage`, so nothing else about a
+   *  package leaks through the seam.
+   *
+   *  Readiness rather than servability: `packageAsset` falls back to the PREVIOUS version's manifest
+   *  for a `restart-required` package, which would keep serving an old vocabulary the running Engine
+   *  no longer matches. `isInstalledCapabilityReady` is the same gate the agent definitions use, so
+   *  after an update that needs a restart the verbs stop resolving until one — a log line, and the
+   *  turn is otherwise untouched.
+   *
+   *  The failure tiers ARE the contract, and the turn survives all of them:
+   *    - not installed / not ready / no table declared → null, quietly. The overwhelmingly common
+   *      case is a package that simply has no verbs.
+   *    - a table declared without `chat-write`, declared but unlisted in `files[]`, or larger than
+   *      the ceiling → null + `logger.warn`. Each is a packaging mistake whose only symptom would
+   *      otherwise be verbs that silently never appear.
+   *    - hash/TOCTOU failure → null + `logger.error` naming tampering. Loud on purpose: the bytes on
+   *      disk are not the bytes that were installed.
+   *
+   *  The `chat-write` gate sits ahead of the read rather than in the caller so an unpermitted
+   *  package's bytes are never loaded at all — and it is checked AFTER the declaration test so a
+   *  package with no table stays silent while a package that ships one and forgot the permission is
+   *  told. This is the first place a declared capability permission is enforced anywhere in the
+   *  Engine; it widens what `chat-write` means for packages that already hold it (#5798). */
+  async gmVerbTableSource(packageId: string): Promise<Buffer | null> {
+    const installed = (await readRegistry()).packages.find((item) => item.id === packageId);
+    if (!installed) return null;
+    if (!isInstalledCapabilityReady(installed)) {
+      logger.info(
+        "[capability/gm-verbs] Package %s is not ready (status=%s); its verbs stay unavailable until restart",
+        packageId,
+        installed.status,
+      );
+      return null;
+    }
+    const tryNormalize = (path: string): string | null => {
+      try {
+        return normalizeArchivePath(path);
+      } catch {
+        return null;
+      }
+    };
+    const declaredAssetPaths = installed.manifest.contributions?.assets?.paths ?? [];
+    if (!declaredAssetPaths.some((path) => tryNormalize(path) === GM_VERB_TABLE_ASSET_PATH)) return null;
+    if (!installed.manifest.permissions.includes("chat-write")) {
+      logger.warn(
+        "[capability/gm-verbs] Package %s declares %s without the chat-write permission; its verbs are refused",
+        packageId,
+        GM_VERB_TABLE_ASSET_PATH,
+      );
+      return null;
+    }
+    const declaration = installed.manifest.files.find((item) => tryNormalize(item.path) === GM_VERB_TABLE_ASSET_PATH);
+    if (!declaration) {
+      // Declared as an asset but never hash-pinned. The manifest schema only checks the other
+      // direction, so this is silent everywhere else in the pipeline.
+      logger.warn(
+        "[capability/gm-verbs] Package %s declares %s as an asset but does not list it in files[]",
+        packageId,
+        GM_VERB_TABLE_ASSET_PATH,
+      );
+      return null;
+    }
+    // Checked against the DECLARED size, before the read: `files[].bytes` permits up to 100 MB and
+    // nothing else caps an asset ahead of loading it into memory.
+    if (declaration.bytes > GM_VERB_TABLE_MAX_BYTES) {
+      logger.warn(
+        "[capability/gm-verbs] Package %s declares a %d-byte verb table over the %d-byte ceiling; refused unread",
+        packageId,
+        declaration.bytes,
+        GM_VERB_TABLE_MAX_BYTES,
+      );
+      return null;
+    }
+    try {
+      return (await readVerifiedInstalledPackageFile(installed, GM_VERB_TABLE_ASSET_PATH)).data;
+    } catch (error) {
+      logger.error(
+        error,
+        "[capability/gm-verbs] Verb table for %s failed integrity verification — the file on disk is not the file that was installed",
+        packageId,
+      );
+      return null;
+    }
+  },
+
   async markRuntimeStatus(
     packageId: string,
     status: InstalledCapabilityPackage["status"],
@@ -1153,7 +1346,26 @@ export const capabilityPackageManager = {
     const declinedVersions = Object.fromEntries(
       Object.entries(decisions.declined).map(([id, decision]) => [id, decision.version]),
     );
-    return findPendingCapabilityPackageUpdates(installedPackages, catalog, declinedVersions);
+    const updates = findPendingCapabilityPackageUpdates(installedPackages, catalog, declinedVersions);
+    if (updates.length === 0) return updates;
+    // Decoration only: a notes document that is absent or unreadable must leave
+    // this list exactly as an Engine without the feature would return it.
+    return attachCapabilityReleaseNotes(updates, await readReleaseNotes());
+  },
+
+  /** Published notes for one package, newest first, or [] when none exist.
+   *
+   *  Sorted here rather than trusted: the official build emits newest-first, but a
+   *  custom catalog is under no such obligation and the history sheet renders this
+   *  order as-is. */
+  async releaseNotes(
+    packageId: string,
+    fetchNotes: typeof safeFetch = safeFetch,
+  ): Promise<CapabilityPackageVersionNote[]> {
+    const notes = await readReleaseNotes(fetchNotes);
+    return [...(notes?.packages[packageId]?.versions ?? [])].sort((left, right) =>
+      compareCapabilityPackageVersions(right.version, left.version),
+    );
   },
 
   async declineUpdate(packageId: string, version: string) {

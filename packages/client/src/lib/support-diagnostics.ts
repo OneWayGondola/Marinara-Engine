@@ -1,4 +1,7 @@
+import type { ClientRuntimeDiagnostics } from "./client-runtime-diagnostics";
+
 export interface SupportDiagnostics {
+  clientRuntime?: ClientRuntimeDiagnostics;
   version: string;
   build: string;
   commit: string | null;
@@ -24,6 +27,49 @@ export interface SupportDiagnostics {
   serverUnreachable?: boolean;
   /** Most recent host suspension the server's freeze detector observed. */
   lastFreeze?: { detectedAt: string; gapMs: number; suspendedMs: number } | null;
+  /**
+   * #5506 diagnostics: how the PREVIOUS server session ended, from the
+   * heartbeat postmortem. An external kill (Android phantom process killer,
+   * battery manager, reboot) leaves no in-process trace, so this is the only
+   * witness. Tri-state on purpose: "unknown" (first run, unreadable record,
+   * a live sibling instance) must never render as a clean shutdown.
+   */
+  previousSession?:
+    | { status: "unknown"; reason: string }
+    | {
+        status: "ended";
+        exitKind: "clean" | "crash" | "restart" | "forced";
+        exitedAt: string | null;
+        exitCode: number | null;
+      }
+    | {
+        status: "unclean";
+        record: {
+          startedAt: string;
+          lastSeenAt: string;
+          uptimeMs: number;
+          rssMiB: number;
+          heapUsedMiB: number;
+          pid: number;
+          rebootedSince: boolean | null;
+          detectedAt: string;
+        };
+      };
+  /** How many unclean exits the server has recorded (rolling window). */
+  uncleanExitCount?: number;
+  /**
+   * #5740: the phrase Professor Mari reported acting on in her most recent
+   * mutating round, for triaging "she edited something I never asked for"
+   * reports. Latest round only; undefined when the status fetch failed.
+   */
+  mariActingOn?: {
+    text: string | null;
+    permissionsMode: string;
+    /** Observed outcome of the round's mutating commands (held/applied/failed/interrupted). */
+    outcome: string;
+    commands: string[];
+    recordedAt: string;
+  } | null;
 }
 
 export function resolveClientOs(userAgent: string, platform: string, maxTouchPoints = 0): string {
@@ -64,6 +110,61 @@ function available(value: string | null | undefined): string {
 
 export const SERVER_UNREACHABLE_DIAGNOSTIC = "Unreachable (request timed out)";
 
+/**
+ * #5740: the acting-on phrase is model-authored free text - the only such
+ * field in this line-oriented report. Flatten it (a multi-line quote would
+ * forge extra report lines and orphan the [mode: ...] metadata) and cap it to
+ * a report-appropriate length; the full text stays in the Mari transcript.
+ */
+function reportPhrase(text: string): string {
+  const flattened = text.replace(/\s+/gu, " ").trim();
+  return flattened.length > 200 ? `${flattened.slice(0, 200)}…` : flattened;
+}
+
+/**
+ * #5740: honest outcome wording. The record's outcome is observed, never
+ * asserted - a Plan-floor refusal must read as refused, never as an execution
+ * the server did not observe, or a pasted report manufactures a Plan-escape
+ * P0 that never happened.
+ */
+const MARI_OUTCOME_LABELS: Record<string, string> = {
+  held: "held for approval",
+  applied: "applied",
+  failed: "refused or failed",
+  interrupted: "interrupted before completion",
+};
+
+function formatUptime(uptimeMs: number): string {
+  const minutes = Math.round(uptimeMs / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * #5506: how the previous server session ended. Every branch reports only
+ * what was observed - an unknown fate never renders as a clean shutdown, and
+ * an ending the server itself logged (crash, restart) is never attributed to
+ * an external kill.
+ */
+const SESSION_EXIT_LABELS: Record<string, string> = {
+  clean: "shut down cleanly",
+  crash: "ended in a server crash (details in the server log)",
+  restart: "restarted itself for an update or a settings restart",
+  forced: "was stopped before its shutdown could finish, so the very last changes may not have been saved",
+};
+
+function formatPreviousSession(diagnostics: SupportDiagnostics): string {
+  const previous = diagnostics.previousSession;
+  if (previous === undefined) return "Unavailable";
+  if (previous.status === "unknown") return `unknown - ${previous.reason}`;
+  if (previous.status === "ended") {
+    const label = SESSION_EXIT_LABELS[previous.exitKind] ?? previous.exitKind;
+    return previous.exitedAt ? `${label} at ${previous.exitedAt}` : label;
+  }
+  const record = previous.record;
+  return `ended without shutting down - last alive ${record.lastSeenAt} (up ${formatUptime(record.uptimeMs)}, RSS ${record.rssMiB} MiB); device rebooted before next launch: ${record.rebootedSince === null ? "unknown" : record.rebootedSince ? "yes" : "no"}`;
+}
+
 export function formatSupportDiagnostics(diagnostics: SupportDiagnostics): string {
   const memory = diagnostics.serverMemory;
   const freeze = diagnostics.lastFreeze;
@@ -81,11 +182,35 @@ export function formatSupportDiagnostics(diagnostics: SupportDiagnostics): strin
     `Server memory: ${unreachable ? SERVER_UNREACHABLE_DIAGNOSTIC : memory ? `heap ${memory.heapUsedMiB} / ${memory.heapLimitMiB} MiB; RSS ${memory.rssMiB} MiB` : "Unavailable"}`,
     `Background wake lock: ${unreachable ? SERVER_UNREACHABLE_DIAGNOSTIC : (diagnostics.wakeLock ?? "not reported")}`,
     `Last detected freeze: ${unreachable ? SERVER_UNREACHABLE_DIAGNOSTIC : freeze ? `~${Math.round(freeze.suspendedMs / 1000)}s suspension, thawed at ${freeze.detectedAt}` : "none detected"}`,
+    // #5506: the previous session's fate, and the running count of sessions
+    // that ended without shutting down. The count is reported even when the
+    // LAST session ended normally - a history of kills is the pattern worth
+    // seeing, and hiding it behind the most recent session buries it.
+    `Previous session: ${unreachable ? SERVER_UNREACHABLE_DIAGNOSTIC : formatPreviousSession(diagnostics)}`,
+    `Sessions ended without shutdown: ${
+      unreachable
+        ? SERVER_UNREACHABLE_DIAGNOSTIC
+        : typeof diagnostics.uncleanExitCount === "number"
+          ? `${diagnostics.uncleanExitCount} recorded`
+          : "Unavailable"
+    }`,
     `Client OS: ${available(diagnostics.clientOs)}`,
     `Browser / app shell: ${available(diagnostics.browser)}`,
+    // Like the existing server fields, this is an English technical support
+    // report, not UI copy. Event names are stable diagnostic protocol values.
+    `Client runtime: ${diagnostics.clientRuntime ? JSON.stringify(diagnostics.clientRuntime) : "Unavailable"}`,
     `GPU: ${available(diagnostics.gpu)}`,
     `Active connection: ${available(diagnostics.connectionName)}`,
     `Connection provider: ${available(diagnostics.connectionProvider)}`,
     `LLM model: ${available(diagnostics.model)}`,
+    // #5740 triage line: what Mari last reported acting on. undefined = the
+    // status fetch failed (say so); null = no mutating round recorded yet.
+    `Mari last acted on: ${
+      diagnostics.mariActingOn === undefined
+        ? "Unavailable (workspace status not reachable)"
+        : diagnostics.mariActingOn === null
+          ? "none recorded this session"
+          : `${diagnostics.mariActingOn.text ? `"${reportPhrase(diagnostics.mariActingOn.text)}"` : "(no phrase reported)"} [mode: ${diagnostics.mariActingOn.permissionsMode}; ${MARI_OUTCOME_LABELS[diagnostics.mariActingOn.outcome] ?? diagnostics.mariActingOn.outcome}; ${diagnostics.mariActingOn.commands.join(", ") || "no commands"}; at ${diagnostics.mariActingOn.recordedAt}]`
+    }`,
   ].join("\n");
 }

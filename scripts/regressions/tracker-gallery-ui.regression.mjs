@@ -112,8 +112,8 @@ assert.match(
 );
 assert.match(
   roleplayHud,
-  /const centered = window\.innerWidth < 768;[\s\S]*?Math\.round\(window\.innerWidth \/ 2\)[\s\S]*?transform: pos\.centered \? "translateX\(-50%\)" : undefined/u,
-  "the mobile Agents menu must center itself horizontally",
+  /const left =\s*window\.innerWidth < 768\s*\? Math\.max\(8, Math\.round\(\(window\.innerWidth - dropdownWidth\) \/ 2\)\)[\s\S]*?style=\{\{ top: pos\.top, left: pos\.left \}\}/u,
+  "the mobile Agents menu must center with layout coordinates, avoiding a conflict with its transform animation",
 );
 assert.match(
   roleplayHud,
@@ -229,8 +229,8 @@ assert.equal(
 );
 assert.equal(
   (advancedParameters.match(/<AgentSettingsActionButton/gu) ?? []).length,
-  2,
-  "Advanced Parameters save and reset actions must reuse the shared action button",
+  3,
+  "Advanced Parameters retry, save, and reset actions must reuse the shared action button",
 );
 assert.doesNotMatch(
   chatSettingsDrawer,

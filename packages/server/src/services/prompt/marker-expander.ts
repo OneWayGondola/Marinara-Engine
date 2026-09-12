@@ -4,7 +4,12 @@
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
-import { formatRpgStatsForPrompt, isExternallyImportedAgent, resolveMacros } from "@marinara-engine/shared";
+import {
+  formatRpgStatsForPrompt,
+  isExternallyImportedAgent,
+  publicAgentOutput,
+  resolveMacros,
+} from "@marinara-engine/shared";
 import type {
   CharacterMacroProfile,
   MarkerConfig,
@@ -23,13 +28,15 @@ import { processLorebooks, type LorebookFinalContentResolver, type LorebookScanR
 import { cardPromptText } from "./card-text.js";
 import { wrapContent } from "./format-engine.js";
 import { sanitizeExampleDialoguePromptLeaf, sanitizePromptLeaf } from "./prompt-escaping.js";
-import { agentRuns } from "../../db/schema/index.js";
-import { eq, and, desc } from "../../db/file-query.js";
+
+/** World-info positions a lorebook marker can place: position 0 (before) and position 1 (after). */
+export type LorebookMarkerPosition = "before" | "after";
 
 /** Context required for expanding markers. */
 export interface MarkerContext {
   db: DB;
   chatId: string;
+  agentHistoryMessageId?: string;
   characterIds: string[];
   /** Character scope used only for lorebook matching. */
   lorebookCharacterIds?: string[];
@@ -95,6 +102,12 @@ export interface MarkerContext {
   updatedEntryTimingStates?: Record<string, LorebookEntryTimingState>;
   /** Cached lorebook scan for all lorebook marker sections in this prompt build. */
   lorebookScanResult?: LorebookScanResult;
+  /**
+   * World-info positions already emitted by a lorebook marker in this prompt build.
+   * Each position (before / after) is inserted at most once, so a preset with several
+   * lorebook markers cannot duplicate the same entries across placeholders.
+   */
+  lorebookPositionsEmitted?: Set<LorebookMarkerPosition>;
   /** Adds context for character-ID macros found only after lorebook activation. */
   onLorebookScan?: (result: LorebookScanResult) => Promise<void>;
   /** True once the activated lorebook callback has completed. */
@@ -431,19 +444,37 @@ export async function ensureLorebookScan(ctx: MarkerContext): Promise<LorebookSc
   return result;
 }
 
+/**
+ * Expand a lorebook marker into the activated world-info content for its position(s).
+ * A combined marker covers both positions; "before" and "after" markers cover one each.
+ */
 async function expandLorebook(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
   const result = await ensureLorebookScan(ctx);
   if (!result) return { content: "" };
 
+  // Each world-info position is owned by the first lorebook marker that asks for it,
+  // in preset section order (the assembler's resolve order, which also covers
+  // depth-injected markers). A later marker covering the same position (a second
+  // "All" marker, or an "All" marker following a "Before" marker) expands without
+  // it, so entries are never inserted twice in one prompt.
+  const emitted = (ctx.lorebookPositionsEmitted ??= new Set<LorebookMarkerPosition>());
+  const claim = (position: LorebookMarkerPosition, content: string): string => {
+    if (emitted.has(position)) return "";
+    emitted.add(position);
+    return content;
+  };
+
   switch (config.type) {
     case "world_info_before":
-      return { content: result.worldInfoBefore };
+      return { content: claim("before", result.worldInfoBefore) };
     case "world_info_after":
-      return { content: result.worldInfoAfter };
+      return { content: claim("after", result.worldInfoAfter) };
     case "lorebook":
     default: {
-      // Combined lorebook — all world info
-      const combined = [result.worldInfoBefore, result.worldInfoAfter].filter(Boolean).join("\n\n");
+      // Combined lorebook — all world info not already placed by an earlier marker
+      const combined = [claim("before", result.worldInfoBefore), claim("after", result.worldInfoAfter)]
+        .filter(Boolean)
+        .join("\n\n");
       return { content: combined };
     }
   }
@@ -579,28 +610,15 @@ async function expandAgentData(config: MarkerConfig, ctx: MarkerContext): Promis
     return { content: "" };
   }
 
-  const latestRuns = await ctx.db
-    .select()
-    .from(agentRuns)
-    .where(
-      and(eq(agentRuns.agentConfigId, agentConfig.id), eq(agentRuns.chatId, ctx.chatId), eq(agentRuns.success, "true")),
-    )
-    .orderBy(desc(agentRuns.createdAt))
-    .limit(1);
-
-  const run = latestRuns[0];
-  if (!run) return { content: "" };
-
-  let resultData: unknown;
-  try {
-    resultData = JSON.parse(run.resultData);
-  } catch (err) {
-    logger.warn(err, "[prompt] Skipping malformed agent result data for %s in chat %s", agentType, ctx.chatId);
-    return { content: "" };
-  }
+  const resultData = await agentsStorage.getPreviousOutput(
+    agentConfig.id,
+    ctx.chatId,
+    ctx.agentHistoryMessageId,
+    ctx.agentHistoryMessageId,
+  );
 
   // Format result data as readable text
-  return { content: sanitizePromptLeaf(formatAgentResult(resultData), ctx.wrapFormat) };
+  return { content: sanitizePromptLeaf(formatAgentResult(publicAgentOutput(resultData)), ctx.wrapFormat) };
 }
 
 function formatAgentResult(data: unknown): string {

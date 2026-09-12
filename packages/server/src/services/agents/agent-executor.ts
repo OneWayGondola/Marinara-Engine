@@ -2,6 +2,7 @@
 // Agent Executor — Single & Batched LLM execution
 // ──────────────────────────────────────────────
 import { existsSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { buildCharacterAppearanceReferenceBlock } from "../image/character-prompts.js";
 import { basename, extname, join, relative, resolve } from "node:path";
 import type { BaseLLMProvider, ChatMessage, LLMToolDefinition, LLMToolCall, LLMUsage } from "../llm/base-provider.js";
 import type {
@@ -28,6 +29,8 @@ import {
   normalizeTrackerHiddenFields,
   normalizeCustomAgentCapabilities,
   normalizeCustomAgentContextSources,
+  previousAgentOutputText,
+  publicAgentOutput,
   getDefaultAgentPrompt,
   flattenAgentConditionalMacros,
   normalizeRpgStatPools,
@@ -43,6 +46,7 @@ import { normalizeGemma4Delimiters } from "../llm/textual-tool-call-parser.js";
 import { wrapContent } from "../prompt/format-engine.js";
 import { sanitizePromptLeaf } from "../prompt/prompt-escaping.js";
 import { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
+import { completeAgentCall } from "./agent-progress.js";
 import { normalizeCyoaChoiceOutput } from "./cyoa-choice-normalization.js";
 import { getAssetManifest } from "../game/asset-manifest.service.js";
 import { normalizeBeholderProse } from "./beholder-normalizer.js";
@@ -122,6 +126,7 @@ const ALL_AGENT_CONTEXT_SOURCES: CustomAgentContextSources = {
   authorNotes: true,
   trackerData: true,
   recalledMemories: true,
+  previousOutput: false,
 };
 
 function getAgentContextSources(
@@ -255,6 +260,7 @@ export function buildAgentPromptMacroContext(
     char: value(characters.join(", ") || "Assistant"),
     characters: characters.map(value),
     variables: {},
+    agentData: context.previousOutput ? { [context.previousOutput.agentType]: value(context.previousOutput.text) } : {},
     lastInput: latestUserMessage ? value(latestUserMessage.content) : "",
     chatId: value(context.chatId),
     characterProfiles: context.characters.map((character) => ({
@@ -511,6 +517,13 @@ function buildAgentOutputFormatBody(
     parts.push("");
     parts.push(`Agent ${JSON.stringify(config.type)} (${config.name}):`);
     parts.push(template || "Return the requested output for this agent.");
+    if (config.settings.jsonContextOutput === true && resolveAgentResultType(config) === "context_injection") {
+      parts.push(
+        'Return {"text":"content to inject into the main prompt","agent-context":"private context for your next run"}. Only text is injected.',
+      );
+    } else if (getAgentContextSources(config).previousOutput && agentResponseIsJson(config)) {
+      parts.push('You may add an "agent-context" field to retain private continuation context for your next run.');
+    }
   }
 
   return parts.join("\n");
@@ -747,6 +760,10 @@ export async function executeAgent(
   const startTime = Date.now();
 
   try {
+    if (config.isCustomAgent && getAgentContextSources(config).previousOutput) {
+      const data = await context.loadPreviousOutput?.(config.id);
+      context = { ...context, previousOutput: { agentType: config.type, text: previousAgentOutputText(data) } };
+    }
     const template = renderAgentPromptTemplate(
       config.promptTemplate || getDefaultPromptForAgent(config),
       config.settings,
@@ -834,7 +851,7 @@ export async function executeAgent(
     });
 
     let responseText = "";
-    const result = await provider.chatComplete(messages, {
+    const result = await completeAgentCall(context, [config], provider, messages, {
       model,
       temperature,
       maxTokens,
@@ -886,7 +903,7 @@ export async function executeAgent(
         messages: debugMessages(retryMessages),
       });
       let retryResponseText = "";
-      const retryResult = await provider.chatComplete(retryMessages, {
+      const retryResult = await completeAgentCall(context, [config], provider, retryMessages, {
         model,
         temperature,
         maxTokens,
@@ -1009,7 +1026,7 @@ async function executeBeholderLanePasses(args: {
       });
 
       let laneText = "";
-      const result = await provider.chatComplete(messages, {
+      const result = await completeAgentCall(context, [config], provider, messages, {
         model,
         temperature,
         maxTokens,
@@ -1097,7 +1114,7 @@ async function executeBeholderLanePasses(args: {
         messageCount: repairMessages.length,
         messages: debugMessages(repairMessages),
       });
-      const repair = await provider.chatComplete(repairMessages, {
+      const repair = await completeAgentCall(context, [config], provider, repairMessages, {
         model,
         temperature,
         maxTokens,
@@ -1178,7 +1195,7 @@ async function executeAgentWithTools(
       tools: debugToolNames(toolContext.tools),
       round: round + 1,
     });
-    const result = await provider.chatComplete(providerMessages, {
+    const result = await completeAgentCall(context, [config], provider, providerMessages, {
       model,
       temperature,
       maxTokens,
@@ -1274,7 +1291,7 @@ async function executeAgentWithTools(
     round: maxToolRounds + 1,
   });
   const finalRoundStartedAt = Date.now();
-  const finalResult = await provider.chatComplete(finalProviderMessages, {
+  const finalResult = await completeAgentCall(context, [config], provider, finalProviderMessages, {
     model,
     temperature,
     maxTokens,
@@ -1511,7 +1528,7 @@ export async function executeAgentBatch(
     // timeouts (e.g. Cloudflare 524) on large batch responses.
     let responseText = "";
     const result = await runProviderJob(() =>
-      provider.chatComplete(messages, {
+      completeAgentCall(context, configs, provider, messages, {
         model,
         temperature,
         maxTokens: batchMaxTokens,
@@ -1942,6 +1959,8 @@ function shouldRunAgentIndividually(config: Pick<AgentExecConfig, "type" | "sett
   return (
     config.type === "illustrator" ||
     config.type === "beholder" ||
+    normalizeCustomAgentContextSources(config.settings).previousOutput ||
+    config.settings.jsonContextOutput === true ||
     customAgentHasCapability(config.settings, "trigger_image_generation") ||
     config.type === "lorebook-keeper" ||
     resolveAgentResultType(config) === "text_rewrite" ||
@@ -2181,6 +2200,9 @@ function buildStandardAgentMessages(config: AgentExecConfig, template: string, c
   if (triggeredLorebookBlock) {
     systemParts.push(``);
     systemParts.push(triggeredLorebookBlock);
+  }
+  if (contextSources.previousOutput && context.previousOutput?.text) {
+    systemParts.push(wrapContent(context.previousOutput.text, "Previous Agent Output", context.wrapFormat ?? "xml"));
   }
 
   // Build multi-turn message array for this agent (sliced to its own contextSize)
@@ -2618,6 +2640,21 @@ function buildCommittedTrackerStateContext(
   ].join("\n");
 }
 
+/**
+ * Native NovelAI character-caption instruction resolved by the host for this chat's
+ * image connection. The block is already fully formed; it is only passed through
+ * when the host set it, so non-NovelAI connections never see the schema extension.
+ */
+export function buildIllustratorCharacterPromptInstructionBlock(
+  instruction: unknown,
+  appearanceReference?: unknown,
+): string {
+  const block = typeof instruction === "string" ? instruction.trim() : "";
+  if (!block) return "";
+  const reference = typeof appearanceReference === "string" ? appearanceReference.trim() : "";
+  return reference ? `${block}\n${reference}` : block;
+}
+
 export function buildIllustratorImageStyleInstructionBlock(styleInstruction: unknown): string {
   const instruction = typeof styleInstruction === "string" ? styleInstruction.trim() : "";
   if (!instruction) return "";
@@ -2735,13 +2772,24 @@ function buildAgentMessages(
 
   if (context.parallelResults?.length) {
     finalParts.push(`\n<parallel_agent_results>`);
-    finalParts.push(JSON.stringify(context.parallelResults));
+    finalParts.push(
+      JSON.stringify(context.parallelResults.map((result) => ({ ...result, data: publicAgentOutput(result.data) }))),
+    );
     finalParts.push(`</parallel_agent_results>`);
   }
 
   if (context.memory._agentResults) {
     finalParts.push(`\n<agent_results>`);
-    finalParts.push(JSON.stringify(context.memory._agentResults));
+    finalParts.push(
+      JSON.stringify(
+        Object.fromEntries(
+          Object.entries(context.memory._agentResults as Record<string, unknown>).map(([type, data]) => [
+            type,
+            publicAgentOutput(data),
+          ]),
+        ),
+      ),
+    );
     finalParts.push(`</agent_results>`);
   }
 
@@ -3004,6 +3052,21 @@ function buildAgentExtras(
     if (illustratorStyleBlock) parts.push(illustratorStyleBlock);
   }
 
+  if (agentTypes.includes("illustrator")) {
+    const appearanceReference =
+      context.memory._illustratorCaptionAppearanceReference === true
+        ? buildCharacterAppearanceReferenceBlock([
+            ...context.characters.map((char) => ({ name: char.name, appearance: char.appearance ?? "" })),
+            ...(context.persona ? [{ name: context.persona.name, appearance: context.persona.appearance ?? "" }] : []),
+          ])
+        : "";
+    const characterPromptBlock = buildIllustratorCharacterPromptInstructionBlock(
+      context.memory._illustratorCharacterPromptInstruction,
+      appearanceReference,
+    );
+    if (characterPromptBlock) parts.push(characterPromptBlock);
+  }
+
   if (agentTypes.includes("character-tracker") && context.characterTrackerHistory?.length) {
     parts.push(`<character_tracker_history>`);
     parts.push(
@@ -3167,7 +3230,7 @@ function buildAgentExtras(
     parts.push(`<activated_lorebook_context>`);
     parts.push(`Lorebook entries activated for the main generation on this turn:`);
     for (const entry of context.activatedLorebookEntries) {
-      parts.push(`<entry id="${escapeXml(entry.id)}">`);
+      parts.push(`<entry id="${escapeXml(entry.id)}" name="${escapeXml(entry.name ?? "")}">`);
       parts.push(sanitizePromptLeaf(entry.content, wrapFormat));
       parts.push(`</entry>`);
     }
@@ -3373,6 +3436,7 @@ function jsonAgentResponseFormatOverride(
 
 function agentResponseIsJson(config: Pick<AgentExecConfig, "type" | "settings">): boolean {
   if (config.type === "html") return true;
+  if (config.settings.jsonContextOutput === true && resolveAgentResultType(config) === "context_injection") return true;
   const resultType = resolveAgentResultType(config);
   return JSON_AGENTS.has(config.type) || !TEXT_RESULT_TYPES.has(resultType);
 }
@@ -3441,6 +3505,11 @@ function parseAgentResponse(
         throw new Error("Structured agent response must be a JSON object");
       }
       const data = config.type === "cyoa" ? normalizeCyoaChoiceOutput(parsedData) : parsedData;
+      if (config.settings.jsonContextOutput === true && resultType === "context_injection") {
+        const output = data as Record<string, unknown>;
+        if (typeof output.text !== "string") throw new Error("JSON context output requires a text field");
+        output.text = sanitizeTextAgentResponse(output.text);
+      }
       return { type: resultType, data };
     } catch {
       return { type: resultType, data: { raw: responseText, parseError: true } };

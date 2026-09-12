@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "tsx watch --ignore ./data --ignore ../shared/dist --ignore ./node_modules --ignore ../../node_modules src/index.ts --marinara-dev-watch",
     "build": "node ./scripts/build.mjs",
-    "start": "node dist/index.js",
+    "start": "node ../../scripts/run-server.mjs dist/index.js",
     "clean": "node -e \"const fs=require('fs');['dist','tsconfig.tsbuildinfo'].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch{}})\"",
     "lint": "tsc -b ../shared && tsc --noEmit && tsc -p ../../scripts/regressions/tsconfig.character-activity.json"
   },
@@ -23,7 +23,7 @@
     "@huggingface/transformers": "^3.8.1",
     "@marinara-engine/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "adm-zip": "^0.6.0",
+    "adm-zip": "^0.6.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "buttplug": "4.0.1",
@@ -39,10 +39,10 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "@img/sharp-wasm32": "0.35.3",
+    "@img/sharp-wasm32": "0.35.4",
     "onnxruntime-node": "^1.24.3",
     "onnxruntime-web": "^1.27.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",

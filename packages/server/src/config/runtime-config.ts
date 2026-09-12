@@ -519,30 +519,82 @@ export function getGameDynamicImagePromptTimeoutMs() {
 }
 
 /**
+ * SteamOS ships games that claim most of the Deck's 16 GiB of shared RAM, so
+ * unbounded load-and-keep gets the server OOM-killed mid session (#5838). The
+ * cap matches the one the Termux launcher exports, but lives engine-side so it
+ * covers every launch method (start.sh, systemd units, direct node) and so an
+ * explicit MARINARA_MAX_RESIDENT_CHATS - including 0 to disable - always wins
+ * at boot AND on .env hot reload. A launcher export could not offer that: the
+ * initial .env load never overrides inherited shell variables, while hot
+ * reloads do, so the same .env line would flap between boots and reloads.
+ */
+const CONSTRAINED_PLATFORM_DEFAULT_MAX_RESIDENT_CHATS = 8;
+
+let cachedSteamOsDetection: boolean | null = null;
+
+/** Exported for the regression lane; production goes through the cached path. */
+export function detectSteamOs(
+  osReleasePath = "/etc/os-release",
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== "linux") return false;
+  try {
+    return /^ID=["']?steamos["']?\s*$/mu.test(readFileSync(osReleasePath, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Android means Termux - the only way this server runs there. Its launcher
+ * already exports 8 when the variable is unset, so this engine-side default
+ * matters for launcher-less launches and for invalid values, which bash's
+ * ${VAR:-8} substitution passes through verbatim.
+ */
+function constrainedPlatformDetected(): boolean {
+  if (process.platform === "android") return true;
+  if (cachedSteamOsDetection === null) cachedSteamOsDetection = detectSteamOs();
+  return cachedSteamOsDetection;
+}
+
+/** The parameter is a test seam; production callers use the detected value. */
+export function platformDefaultMaxResidentChatUnits(constrained = constrainedPlatformDetected()): number {
+  return constrained ? CONSTRAINED_PLATFORM_DEFAULT_MAX_RESIDENT_CHATS : 0;
+}
+
+/**
  * Resident chat-unit cap for the lazy file store (#5592 Phase 2 PR-B).
- * 0 (the default when unset or invalid) disables eviction entirely,
- * preserving load-and-keep behavior. Read per sweep so .env hot reloads
- * apply without a restart. The floor of 2 keeps multi-chat operations
- * (branching, cross-chat notes) from thrashing their own working set.
+ * When unset or invalid, the platform default applies: 8 on SteamOS (#5838),
+ * otherwise 0, which disables eviction entirely and preserves load-and-keep
+ * behavior. Read per sweep so .env hot reloads apply without a restart. The
+ * floor of 2 keeps multi-chat operations (branching, cross-chat notes) from
+ * thrashing their own working set.
  */
 let lastInvalidMaxResidentChats: string | null = null;
 
 export function getMaxResidentChatUnits() {
   const raw = normalizeEnvValue(process.env.MARINARA_MAX_RESIDENT_CHATS);
-  if (!raw) return 0;
+  if (!raw) {
+    lastInvalidMaxResidentChats = null;
+    return platformDefaultMaxResidentChatUnits();
+  }
   const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    // Warn once per distinct value: a typo silently disabling eviction would
-    // remove the memory bound on exactly the constrained targets (the Termux
-    // launcher defaults this to 8).
+    // Warn once per distinct value. An invalid value falls back to the
+    // platform default rather than to 0, because a typo silently disabling
+    // eviction would remove the memory bound on exactly the constrained
+    // targets - Android/Termux and SteamOS, both covered by the platform
+    // default above (the Termux launcher's ${VAR:-8} only covers unset, not
+    // invalid text, which it exports verbatim).
     if (lastInvalidMaxResidentChats !== raw) {
       lastInvalidMaxResidentChats = raw;
       sharedLogger.warn(
-        "[runtime-config] Ignoring invalid MARINARA_MAX_RESIDENT_CHATS=%s; expected 0 (disabled) or a positive integer — eviction stays disabled",
+        "[runtime-config] Ignoring invalid MARINARA_MAX_RESIDENT_CHATS=%s; expected 0 (disabled) or a positive integer — using the platform default (%d)",
         raw,
+        platformDefaultMaxResidentChatUnits(),
       );
     }
-    return 0;
+    return platformDefaultMaxResidentChatUnits();
   }
   lastInvalidMaxResidentChats = null;
   if (parsed === 0) return 0;

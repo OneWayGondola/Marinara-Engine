@@ -34,6 +34,7 @@ import {
   Palette,
   Pencil,
   Plus,
+  Quote,
   RefreshCw,
   Save,
   Search,
@@ -50,6 +51,10 @@ import {
 import { toast } from "sonner";
 import {
   LOCAL_SIDECAR_CONNECTION_ID,
+  MARI_AUTHORIZATION_ACCEPT_CHIP,
+  MARI_AUTHORIZATION_DECLINE_CHIP,
+  isMariHeldChangeApprovalChip,
+  withHeldChangeDeclineChip,
   MARI_STARTER_CHIPS,
   PROFESSOR_MARI_ID,
   type APIConnection,
@@ -3158,6 +3163,9 @@ export function HomeProfessorMariChat({
   const [sending, setSending] = useState(false);
   const [connectionMenuOpen, setConnectionMenuOpen] = useState(false);
   const [permissionsMenuOpen, setPermissionsMenuOpen] = useState(false);
+  // #5740: keyed by messageId so expansion never carries over when a new
+  // round's record replaces the old one under a different reply.
+  const [expandedUnderstoodRequestMessageId, setExpandedUnderstoodRequestMessageId] = useState<string | null>(null);
   const permissionsModeWriteSeqRef = useRef(0);
   // Chat id of pending mode writes (null = none): polls hold mode fields only
   // for the chat the write targets, and count tracks overlapping writes.
@@ -3166,6 +3174,11 @@ export function HomeProfessorMariChat({
 
   const permissionsButtonRef = useRef<HTMLButtonElement | null>(null);
   const permissionsMenuRef = useRef<HTMLDivElement | null>(null);
+  // #5741: Skills and Memories share one header button (the row overflowed
+  // into the avatar at phone widths); this anchors its two-row menu.
+  const libraryButtonRef = useRef<HTMLButtonElement | null>(null);
+  const libraryMenuRef = useRef<HTMLDivElement | null>(null);
+  const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
   const [historyPickerOpen, setHistoryPickerOpen] = useState(false);
   const [contextViewerOpen, setContextViewerOpen] = useState(false);
   const [internalChatWindowOpen, setInternalChatWindowOpen] = useState(
@@ -3336,14 +3349,39 @@ export function HomeProfessorMariChat({
     messageMutationBusyRef.current = isBusy;
   }, [isBusy]);
   const canSubmitMessage = (draft.trim().length > 0 || attachments.length > 0) && !isReadingAttachments;
+  // #5748: the Accept affordance must be as durable as the deferral it
+  // answers. The chips slot is app-wide, ephemeral state that unrelated paths
+  // clear (a regular chat starting a generation, the suggestions-disabled
+  // mount sweeps) and a reload never restores - but the deferral itself is
+  // persisted on the assistant message's extra (mariDeferredMutations, the
+  // same flag the server arms the next run from). Re-derive the chip from
+  // that persisted truth: it shows while the deferral is still the chat's
+  // last word, and disappears the moment the user answers or a run starts.
+  const lastLoadedMessage = messages.length > 0 ? messages[messages.length - 1] : undefined;
+  const lastLoadedMessageExtra =
+    lastLoadedMessage && typeof lastLoadedMessage.extra === "object" ? lastLoadedMessage.extra : null;
+  const pendingDeferredMutations =
+    chatId !== null &&
+    loadedMessagesChatId === chatId &&
+    !isBusy &&
+    lastLoadedMessage?.role === "assistant" &&
+    lastLoadedMessageExtra?.mariDeferredMutations === true;
+  const storeChipsForChat = mariChipsChatId === chatId ? mariChips : [];
   const visibleSuggestionChips =
-    mariChipsChatId === chatId && mariChips.some((chip) => chip.id === "authorization-accept")
-      ? mariChips.filter((chip) => professorMariSuggestionsEnabled || chip.id === "authorization-accept")
-      : professorMariSuggestionsEnabled && mariChipsChatId === chatId && mariChips.length > 0
-        ? mariChips
-        : professorMariSuggestionsEnabled && chatId !== null && loadedMessagesChatId === chatId && !isBusy
-          ? MARI_STARTER_CHIPS
-          : [];
+    pendingDeferredMutations && !storeChipsForChat.some((chip) => chip.id === MARI_AUTHORIZATION_ACCEPT_CHIP.id)
+      ? withHeldChangeDeclineChip([
+          MARI_AUTHORIZATION_ACCEPT_CHIP,
+          ...(professorMariSuggestionsEnabled ? storeChipsForChat : []),
+        ])
+      : storeChipsForChat.some((chip) => chip.id === "authorization-accept")
+        ? withHeldChangeDeclineChip(
+            storeChipsForChat.filter((chip) => professorMariSuggestionsEnabled || chip.id === "authorization-accept"),
+          )
+        : professorMariSuggestionsEnabled && storeChipsForChat.length > 0
+          ? storeChipsForChat
+          : professorMariSuggestionsEnabled && chatId !== null && loadedMessagesChatId === chatId && !isBusy
+            ? MARI_STARTER_CHIPS
+            : [];
   const selectedSkill = useMemo(
     () => skills.find((skill) => skill.id === selectedSkillId) ?? null,
     [selectedSkillId, skills],
@@ -3363,12 +3401,6 @@ export function HomeProfessorMariChat({
     },
     [onChatWindowOpenChange],
   );
-
-  useEffect(() => {
-    if (professorMariSuggestionsEnabled) return;
-    clearMariChips();
-    clearMariPlan();
-  }, [clearMariChips, clearMariPlan, professorMariSuggestionsEnabled]);
 
   useEffect(() => {
     if (!floatingMode) return;
@@ -3401,35 +3433,31 @@ export function HomeProfessorMariChat({
     rememberProfessorMariFloatingEnabled(controlledChatWindowOpen);
   }, [controlledChatWindowOpen, floatingMode]);
 
-  const loadMessages = useCallback(
-    async (id: string, options: { clearSuggestions?: boolean; shouldApply?: () => boolean } = {}) => {
-      messageLoadAbortRef.current?.abort();
-      const controller = new AbortController();
-      messageLoadAbortRef.current = controller;
-      try {
-        const items = await api.get<Message[]>(`/chats/${id}/messages?limit=80`, {
-          signal: controller.signal,
-        });
-        if (
-          controller.signal.aborted ||
-          messageLoadAbortRef.current !== controller ||
-          activeChatIdRef.current !== id ||
-          options.shouldApply?.() === false
-        ) {
-          return;
-        }
-        setMessages(items.map((message) => ({ ...message, extra: toMessageExtra(message) })));
-        setLoadedMessagesChatId(id);
-        if (options.clearSuggestions) clearMariChips();
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        throw error;
-      } finally {
-        if (messageLoadAbortRef.current === controller) messageLoadAbortRef.current = null;
+  const loadMessages = useCallback(async (id: string, options: { shouldApply?: () => boolean } = {}) => {
+    messageLoadAbortRef.current?.abort();
+    const controller = new AbortController();
+    messageLoadAbortRef.current = controller;
+    try {
+      const items = await api.get<Message[]>(`/chats/${id}/messages?limit=80`, {
+        signal: controller.signal,
+      });
+      if (
+        controller.signal.aborted ||
+        messageLoadAbortRef.current !== controller ||
+        activeChatIdRef.current !== id ||
+        options.shouldApply?.() === false
+      ) {
+        return;
       }
-    },
-    [clearMariChips],
-  );
+      setMessages(items.map((message) => ({ ...message, extra: toMessageExtra(message) })));
+      setLoadedMessagesChatId(id);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      throw error;
+    } finally {
+      if (messageLoadAbortRef.current === controller) messageLoadAbortRef.current = null;
+    }
+  }, []);
 
   const loadChatHistory = useCallback(async () => {
     setChatHistoryLoading(true);
@@ -3879,6 +3907,17 @@ export function HomeProfessorMariChat({
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [permissionsMenuOpen]);
 
+  useEffect(() => {
+    if (!libraryMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (libraryButtonRef.current?.contains(target) || libraryMenuRef.current?.contains(target)) return;
+      setLibraryMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [libraryMenuOpen]);
+
   // #5725: the server-authoritative Permissions Mode. Display rides the status
   // payload; writes go through the dedicated validated PUT. The change applies
   // to Mari's NEXT run - an in-flight turn is never aborted by a mode switch.
@@ -3988,6 +4027,7 @@ export function HomeProfessorMariChat({
       rememberProfessorMariFloatingEnabled(false);
     }
     setConnectionMenuOpen(false);
+    setLibraryMenuOpen(false);
     setSkillsMenuOpen(false);
     setMemoriesMenuOpen(false);
     setChatHistoryOpen(false);
@@ -4001,6 +4041,7 @@ export function HomeProfessorMariChat({
       floatingFollowupEligibleRef.current = true;
       rememberProfessorMariFloatingEnabled(true);
     }
+    setLibraryMenuOpen(false);
     setSkillsMenuOpen(false);
     setMemoriesMenuOpen(false);
     setChatHistoryOpen(false);
@@ -4018,6 +4059,7 @@ export function HomeProfessorMariChat({
     if (next) {
       setConnectionMenuOpen(false);
       setChatHistoryOpen(false);
+      setLibraryMenuOpen(false);
       setMemoriesMenuOpen(false);
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     }
@@ -4029,6 +4071,7 @@ export function HomeProfessorMariChat({
     if (next) {
       setConnectionMenuOpen(false);
       setChatHistoryOpen(false);
+      setLibraryMenuOpen(false);
       setSkillsMenuOpen(false);
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     }
@@ -4043,6 +4086,9 @@ export function HomeProfessorMariChat({
     const next = !chatHistoryOpen;
     if (next) {
       setConnectionMenuOpen(false);
+      // Keyboard activation never fires the outside-click mousedown handler,
+      // so competing surfaces must close the Library dropdown themselves.
+      setLibraryMenuOpen(false);
       setSkillsMenuOpen(false);
       setMemoriesMenuOpen(false);
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -4170,18 +4216,26 @@ export function HomeProfessorMariChat({
   const guidedPlan = professorMariSuggestionsEnabled && mariPlanChatId === chatId ? mariPlan : null;
   const guidedPlanStep = guidedPlan ? (guidedPlan[mariPlanCursor] ?? null) : null;
   const chipRowChips = guidedPlanStep ? guidedPlanStep.chips : visibleSuggestionChips;
+  // #5820: the Accept action for held edits is NOT a suggestion. Captioning
+  // the row "Suggestions only" told users the one control that applies Mari's
+  // pending changes was optional flavour text, so they concluded she had
+  // silently done nothing - the visible half of the defer-and-approve
+  // mechanism read as a failure of it.
+  const chipRowAwaitsApproval = chipRowChips.some(isMariHeldChangeApprovalChip);
   const chipRowHint = guidedPlanStep
     ? `${guidedPlanStep.question} Suggestions only; you can type your own answer.`
-    : chipRowChips.length > 0
-      ? "Suggestions only. Pick one, or type your own."
-      : null;
+    : chipRowAwaitsApproval
+      ? localizeUi("ui.chat.homeprofessormarichat.awaitingApprovalHint")
+      : chipRowChips.length > 0
+        ? "Suggestions only. Pick one, or type your own."
+        : null;
   const showSuggestionLoading =
     professorMariSuggestionsEnabled &&
     chipRowChips.length === 0 &&
     workspaceActivity?.toLocaleLowerCase().includes("suggestion") === true;
 
   function handleSuggestionSelect(chip: MariSuggestionChip) {
-    if (chip.id === "authorization-accept") {
+    if (chip.id === MARI_AUTHORIZATION_ACCEPT_CHIP.id || chip.id === MARI_AUTHORIZATION_DECLINE_CHIP.id) {
       void handleSubmit(chip.prompt);
       return;
     }
@@ -4204,6 +4258,8 @@ export function HomeProfessorMariChat({
 
   const runRestart = useCallback(async () => {
     if (isBusy) return;
+    // Before the awaits: a failed restart must not strand the dropdown open.
+    setLibraryMenuOpen(false);
     setSending(true);
     try {
       await handleRestart();
@@ -4643,6 +4699,7 @@ export function HomeProfessorMariChat({
         const chat = await api.post<Chat>(`/chats/internal/professor-mari/chats/${id}/activate`);
         setActiveChatId(chat.id);
         qc.setQueryData(chatKeys.detail(chat.id), chat);
+        setLibraryMenuOpen(false);
         setSkillsMenuOpen(false);
         setMemoriesMenuOpen(false);
         setChatHistoryOpen(false);
@@ -5294,17 +5351,80 @@ export function HomeProfessorMariChat({
 
   const renderDisplayMessage = (message: Message) => {
     const canManageMessage = message.id !== PROFESSOR_MARI_WELCOME_MESSAGE_ID;
+    // #5740: under the reply the latest mutating round produced, show the
+    // phrase Mari reported acting on - user-visible by default so people can
+    // self-correct ("that wasn't a request!") before filing reports. One
+    // record only (latest round). The server also reads the record back to
+    // Mari as context, so asking her "why did you treat that as permission?"
+    // gets an answer grounded in this same record - never a gate either way.
+    const understoodRequest =
+      message.role === "assistant" &&
+      workspaceStatus?.latestUnderstoodRequest &&
+      workspaceStatus.latestUnderstoodRequest.messageId === message.id
+        ? workspaceStatus.latestUnderstoodRequest
+        : null;
+    const understoodRequestExpanded = understoodRequest !== null && expandedUnderstoodRequestMessageId === message.id;
+    const understoodRequestOutcomeLabel = understoodRequest
+      ? localizeUi(
+          understoodRequest.outcome === "held"
+            ? "ui.chat.homeprofessormarichat.heldForYourApproval"
+            : understoodRequest.outcome === "applied"
+              ? "ui.chat.homeprofessormarichat.actingOnOutcomeApplied"
+              : understoodRequest.outcome === "failed"
+                ? "ui.chat.homeprofessormarichat.actingOnOutcomeFailed"
+                : "ui.chat.homeprofessormarichat.actingOnOutcomeInterrupted",
+        )
+      : null;
     return (
-      <CompactMariMessage
-        key={message.id}
-        message={message}
-        thinking={message.role === "assistant" ? getMessageThinking(message) : null}
-        onDelete={canManageMessage && !isBusy ? handleDeleteMessage : undefined}
-        onEdit={canManageMessage && !isBusy ? handleEditMessage : undefined}
-        onRegenerate={canManageMessage ? handleRegenerateMessage : undefined}
-        canRegenerate={canManageMessage && !isBusy && message.id === messages[messages.length - 1]?.id}
-        onRemoveAttachment={canManageMessage && !isBusy ? handleRemoveAttachment : undefined}
-      />
+      <div key={message.id}>
+        <CompactMariMessage
+          message={message}
+          thinking={message.role === "assistant" ? getMessageThinking(message) : null}
+          onDelete={canManageMessage && !isBusy ? handleDeleteMessage : undefined}
+          onEdit={canManageMessage && !isBusy ? handleEditMessage : undefined}
+          onRegenerate={canManageMessage ? handleRegenerateMessage : undefined}
+          canRegenerate={canManageMessage && !isBusy && message.id === messages[messages.length - 1]?.id}
+          onRemoveAttachment={canManageMessage && !isBusy ? handleRemoveAttachment : undefined}
+        />
+        {understoodRequest && (
+          <button
+            type="button"
+            onClick={() =>
+              setExpandedUnderstoodRequestMessageId((current) => (current === message.id ? null : message.id))
+            }
+            aria-expanded={understoodRequestExpanded}
+            title={localizeUi(
+              understoodRequestExpanded
+                ? "ui.chat.homeprofessormarichat.actingOnCollapse"
+                : "ui.chat.homeprofessormarichat.actingOnExpand",
+            )}
+            className="mt-1 flex w-full items-start gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
+          >
+            <Quote size="0.6875rem" className="mt-0.5 shrink-0 opacity-70" />
+            {/* break-words: the phrase is model-authored and routinely carries
+                unbreakable tokens (paths, URLs) that would otherwise force a
+                horizontal scrollbar onto the whole transcript. */}
+            <span
+              className={understoodRequestExpanded ? "min-w-0 whitespace-pre-wrap break-words" : "min-w-0 truncate"}
+            >
+              {understoodRequest.text
+                ? localizeUi("ui.chat.homeprofessormarichat.actingOnValue1", { value1: understoodRequest.text })
+                : localizeUi("ui.chat.homeprofessormarichat.actingOnNothingReported")}
+              {understoodRequestExpanded && (
+                <span className="mt-0.5 block text-[0.625rem] opacity-80">
+                  {understoodRequest.commands.join(", ")}
+                  <span className="block">
+                    {localizeUi("ui.chat.homeprofessormarichat.actingOnModeOutcomeValue1Value2", {
+                      value1: localize(MARI_PERMISSIONS_MODE_LABELS[understoodRequest.permissionsMode].label),
+                      value2: understoodRequestOutcomeLabel ?? "",
+                    })}
+                  </span>
+                </span>
+              )}
+            </span>
+          </button>
+        )}
+      </div>
     );
   };
 
@@ -5421,7 +5541,10 @@ export function HomeProfessorMariChat({
           <button
             ref={connectionButtonRef}
             type="button"
-            onClick={() => setConnectionMenuOpen((current) => !current)}
+            onClick={() => {
+              setLibraryMenuOpen(false);
+              setConnectionMenuOpen((current) => !current);
+            }}
             className={cn(
               "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all",
               connectionMenuOpen
@@ -5738,10 +5861,24 @@ export function HomeProfessorMariChat({
                               {t("home.professorMari.chats")}
                             </div>
                             <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">
-                              {localizeUi("ui.chat.homeprofessormarichat.restartSavesTheCurrentChatHere")}
+                              {localizeUi("ui.chat.homeprofessormarichat.newChatSavesTheCurrentChatHere")}
                             </div>
                           </div>
                           <div className="flex shrink-0 items-center gap-1">
+                            {/* #5752: the affordance people hunt for lives where they look for it. */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setChatHistoryOpen(false);
+                                void runRestart();
+                              }}
+                              disabled={isBusy}
+                              className="mari-chrome-control mari-chrome-control--small h-8 px-2 text-[0.625rem]"
+                              title={t("home.professorMari.newChat")}
+                            >
+                              <Plus size="0.75rem" />
+                              {localizeUi("ui.chat.homeprofessormarichat.newChat")}
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -5989,7 +6126,11 @@ export function HomeProfessorMariChat({
                             <span className="mari-chrome-accent-soft-tile mari-accent-animated h-8 w-8 shrink-0 overflow-hidden rounded-md border">
                               <img src={MARI_AVATAR_URL} alt="" className="h-full w-full object-cover" />
                             </span>
-                            <span className="min-w-0">
+                            {/* At phone widths the header buttons crush this into "P. / R…" -
+                                the avatar carries the identity VISUALLY there, so hide the
+                                text but keep a screen-reader label (the avatar's alt is empty). */}
+                            <span className="sr-only sm:hidden">{localizeUi("ui.chat.homefaq.professorMari")}</span>
+                            <span className="hidden min-w-0 sm:block">
                               <span className="block truncate text-xs font-bold text-[var(--foreground)]">
                                 {localizeUi("ui.chat.homefaq.professorMari")}
                               </span>
@@ -6015,51 +6156,91 @@ export function HomeProfessorMariChat({
                               <BookOpen size="0.75rem" />
                               <span className="max-[360px]:hidden">{localizeUi("navigation.common.chats")}</span>
                             </button>
-                            <button
-                              type="button"
-                              onClick={toggleSkillsMenu}
-                              className={cn(
-                                "inline-flex h-8 items-center gap-1 rounded-md px-2 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50",
-                                "mari-chrome-accent-text-muted mari-accent-animated hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
-                              )}
-                              title={localizeUi("ui.chat.homeprofessormarichat.openSkills")}
-                              aria-expanded={skillsMenuOpen}
-                            >
-                              <ArrowDown size="0.75rem" />
-                              <span className="max-[360px]:hidden">
-                                {localizeUi("ui.chat.homeprofessormarichat.skills")}
-                              </span>
-                              {skills.length > 0 && (
-                                <span className="mari-chrome-muted-badge px-1.5 py-0.5 text-[0.56rem]">
-                                  {activeSkillCount}
+                            {/* #5741: one button for Skills and Memories - two buttons
+                                overflowed the row into the avatar at phone widths. */}
+                            <div className="relative">
+                              <button
+                                ref={libraryButtonRef}
+                                type="button"
+                                onClick={() => {
+                                  setConnectionMenuOpen(false);
+                                  setPermissionsMenuOpen(false);
+                                  setLibraryMenuOpen((current) => !current);
+                                }}
+                                className={cn(
+                                  "inline-flex h-8 items-center gap-1 rounded-md px-2 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50",
+                                  "mari-chrome-accent-text-muted mari-accent-animated hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+                                )}
+                                title={localizeUi("ui.chat.homeprofessormarichat.openSkillsAndMemories")}
+                                aria-label={localizeUi("ui.chat.homeprofessormarichat.skillsAndMemories")}
+                                aria-expanded={libraryMenuOpen}
+                              >
+                                <Brain size="0.75rem" />
+                                <span className="max-[430px]:hidden">
+                                  {localizeUi("ui.chat.homeprofessormarichat.skillsAndMemories")}
                                 </span>
+                                {skills.length + memories.length > 0 && (
+                                  <span className="mari-chrome-muted-badge px-1.5 py-0.5 text-[0.56rem]">
+                                    {activeSkillCount + activeMemoryCount}
+                                  </span>
+                                )}
+                              </button>
+                              {libraryMenuOpen && (
+                                <div
+                                  ref={libraryMenuRef}
+                                  className="absolute right-0 top-full z-20 mt-2 flex w-48 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-left shadow-2xl"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setLibraryMenuOpen(false);
+                                      toggleSkillsMenu();
+                                    }}
+                                    className="flex items-center justify-between gap-2 px-3 py-2 text-[0.6875rem] font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+                                    title={localizeUi("ui.chat.homeprofessormarichat.openSkills")}
+                                    aria-expanded={skillsMenuOpen}
+                                  >
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <ArrowDown size="0.75rem" />
+                                      {localizeUi("ui.chat.homeprofessormarichat.skills")}
+                                    </span>
+                                    {skills.length > 0 && (
+                                      <span className="mari-chrome-muted-badge px-1.5 py-0.5 text-[0.56rem]">
+                                        {activeSkillCount}
+                                      </span>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setLibraryMenuOpen(false);
+                                      toggleMemoriesMenu();
+                                    }}
+                                    className="flex items-center justify-between gap-2 px-3 py-2 text-[0.6875rem] font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+                                    title={localizeUi("ui.chat.homeprofessormarichat.openMemories")}
+                                    aria-expanded={memoriesMenuOpen}
+                                  >
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <Brain size="0.75rem" />
+                                      {localizeUi("ui.chat.homeprofessormarichat.memories")}
+                                    </span>
+                                    {memories.length > 0 && (
+                                      <span className="mari-chrome-muted-badge px-1.5 py-0.5 text-[0.56rem]">
+                                        {activeMemoryCount}
+                                      </span>
+                                    )}
+                                  </button>
+                                </div>
                               )}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={toggleMemoriesMenu}
-                              className={cn(
-                                "inline-flex h-8 items-center gap-1 rounded-md px-2 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50",
-                                "mari-chrome-accent-text-muted mari-accent-animated hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
-                              )}
-                              title={localizeUi("ui.chat.homeprofessormarichat.openMemories")}
-                              aria-expanded={memoriesMenuOpen}
-                            >
-                              <Brain size="0.75rem" />
-                              <span className="max-[360px]:hidden">
-                                {localizeUi("ui.chat.homeprofessormarichat.memories")}
-                              </span>
-                              {memories.length > 0 && (
-                                <span className="mari-chrome-muted-badge px-1.5 py-0.5 text-[0.56rem]">
-                                  {activeMemoryCount}
-                                </span>
-                              )}
-                            </button>
+                            </div>
                             <div className="relative">
                               <button
                                 ref={permissionsButtonRef}
                                 type="button"
-                                onClick={() => setPermissionsMenuOpen((current) => !current)}
+                                onClick={() => {
+                                  setLibraryMenuOpen(false);
+                                  setPermissionsMenuOpen((current) => !current);
+                                }}
                                 className={cn(
                                   "inline-flex h-8 items-center gap-1 rounded-md px-2 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50",
                                   "mari-chrome-accent-text-muted mari-accent-animated hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
@@ -6141,12 +6322,12 @@ export function HomeProfessorMariChat({
                               onClick={() => void runRestart()}
                               disabled={isBusy}
                               className="mari-chrome-accent-text-muted mari-accent-animated inline-flex items-center gap-1 rounded-md px-2 py-1 text-[0.6875rem] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                              aria-label={t("home.professorMari.restart")}
-                              title={t("home.professorMari.restart")}
+                              aria-label={localizeUi("ui.chat.homeprofessormarichat.newChat")}
+                              title={t("home.professorMari.newChat")}
                             >
-                              <RefreshCw size="0.75rem" />
+                              <Plus size="0.75rem" />
                               <span className="max-[380px]:hidden">
-                                {localizeUi("ui.chat.homeprofessormarichat.restart")}
+                                {localizeUi("ui.chat.homeprofessormarichat.newChat")}
                               </span>
                             </button>
                             {!embeddedTab && (
@@ -6267,7 +6448,10 @@ export function HomeProfessorMariChat({
                             <button
                               ref={connectionButtonRef}
                               type="button"
-                              onClick={() => setConnectionMenuOpen((current) => !current)}
+                              onClick={() => {
+                                setLibraryMenuOpen(false);
+                                setConnectionMenuOpen((current) => !current);
+                              }}
                               className={cn(
                                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all",
                                 connectionMenuOpen

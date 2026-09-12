@@ -12,6 +12,7 @@ import { ChatResourceMobileDropDock } from "../chat/ChatResourceMobileDropDock";
 import { hasProfessorMariFloatingFollowup } from "../chat/professor-mari-floating-events";
 import {
   getTrackerPanelWidthForProfile,
+  isMobileShellViewport,
   MOBILE_SHELL_MEDIA_QUERY,
   RIGHT_PANEL_WIDTH_MAX,
   RIGHT_PANEL_WIDTH_MIN,
@@ -261,9 +262,11 @@ export function AppShell() {
           (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
         );
         const height = heightCandidates.length > 0 ? Math.min(...heightCandidates) : window.innerHeight;
-        const maxOffsetTop = Math.max(0, window.innerHeight - height);
-        const offsetTop = Math.min(maxOffsetTop, Math.max(0, viewport?.offsetTop ?? 0, viewport?.pageTop ?? 0));
         largestViewportHeight = Math.max(largestViewportHeight, height);
+        const layoutViewportHeight = isIosWebKit ? largestViewportHeight : window.innerHeight;
+        const maxOffsetTop = Math.max(0, layoutViewportHeight - height);
+        const visualViewportTop = Math.max(0, viewport?.offsetTop ?? 0, viewport?.pageTop ?? 0);
+        const offsetTop = Math.min(maxOffsetTop, visualViewportTop);
         root.style.setProperty("--mari-visual-viewport-height", `${Math.max(0, Math.round(height))}px`);
         root.style.setProperty("--mari-visual-viewport-offset-top", `${Math.round(offsetTop)}px`);
         const keyboardOpen = supportsVirtualKeyboard && largestViewportHeight - height >= 80;
@@ -395,16 +398,19 @@ export function AppShell() {
     ? getCssBackgroundStyle(trackerPanelBackgroundColor)
     : undefined;
 
-  // Track mobile breakpoint for right-panel animation strategy
-  const [isMobile, setIsMobile] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(MOBILE_SHELL_MEDIA_QUERY).matches,
-  );
+  // Use the same available-width decision as navigation and back dismissal.
+  const [isMobile, setIsMobile] = useState(isMobileShellViewport);
   useEffect(() => {
     const mq = window.matchMedia(MOBILE_SHELL_MEDIA_QUERY);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    const handler = () => setIsMobile(isMobileShellViewport());
+    handler();
     mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
+    window.addEventListener("resize", handler);
+    return () => {
+      mq.removeEventListener("change", handler);
+      window.removeEventListener("resize", handler);
+    };
+  }, [sharedSidebarWidth]);
 
   const [viewportWidth, setViewportWidth] = useState(getViewportWidth);
   useEffect(() => {
@@ -425,7 +431,7 @@ export function AppShell() {
   }, []);
 
   const shellOverlayMode = isMobile;
-  const mobileNavigationPanel = shellOverlayMode ? (sidebarOpen ? "chats" : rightPanelOpen ? "right" : null) : null;
+  const mobileNavigationPanel = shellOverlayMode ? (rightPanelOpen ? "right" : sidebarOpen ? "chats" : null) : null;
   const [rightPanelEverOpened, setRightPanelEverOpened] = useState(rightPanelOpen);
   useEffect(() => {
     if (rightPanelOpen) setRightPanelEverOpened(true);
@@ -769,7 +775,7 @@ export function AppShell() {
         enabledForChat={selectedFeatureEnabledForChat}
         onEnabledForChatChange={setSelectedFeatureEnabledForChat}
         onClose={closeFeatureDetail}
-        onManagePackage={openAgentCatalog}
+        onManagePackage={() => openAgentCatalog(selectedFeaturePackage?.id)}
         capabilityProps={{
           debugMode,
           confirmAction: showConfirmDialog,
@@ -1314,7 +1320,7 @@ export function AppShell() {
       >
         {/* iOS safe area spacer — pushes TopBar below status bar and fills that gap with topbar bg */}
         <div className="flex-shrink-0 md:hidden h-[env(safe-area-inset-top)] bg-[var(--marinara-topbar-surface)] backdrop-blur-sm" />
-        <TopBar />
+        <TopBar mobileTopbarNavigation={shellOverlayMode} />
         <div className="mari-app-background-paint relative flex flex-1 flex-col overflow-hidden">
           {/* Browser — kept mounted once opened so state persists across close/reopen */}
           <MountOnceWhenOpened open={botBrowserOpen} overlay>
@@ -1509,7 +1515,7 @@ export function AppShell() {
           onMouseDown={startRightPanelResize}
           onKeyDown={adjustRightPanelWidth}
           className="absolute inset-y-0 z-40 hidden w-1 cursor-col-resize bg-transparent transition-colors hover:bg-[var(--primary)]/30 focus-visible:bg-[var(--primary)]/40 focus-visible:outline-none md:block"
-          style={{ right: rightPanelOpen ? liveRightPanelWidth : 0 }}
+          style={{ right: rightPanelOpen ? Math.max(0, liveRightPanelWidth - 4) : 0 }}
         />
       )}
 

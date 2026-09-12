@@ -1,3 +1,5 @@
+import { parseChoiceOptions, resolveChoiceVariableValue } from "@marinara-engine/shared";
+export { resolveChoiceVariableValue, type ChoiceOptionValue } from "@marinara-engine/shared";
 // ──────────────────────────────────────────────
 // Prompt Assembler — Orchestrator
 // Builds the final ChatML message array from a
@@ -40,88 +42,16 @@ interface RuntimeAgentData {
   endToken?: string;
 }
 
-export interface ChoiceOptionValue {
-  value: string;
-}
-
-function parseChoiceOptions(options: string): ChoiceOptionValue[] {
-  try {
-    const parsed = JSON.parse(options) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((option) =>
-      option && typeof option === "object" && typeof (option as { value?: unknown }).value === "string"
-        ? [{ value: (option as { value: string }).value }]
-        : [],
-    );
-  } catch {
-    return [];
-  }
-}
-
-function sanitizeChoiceSelection(
-  selected: string | string[] | undefined,
-  options: ChoiceOptionValue[],
-  isMulti: boolean,
-): string | string[] | undefined {
-  if (selected === undefined) return undefined;
-  const validValues = new Set(options.map((option) => option.value));
-  const candidates = Array.isArray(selected) ? selected : [selected];
-
-  if (isMulti) {
-    return candidates.filter((value, index) => validValues.has(value) && candidates.indexOf(value) === index);
-  }
-
-  return candidates.find((value) => validValues.has(value));
-}
-
-function readChoiceFlag(value: unknown): boolean {
-  return value === true || value === "true" || value === 1 || value === "1";
-}
-
-export function resolveChoiceVariableValue(input: {
-  selected: string | string[] | undefined;
-  options: ChoiceOptionValue[];
-  multiSelect: unknown;
-  randomPick: unknown;
-  separator?: string | null;
-  random?: () => number;
-}): string {
-  const isRandom = readChoiceFlag(input.randomPick);
-  // Imported or legacy presets can carry Boolean/number flags, and a Random
-  // Pick selection is necessarily multi-valued even if its companion flag was
-  // normalized incorrectly during an older migration.
-  const isMulti = readChoiceFlag(input.multiSelect) || (isRandom && Array.isArray(input.selected));
-
-  // An explicit empty selection is the user's OFF value. Only a missing value
-  // should fall back to the first option for legacy presets.
-  if (input.selected === "" || (Array.isArray(input.selected) && input.selected.length === 0)) return "";
-
-  const selected = sanitizeChoiceSelection(input.selected, input.options, isMulti);
-
-  if (isMulti && Array.isArray(selected)) {
-    if (selected.length === 0) return "";
-    if (isRandom) {
-      const random = input.random ?? Math.random;
-      const roll = random();
-      const unit = Number.isFinite(roll) ? Math.min(1, Math.max(0, roll)) : 0;
-      const index = Math.min(selected.length - 1, Math.floor(unit * selected.length));
-      return selected[index] ?? "";
-    }
-    return selected.join(input.separator || ", ");
-  }
-
-  if (selected !== undefined) {
-    return Array.isArray(selected) ? (selected[0] ?? "") : selected;
-  }
-  return input.options[0]?.value ?? "";
-}
-
 // ═══════════════════════════════════════════════
 //  Public Interface
 // ═══════════════════════════════════════════════
 
 /** Everything the assembler needs to produce a prompt. */
 export interface AssemblerInput {
+  /** Resolved model for this request, including connection overrides. */
+  model?: string;
+  /** Generation routes format messages after audience filtering and context fitting. */
+  deferMessagePostProcessing?: boolean;
   db: DB;
   /** The prompt preset to use */
   preset: {
@@ -199,6 +129,8 @@ export interface AssemblerInput {
   personaStats?: any;
   /** Chat messages from the DB (user + assistant + narrator etc.) */
   chatMessages: ChatMLMessage[];
+  /** Regeneration must not use the output of the message being replaced or later messages. */
+  agentHistoryMessageId?: string;
   /** Optional scan-only messages for lorebook matching. Keeps synthetic guidance out of chat history. */
   lorebookScanMessages?: ChatMLMessage[];
   /** Current chat summary text (if any) */
@@ -281,7 +213,7 @@ export interface AssemblerOutput {
   runtimeAgentTypesUsed?: string[];
 }
 
-function parsePresetParameters(raw: string): GenerationParameters {
+export function parsePresetParameters(raw: string): GenerationParameters {
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -366,6 +298,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   // Build macro context (character names and primary card fields resolved from IDs)
   const macroCtx = await buildPromptMacroContext({
     db: input.db,
+    model: input.model,
     characterIds: input.characterIds,
     groupCharacterIds: input.groupCharacterIds,
     personaName: input.personaName,
@@ -520,6 +453,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   const markerCtx: MarkerContext = {
     db: input.db,
     chatId: input.chatId,
+    agentHistoryMessageId: input.agentHistoryMessageId,
     characterIds: input.characterIds,
     lorebookCharacterIds: input.lorebookCharacterIds,
     personaId: input.personaId ?? null,
@@ -691,7 +625,8 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   }
 
   // ── Phase 3: Adjacent same-role merging ──
-  let finalMessages = mergeAdjacentMessages(messages);
+  let finalMessages =
+    input.deferMessagePostProcessing || !parameters.strictRoleFormatting ? messages : mergeAdjacentMessages(messages);
 
   // ── Phase 4: Squash leading system messages if enabled ──
   if (parameters.squashSystemMessages) {
@@ -744,7 +679,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   // ── Phase 6: Strict role formatting ──
   // Keeps explicit section roles while folding system blocks to the front and
   // merging adjacent same-role messages.
-  if (parameters.strictRoleFormatting) {
+  if (parameters.strictRoleFormatting && !input.deferMessagePostProcessing) {
     finalMessages = enforceStrictRoles(finalMessages);
   }
 
@@ -763,7 +698,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
 
   // ── Phase 8: Single user message mode ──
   // Collapses entire prompt into one user message.
-  if (parameters.singleUserMessage) {
+  if (parameters.singleUserMessage && !input.deferMessagePostProcessing) {
     const combined = finalMessages
       .map((m) => {
         if (m.role !== "user") return `[${m.role.toUpperCase()}]\n${m.content}`;
@@ -1100,7 +1035,13 @@ function enforceStrictRoles(messages: ChatMLMessage[]): ChatMLMessage[] {
 
     const prev = result[result.length - 1];
     const sameCharacter = (prev?.characterId ?? null) === (msg.characterId ?? null);
-    if (prev && prev.role === msg.role && sameCharacter && hasSamePromptAudience(prev, msg)) {
+    if (
+      prev &&
+      prev.role === msg.role &&
+      sameCharacter &&
+      hasSamePromptAudience(prev, msg) &&
+      !(msg.role === "assistant" && (prev.providerMetadata || msg.providerMetadata))
+    ) {
       mergeInto(prev, msg);
     } else {
       result.push({ ...msg });

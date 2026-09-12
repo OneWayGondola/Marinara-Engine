@@ -16,6 +16,8 @@ Marinara groups its agents into three categories in the **Agents** panel: **Writ
 
 A run interval means the agent runs once every few user and assistant messages instead of after every message. You can change a run interval in the agent's setup, up to 100.
 
+Illustrator also accepts **0** for manual-only generation: it stays available for Gallery actions but never runs automatically. Other agents keep their existing positive intervals.
+
 ## Writer agents
 
 Writer agents shape the story or the prose. They either add guidance before the reply or clean up the reply after it.
@@ -187,12 +189,12 @@ Simulates a live audience reacting to your scene, shown as a floating **Echo** w
 
 ### Noodle
 
-Adds an optional local social world with the Noodle public timeline and the NoodleR creator-and-fan roleplay feed. It opens in a dedicated Home tab instead of running in the normal chat-agent pipeline.
+Adds the optional local Noodle public timeline. It opens in a dedicated Home tab instead of running in the normal chat-agent pipeline.
 
 - **Integration**: Feature package; it contributes the Home tab, local routes, generation and media flows, and background schedulers.
 - **Where it works**: Home, with optional context carried in from Conversation, Roleplay, and Game chats.
-- **Key settings**: install it from **Agents → Download Agents** and restart Marinara Engine when prompted. Inside Noodle, you can configure invited accounts, text and image connections, timeline refreshes, NoodleR Creator profiles, simulated post access, and audience activity.
-- **Data lifecycle**: uninstalling removes the Home tab and stops package routes and schedulers after restart while preserving existing Noodle and NoodleR data for a later reinstall.
+- **Key settings**: install it from **Agents → Download Agents** and restart Marinara Engine when prompted. Inside Noodle, you can configure invited accounts, text and image connections, timeline refreshes, random users, and chat carryover.
+- **Data lifecycle**: uninstalling removes the Home tab and stops package routes and schedulers after restart while preserving existing Noodle data for a later reinstall.
 - **Full guide**: [Noodle: The In-App Social Timeline](../noodle/overview.md).
 
 ### Long-Term Memory

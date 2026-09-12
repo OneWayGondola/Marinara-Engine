@@ -357,7 +357,11 @@ export function QuickSwitcherMobile({ contextBudget }: { contextBudget?: Profess
         createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[9999] flex min-w-0 flex-col overflow-hidden rounded-xl border border-foreground/10 bg-[var(--background)] shadow-2xl"
+            data-chat-floating-panel
+            className={cn(
+              "fixed z-[9999] flex min-w-0 flex-col overflow-hidden rounded-xl border border-foreground/10 shadow-2xl",
+              chatMode === "roleplay" ? "bg-[var(--card)]" : "bg-[var(--background)]",
+            )}
             style={
               pos
                 ? {
@@ -413,7 +417,7 @@ export function QuickSwitcherMobile({ contextBudget }: { contextBudget?: Profess
                 <>
                   {contextBudget && (
                     <div className="px-2 pt-1">
-                      <ContextBudgetIndicator budget={contextBudget} />
+                      <ContextBudgetIndicator budget={contextBudget} useAccentColor />
                     </div>
                   )}
                   <button

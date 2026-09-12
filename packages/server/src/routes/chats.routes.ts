@@ -1,7 +1,8 @@
 // ──────────────────────────────────────────────
 // Routes: Chats
 // ──────────────────────────────────────────────
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 import AdmZip from "adm-zip";
 import { logger } from "../lib/logger.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
@@ -19,6 +20,7 @@ import {
   estimateChatSummaryTokens,
   getChatSummaryMessageIdsToUnhideAfterDelete,
   markAutonomousUnreadSchema,
+  reassignMessagePersonaSchema,
   nameToXmlTag,
   normalizeChatSummaryEntries,
   resolveMacros,
@@ -152,6 +154,34 @@ const MEMORY_RECALL_IMPORT_BATCH_SIZE = 500;
 const PROFESSOR_MARI_INTERNAL_CHAT_MARKER = "professor-mari";
 const SUMMARY_COMBINE_DEFAULT_CONTEXT_TOKENS = 32_768;
 const SUMMARY_COMBINE_MESSAGE_OVERHEAD_TOKENS = 64;
+
+function createChatSummaryAbortTracker(reply: FastifyReply) {
+  const controller = new AbortController();
+  let finished = false;
+  const cleanup = () => {
+    reply.raw.off("finish", onFinish);
+    reply.raw.off("close", onClose);
+  };
+  const onFinish = () => {
+    finished = true;
+    cleanup();
+  };
+  const onClose = () => {
+    if (!finished && !controller.signal.aborted) {
+      controller.abort(new Error("Chat summary cancelled because the client disconnected"));
+    }
+    cleanup();
+  };
+  reply.raw.once("finish", onFinish);
+  reply.raw.once("close", onClose);
+  return controller.signal;
+}
+
+function throwIfChatSummaryAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Chat summary cancelled");
+  }
+}
 
 function presetStringField(preset: Record<string, unknown> | null | undefined, field: string): string {
   const value = preset?.[field];
@@ -1302,6 +1332,32 @@ export async function chatsRoutes(app: FastifyInstance) {
     return updated ? normalizeChatForResponse(updated) : updated;
   });
 
+  app.patch<{ Params: { id: string; entryId: string } }>("/:id/lorebook-entries/:entryId", async (req, reply) => {
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: "enabled must be a boolean" });
+    const entry = await createLorebooksStorage(app.db).getEntry(req.params.entryId);
+    if (!entry) return reply.status(404).send({ error: "Lorebook entry not found" });
+    if (parsed.data.enabled && !entry.enabled) {
+      return reply.status(409).send({ error: "Enable this entry in its lorebook first" });
+    }
+    // Merge one flag inside the existing serialized metadata write. In-flight
+    // ephemeral countdowns and changes to other entries must survive.
+    const updated = await storage.patchMetadata(req.params.id, (current) => {
+      const overrides = (current.entryStateOverrides ?? {}) as Record<
+        string,
+        { enabled?: boolean; ephemeral?: number | null }
+      >;
+      return {
+        entryStateOverrides: {
+          ...overrides,
+          [req.params.entryId]: { ...overrides[req.params.entryId], enabled: parsed.data.enabled },
+        },
+      };
+    });
+    if (!updated) return reply.status(404).send({ error: "Chat not found" });
+    return normalizeChatForResponse(updated);
+  });
+
   // Clear autonomous unread state when the user views the relevant chat.
   app.delete<{ Params: { id: string } }>("/:id/autonomous-unread", async (req, reply) => {
     const chat = await storage.getById(req.params.id);
@@ -1554,6 +1610,8 @@ export async function chatsRoutes(app: FastifyInstance) {
         chatName: (chat as { name?: string | null }).name,
         preferredTargetLorebookId,
         writableLorebookIds,
+        allowTargetRouting: payload.allowTargetRouting !== false,
+        namesAreVerbatim: true,
         writableLorebooks,
         lorebookNamingScheme: getLorebookNamingScheme({ lorebookNamingScheme: payload.lorebookNamingScheme }),
         worldName:
@@ -2108,16 +2166,25 @@ export async function chatsRoutes(app: FastifyInstance) {
   });
 
   // Update message extra (partial merge) — also syncs to the active swipe
-  app.patch<{ Params: { chatId: string; messageId: string } }>(
+  app.patch<{ Params: { chatId: string; messageId: string }; Querystring: { swipeIndex?: string } }>(
     "/:chatId/messages/:messageId/extra",
     async (req, reply) => {
+      const message = await storage.getMessage(req.params.messageId);
+      if (!message || message.chatId !== req.params.chatId)
+        return reply.status(404).send({ error: "Message not found" });
+      const swipeIndex = req.query.swipeIndex === undefined ? undefined : Number(req.query.swipeIndex);
+      if (swipeIndex !== undefined && (!Number.isSafeInteger(swipeIndex) || swipeIndex < 0))
+        return reply.status(400).send({ error: "Invalid swipe index" });
       const partial = { ...(req.body as Record<string, unknown>) };
       for (const key of ["hiddenFromAICharacterIds", "conversationStartForCharacterIds"] as const) {
         if (Object.prototype.hasOwnProperty.call(partial, key)) {
           partial[key] = normalizeMessageCharacterIds(partial[key]);
         }
       }
-      const updated = await storage.updateMessageExtra(req.params.messageId, partial);
+      const updated =
+        swipeIndex === undefined
+          ? await storage.updateMessageExtra(req.params.messageId, partial)
+          : await storage.updateMessageExtraForSwipe(req.params.messageId, swipeIndex, partial);
       if (!updated) return reply.status(404).send({ error: "Message not found" });
       // A lone user reaction (no text after it) is a valid turn: feed it to the
       // autonomous-messaging cadence so a character may notice and respond,
@@ -2181,6 +2248,55 @@ export async function chatsRoutes(app: FastifyInstance) {
       return { updated };
     },
   );
+
+  // Get historical persona attribution summaries across all user messages in a chat
+  app.get<{ Params: { chatId: string } }>("/:chatId/messages/persona-attributions", async (req, reply) => {
+    const chat = await storage.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const summary = await storage.getPersonaAttributionsSummary(req.params.chatId);
+    return summary;
+  });
+
+  // Reassign historical persona snapshots on user messages
+  app.post<{ Params: { chatId: string } }>("/:chatId/messages/reassign-persona", async (req, reply) => {
+    const chat = await storage.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+
+    const parsed = reassignMessagePersonaSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid request body" });
+    }
+
+    const { scope, sourcePersonaId, sourcePersonaSource } = parsed.data;
+    if (!chat.personaId && !chat.personaCharacterId) {
+      return reply.status(400).send({ error: "Select a persona before updating historical messages." });
+    }
+    if (chat.personaId) {
+      const personas = await createCharactersStorage(app.db).listPersonas();
+      if (!personas.some((persona) => persona.id === chat.personaId)) {
+        return reply.status(400).send({ error: "Selected persona is invalid or unavailable." });
+      }
+    }
+    if (chat.personaCharacterId && !(await isValidCharacterIdentity(app.db, chat.personaCharacterId))) {
+      return reply.status(400).send({ error: "Selected character identity is invalid or unavailable." });
+    }
+    const targetSnapshot = await buildPersonaSnapshotForChat(app, chat);
+    if (!targetSnapshot) {
+      return reply.status(400).send({ error: "Select a persona before updating historical messages." });
+    }
+
+    const result = await storage.reassignMessagePersonaSnapshots(
+      req.params.chatId,
+      {
+        scope,
+        sourcePersonaId,
+        sourcePersonaSource,
+      },
+      targetSnapshot,
+    );
+
+    return { success: true, updatedCount: result.updatedCount };
+  });
 
   // Get game state for a specific message + swipe (does not fall back to latest)
   app.get<{
@@ -2733,8 +2849,13 @@ export async function chatsRoutes(app: FastifyInstance) {
           })();
 
           const chatChoices = (chatMeta.presetChoices ?? {}) as Record<string, string | string[]>;
+          const connections = createConnectionsStorage(app.db);
+          const connection = chat.connectionId
+            ? await connections.getById(chat.connectionId)
+            : await connections.getDefault();
           const promptMacroContext = await buildPromptMacroContext({
             db: app.db,
+            model: connection?.model,
             characterIds: assistantCharacterIds,
             groupCharacterIds: assistantCharacterIds,
             personaName,
@@ -2943,6 +3064,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
           const assembled = await assemblePrompt({
             db: app.db,
+            model: connection?.model,
             preset: preset as any,
             sections: sections as any,
             groups: groups as any,
@@ -4254,6 +4376,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>("/:id/generate-summary", async (req, reply) => {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const signal = createChatSummaryAbortTracker(reply);
 
     const chatMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
 
@@ -4359,20 +4482,29 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (estimateChatSummaryTokens(sourceText) > combinedSummaryInputBudget) {
         return reply.status(400).send({ error: "Selected summaries are too large to combine at once" });
       }
-      const result = await provider.chatComplete(
-        [
-          { role: "system", content: summaryPrompt },
+      throwIfChatSummaryAborted(signal);
+      let result;
+      try {
+        result = await provider.chatComplete(
+          [
+            { role: "system", content: summaryPrompt },
+            {
+              role: "user",
+              content: `${combinePrompt}\n\n${sourceText}`,
+            },
+          ],
           {
-            role: "user",
-            content: `${combinePrompt}\n\n${sourceText}`,
+            model,
+            ...summaryTemperatureOptions,
+            maxTokens: effectiveSummaryMaxTokens,
+            signal,
           },
-        ],
-        {
-          model,
-          ...summaryTemperatureOptions,
-          maxTokens: effectiveSummaryMaxTokens,
-        },
-      );
+        );
+      } catch (error) {
+        if (signal.aborted) return reply;
+        throw error;
+      }
+      throwIfChatSummaryAborted(signal);
       if (!result.content) {
         return reply.status(500).send({ error: "No response from AI" });
       }
@@ -4385,7 +4517,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       let combinedEntry: ChatSummaryEntry | null = null;
       let combinedEntries: ChatSummaryEntry[] = [];
       let combinedSummary: string | null = null;
+      throwIfChatSummaryAborted(signal);
       const updatedChat = await storage.patchMetadata(req.params.id, (freshMeta) => {
+        throwIfChatSummaryAborted(signal);
         const entries = normalizeChatSummaryEntries(freshMeta.summaryEntries, {
           legacySummary: typeof freshMeta.summary === "string" ? freshMeta.summary : null,
         });
@@ -4514,11 +4648,20 @@ export async function chatsRoutes(app: FastifyInstance) {
       },
     ];
 
-    const result = await provider.chatComplete(messages, {
-      model,
-      ...summaryTemperatureOptions,
-      maxTokens: summaryMaxTokens,
-    });
+    throwIfChatSummaryAborted(signal);
+    let result;
+    try {
+      result = await provider.chatComplete(messages, {
+        model,
+        ...summaryTemperatureOptions,
+        maxTokens: summaryMaxTokens,
+        signal,
+      });
+    } catch (error) {
+      if (signal.aborted) return reply;
+      throw error;
+    }
+    throwIfChatSummaryAborted(signal);
 
     if (!result.content) {
       return reply.status(500).send({ error: "No response from AI" });
@@ -4541,11 +4684,13 @@ export async function chatsRoutes(app: FastifyInstance) {
     let summaryEntries: ChatSummaryEntry[] = [];
     let updatedChat: Awaited<ReturnType<typeof storage.patchMetadata>>;
     updatedChat = await withChatMetadataPatchQueue(req.params.id, async () => {
+      throwIfChatSummaryAborted(signal);
       const [latestChatBeforeHide, latestMessagesBeforeHide] = await Promise.all([
         storage.getById(req.params.id),
         storage.listMessages(req.params.id),
       ]);
       if (!latestChatBeforeHide) return null;
+      throwIfChatSummaryAborted(signal);
       const latestMetaBeforeHide = parseExtra(latestChatBeforeHide.metadata) as Record<string, unknown>;
       const eligibleToHide =
         latestMetaBeforeHide.hideSummarisedMessages === true
@@ -4555,6 +4700,7 @@ export async function chatsRoutes(app: FastifyInstance) {
               tail: resolveRoleplaySummaryTail(latestMetaBeforeHide.summaryTailMessages),
             })
           : [];
+      throwIfChatSummaryAborted(signal);
       hideMessageIds =
         eligibleToHide.length > 0 ? await storage.bulkSetHiddenFromAI(req.params.id, eligibleToHide, true) : [];
 
@@ -4562,6 +4708,7 @@ export async function chatsRoutes(app: FastifyInstance) {
         const updated = await storage.patchMetadata(
           req.params.id,
           (freshMeta) => {
+            throwIfChatSummaryAborted(signal);
             const now = new Date().toISOString();
             const result = appendChatSummaryEntryToMetadata(
               freshMeta,
