@@ -1,4 +1,5 @@
 import type { AgentContext } from "@marinara-engine/shared";
+import { NOVELAI_V5_MAX_CHARACTER_PROMPTS } from "../image/character-prompts.js";
 import { logger } from "../../lib/logger.js";
 import { normalizeAgentContextSize, renderAgentPromptTemplate } from "../agents/agent-executor.js";
 import type { ResolvedAgent } from "../agents/agent-pipeline.js";
@@ -69,7 +70,7 @@ function normalizeCharacterNames(value: unknown): string[] {
         .filter(Boolean)
         .map((name) => name.slice(0, 120)),
     ),
-  ).slice(0, 16);
+  ).slice(0, NOVELAI_V5_MAX_CHARACTER_PROMPTS);
 }
 
 function normalizeAspectRatio(value: unknown): ManualIllustratorPromptPlan["aspectRatio"] {

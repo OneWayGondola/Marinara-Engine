@@ -5840,6 +5840,16 @@ const cases: RegressionCase[] = [
         characterPrompts: [],
       });
 
+      const captionRoster = Array.from({ length: 25 }, (_, index) => `Guest ${index + 1}`);
+      const fullCastPlan = parseManualIllustratorPromptPlan(
+        JSON.stringify({ prompt: "A crowded banquet", characters: captionRoster }),
+      );
+      assert.deepEqual(
+        fullCastPlan.characters,
+        captionRoster.slice(0, 22),
+        "manual Illustrator keeps the complete V5 caption roster",
+      );
+
       const quarantinePrompt =
         "A cramped quarantine berth inside the Fontaine border checkpoint at night. A narrow iron-framed cot stands against a damp stone wall beside a battered table holding folded linen, simple medical supplies, an enamel basin, and a sprig of dried lavender. Heavy checkpoint doors and exposed brass pipes occupy the opposite wall. A high reinforced window reveals cold downpour streaming across the glass. A compact radiator and low amber utility lamp contrast with the blue-gray storm light. Chipped plaster, rust stains, patched bedding, old cargo crates, and hastily cleaned floorboards suggest an austere freight facility adapted for recovery.";
       const styleProfilesForHandoff = createDefaultImageStyleProfileSettings();

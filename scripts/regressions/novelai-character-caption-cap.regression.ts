@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { buildNovelAiV4CharacterPromptPayload } from "../../packages/server/src/services/image/image-generation.js";
 
-const crowd = Array.from({ length: 10 }, (_, index) => `Colonist ${index + 1}`);
+const crowd = Array.from({ length: 25 }, (_, index) => `Colonist ${index + 1}`);
 const crowdPrompts = crowd.map((name) => ({ name, prompt: `girl, ${name}` }));
 
 // The NovelAI request builder honours the V5 cap instead of the old fixed six.
@@ -21,6 +21,12 @@ assert.equal(
   buildNovelAiV4CharacterPromptPayload(sevenCaptions, "nai-diffusion-4-5-full").captions.length,
   6,
   "V4.5 payload still stops at six",
+);
+
+assert.equal(
+  buildNovelAiV4CharacterPromptPayload(crowdPrompts, "nai-diffusion-5-full").captions.length,
+  22,
+  "V5 retains exactly its full caption capacity",
 );
 
 console.log("NovelAI character caption cap regression passed");
