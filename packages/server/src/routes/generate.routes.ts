@@ -10822,7 +10822,11 @@ export async function generateRoutes(app: FastifyInstance) {
                         const appearanceBlock =
                           illustratorCharacterPrompts.length > 0
                             ? buildUncaptionedCharacterAppearanceBlock(
-                                [...agentContext.characters, ...(agentContext.persona ? [agentContext.persona] : [])],
+                                [
+                                  ...agentContext.characters,
+                                  ...(agentContext.persona ? [agentContext.persona] : []),
+                                  ...referenceResolution.appearanceSources,
+                                ],
                                 illCharacters.filter((name): name is string => typeof name === "string"),
                                 illustratorCharacterPrompts,
                               )
