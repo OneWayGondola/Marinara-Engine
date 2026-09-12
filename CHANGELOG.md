@@ -69,6 +69,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added an inline "Apply persona to earlier messages…" action in Chat Settings that applies the currently selected persona to messages sent without a persona, messages sent as a specific persona, or all user messages in the chat (#6043).
 - Added effective generation values and their winning preset, connection, chat, mode, or output-cap source to parameter settings, plus an editor for preset parameters (#6052). Parameter edits wait for inherited values to load so a slow response cannot discard an override.
 - Added Z.AI text connections with GLM 5.3 model metadata, supported reasoning levels, and useful explanations when reasoning exhausts the output budget (#5963, #5968).
 - Added native NovelAI character captions to Illustrator, reusing Storyboard validation and supporting up to 22 characters on V5 (#5833, #5834); partial captions keep uncovered character appearances, and image fallbacks retain caption identities and current outfits.

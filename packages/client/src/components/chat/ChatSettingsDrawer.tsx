@@ -73,6 +73,7 @@ import {
   type ChatToolbarFloatingPanelAnchor,
 } from "./ChatToolbarControls";
 import { PickerDropdown } from "../../features/chat-settings/PickerDropdown";
+import { PersonaHistoryReassignDropdown } from "../../features/chat-settings/sections/PersonaHistoryReassignDropdown";
 import { ChatSettingsSection as Section } from "../../features/chat-settings/ChatSettingsSection";
 import { ActiveChatBackgroundPicker } from "../panels/settings/BackgroundPicker";
 import { AdvancedParametersSection } from "../../features/chat-settings/sections/AdvancedParametersSection";
@@ -5102,6 +5103,10 @@ export function ChatSettingsDrawer({
                     {localizeUi("ui.chat.chatsettingsdrawer.noPersonaSelected")}
                   </p>
                 )}
+                <PersonaHistoryReassignDropdown
+                  chatId={chat.id}
+                  targetName={personas.find((persona) => persona.id === chat.personaId)?.name ?? null}
+                />
 
                 {!showPersonaPicker ? (
                   <button
@@ -5611,6 +5616,15 @@ export function ChatSettingsDrawer({
                     )}
                 </PickerDropdown>
               )}
+
+              <PersonaHistoryReassignDropdown
+                chatId={chat.id}
+                targetName={
+                  chat.personaCharacterId
+                    ? (charNameMap.get(chat.personaCharacterId) ?? null)
+                    : (personas.find((persona) => persona.id === chat.personaId)?.name ?? null)
+                }
+              />
             </Section>
           )}
 
