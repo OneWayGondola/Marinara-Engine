@@ -219,7 +219,7 @@ function contentIncludesResolvedField(content: string, fieldValue: string): bool
 }
 
 function macroAliasPattern(alias: string): RegExp {
-  return new RegExp(`\\{\\{[\\s\\S]*?\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b[\\s\\S]*?\\}\\}`, "i");
+  return new RegExp(`\\{\\{[^{}]*\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b[^{}]*\\}\\}`, "i");
 }
 
 function sourceReferencesAnyMacro(sources: readonly string[], aliases: readonly string[]): boolean {

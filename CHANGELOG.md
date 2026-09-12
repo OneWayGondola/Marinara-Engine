@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Conversation prompts no longer lose character or persona details when ordinary prose between macros mentions identity fields such as description or personality (#6066).
+
 - Roleplay notes and memory editors now follow Chroma colors. Personal notes are prompted to stay brief and track private state and plans for future turns instead of recapping scenes (#6069).
 
 - Visual Novel paragraph navigation now loads older messages across history pages, shows matching translations alongside the source, and preserves source text when translated paragraph counts differ (#6044).
