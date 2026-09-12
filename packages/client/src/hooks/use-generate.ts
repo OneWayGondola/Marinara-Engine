@@ -3212,20 +3212,39 @@ export function useGenerate() {
         }
         // Re-sort sidebar so this chat floats to the top
         qc.invalidateQueries({ queryKey: chatKeys.list() });
-        // If the user navigated away from this chat during generation,
-        // increment unread badge + play notification sound so they know.
         // Only notify if actual content was produced (skip offline/error cases).
         const currentActive = useChatStore.getState().activeChatId;
-        const hasDurableAssistantReply = latestAssistantMessage(persistedMessages.values()) !== null;
+        const notifiedMessage = latestAssistantMessage(persistedMessages.values());
+        const hasDurableAssistantReply = notifiedMessage !== null;
         const notificationEligibleContent =
           receivedContent &&
           (!passiveStreamRecovered || hasDurableAssistantReply) &&
           (!sawGroupTurn || currentGroupTurnSavedMessage !== null);
+        const chatList = qc.getQueryData<Chat[]>(chatKeys.list());
+        const chat = chatList?.find((c) => c.id === params.chatId);
+        if (notificationEligibleContent) {
+          // The completion sound does not depend on which chat is active: the
+          // "only when unfocused" setting already covers staying on the chat,
+          // and Game pings above regardless of focus (#6080). A reply still
+          // held for a rewrite agent is not complete yet (#3095).
+          const isRp = chat?.mode === "roleplay";
+          const isGame = chat?.mode === "game" || isGameGeneration;
+          const uiState = useUIStore.getState();
+          const soundEnabled = isGame
+            ? sawDoneEvent && uiState.gameNotificationSound && !gameTurnLoadedSoundPlayed
+            : isRp
+              ? uiState.rpNotificationSound
+              : uiState.convoNotificationSound;
+          playConfiguredNotificationPing(
+            soundEnabled && !messageHasPendingPostProcessing(notifiedMessage),
+            uiState.notificationSoundsOnlyWhenUnfocused,
+          );
+        }
+        // If the user navigated away from this chat during generation,
+        // increment unread badge + show the avatar bubble so they know.
         if (notificationEligibleContent && currentActive !== params.chatId) {
           useChatStore.getState().incrementUnread(params.chatId);
           // Show floating avatar notification bubble — look up character from cache
-          const chatList = qc.getQueryData<Chat[]>(chatKeys.list());
-          const chat = chatList?.find((c) => c.id === params.chatId);
           const rawIds = chat?.characterIds;
           const parsedIds: string[] =
             typeof rawIds === "string"
@@ -3239,7 +3258,6 @@ export function useGenerate() {
               : Array.isArray(rawIds)
                 ? rawIds
                 : [];
-          const notifiedMessage = latestAssistantMessage(persistedMessages.values());
           const notifiedCharacterId = resolveNotifiedCharacterId(
             notifiedMessage,
             params.forCharacterId,
@@ -3251,15 +3269,6 @@ export function useGenerate() {
               .getState()
               .addNotification(params.chatId, identity.name ?? "Character", identity.avatarUrl, identity.avatarCrop);
           }
-          const isRp = chat?.mode === "roleplay";
-          const isGame = chat?.mode === "game" || isGameGeneration;
-          const uiState = useUIStore.getState();
-          const soundEnabled = isGame
-            ? sawDoneEvent && uiState.gameNotificationSound && !gameTurnLoadedSoundPlayed
-            : isRp
-              ? uiState.rpNotificationSound
-              : uiState.convoNotificationSound;
-          playConfiguredNotificationPing(soundEnabled, uiState.notificationSoundsOnlyWhenUnfocused);
         }
         // Only clean up global streaming state if this generation still
         // "owns" it. We check AbortController identity rather than chatId

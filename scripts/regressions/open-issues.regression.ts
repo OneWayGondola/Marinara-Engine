@@ -6317,6 +6317,24 @@ const illustratorReferencesSource = readFileSync(
   "utf8",
 );
 assert.match(appSource, /--marinara-app-accent-static-gradient/u);
+// #6080: the Roleplay/Conversation completion sound plays whenever the unread
+// badge would have counted the reply, not only after navigating to another
+// chat, and never for a reply still held for a rewrite agent (#3095). The
+// sound block precedes the navigated-away block, which keeps badge + bubble only.
+assert.match(
+  clientGenerationSource,
+  /if \(notificationEligibleContent\) \{[\s\S]{0,1200}?playConfiguredNotificationPing\(\s*soundEnabled && !messageHasPendingPostProcessing\(notifiedMessage\),\s*uiState\.notificationSoundsOnlyWhenUnfocused,\s*\);\s*\}\s*\/\/ If the user navigated away/u,
+  "The completion sound must be gated on eligible content alone, ahead of the navigated-away block",
+);
+const navigatedAwayNotificationBlock = clientGenerationSource.match(
+  /if \(notificationEligibleContent && currentActive !== params\.chatId\) \{([\s\S]*?)\n {8}\}\n/u,
+);
+assert.ok(navigatedAwayNotificationBlock, "The navigated-away notification block must still exist");
+assert.doesNotMatch(
+  navigatedAwayNotificationBlock[1],
+  /playConfiguredNotificationPing/u,
+  "The navigated-away block must not play the completion sound a second time",
+);
 assert.match(appSource, /position=\{notificationPosition === "bottom" \? "bottom-center" : "top-center"\}/u);
 assert.match(
   appSource,
