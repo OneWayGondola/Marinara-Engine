@@ -120,8 +120,21 @@ for (const theme of ["dark", "light"] as const) {
       await open(page, data.chat.id, theme);
       const vn = page.locator("[data-roleplay-vn]");
       await expect(vn).toContainText("A small light flickers across the desk.");
-      await expect(vn).not.toContainText("The archive falls quiet.");
       await expect(vn.getByRole("img", { name: "Mari", exact: true })).toBeVisible();
+      // Test paragraph progression in VN mode
+      const prevBtn = vn.getByRole("button", { name: "Previous paragraph" });
+      const nextBtn = vn.getByRole("button", { name: "Next paragraph" });
+      await expect(nextBtn).toBeDisabled();
+      await expect(prevBtn).toBeEnabled();
+      await prevBtn.click();
+      await expect(vn).toContainText('"We have a new experiment," Mari says.');
+      await prevBtn.click();
+      await expect(vn).toContainText("The archive falls quiet.");
+      await expect(prevBtn).toBeDisabled();
+      await nextBtn.click();
+      await expect(vn).toContainText('"We have a new experiment," Mari says.');
+      await nextBtn.click();
+      await expect(vn).toContainText("A small light flickers across the desk.");
       await expect(page.locator("[data-chat-scroll] [data-message-id]")).toHaveCount(0);
       const input = page.locator(".mari-chat-input textarea");
       await expect(input).toBeVisible();
@@ -158,11 +171,71 @@ for (const theme of ["dark", "light"] as const) {
   });
 }
 
+for (const translationOnly of [false, true]) {
+  test(`Roleplay VN shows aligned translations and preserves mismatched source (${translationOnly})`, async ({
+    page,
+    request,
+  }) => {
+    const data = await fixture(request);
+    try {
+      await request.patch(`/api/chats/${data.chat.id}/metadata`, { data: { translationDisplayOnly: translationOnly } });
+      await open(page, data.chat.id);
+      const paragraph = page.getByRole("region", { name: "Current paragraph" });
+      for (const translation of ["Uno.\n\nDos.\n\nTres.", "Merged translation."]) {
+        await page.evaluate(
+          async ({ id, source, translation }) => {
+            const { useTranslationStore } = await import("/src/stores/translation.store.ts" as string);
+            useTranslationStore.getState().setTranslation(id, translation, source);
+          },
+          { id: data.message.id, source: data.message.content, translation },
+        );
+        if (translation.startsWith("Uno")) {
+          await expect(paragraph).toContainText("Tres.");
+          await page.getByRole("button", { name: "Previous paragraph" }).click();
+          await expect(paragraph).toContainText("Dos.");
+          if (!translationOnly) await expect(paragraph).toContainText("We have a new experiment");
+        } else {
+          await expect(paragraph).toContainText("We have a new experiment");
+          await expect(paragraph).not.toContainText("Merged translation");
+        }
+      }
+    } finally {
+      await data.cleanup();
+    }
+  });
+}
+
+test("Roleplay VN loads preceding pages without opening history", async ({ page, request }) => {
+  const data = await fixture(request);
+  try {
+    for (const content of ["Middle turn.", "Newest turn."]) {
+      expect(
+        (
+          await request.post(`/api/chats/${data.chat.id}/messages`, {
+            data: { role: "assistant", characterId: data.character.id, content },
+          })
+        ).ok(),
+      ).toBeTruthy();
+    }
+    await open(page, data.chat.id, "dark", { messagesPerPage: 1 });
+    const paragraph = page.getByRole("region", { name: "Current paragraph" });
+    await expect(paragraph).toContainText("Newest turn.");
+    await page.getByRole("button", { name: "Previous paragraph" }).click();
+    await expect(paragraph).toContainText("Middle turn.");
+    await page.getByRole("button", { name: "Previous paragraph" }).click();
+    await expect(paragraph).toContainText("A small light flickers across the desk.");
+    await expect(page.locator("[data-chat-scroll] [data-message-id]")).toHaveCount(0);
+  } finally {
+    await data.cleanup();
+  }
+});
+
 test("Roleplay VN waits for complete streaming paragraphs and discards old swipe text", async ({ page, request }) => {
   const data = await fixture(request);
   try {
     await open(page, data.chat.id);
     const paragraph = page.getByRole("region", { name: "Current paragraph" });
+    await page.getByRole("button", { name: "Previous paragraph" }).click();
     await page.evaluate(
       async ({ chatId, messageId, characterId }) => {
         const { useChatStore } = (await import("/src/stores/chat.store.ts" as string)) as PageChatStoreModule;
@@ -492,5 +565,43 @@ test("VN history opens at the newest message and scene art respects size, activi
   } finally {
     await data.cleanup();
     for (const id of extras) await request.delete(`/api/characters/${id}`);
+  }
+});
+
+test("Roleplay VN portrait honors avatar crop and allows history expansion", async ({ page, request }) => {
+  const data = await fixture(request, true);
+  try {
+    const crop = { srcX: 0.2, srcY: 0.1, srcWidth: 0.5, srcHeight: 0.5 };
+    const charRes = await request.get(`/api/characters/${data.character.id}`);
+    expect(charRes.ok()).toBeTruthy();
+    const charJson = await charRes.json();
+    const rawData = JSON.parse(charJson.data);
+    rawData.extensions = { ...(rawData.extensions ?? {}), avatarCrop: crop };
+    expect(
+      (await request.patch(`/api/characters/${data.character.id}`, { data: { data: rawData } })).ok(),
+    ).toBeTruthy();
+
+    await open(page, data.chat.id);
+    const vn = page.locator("[data-roleplay-vn]");
+    const avatarImg = vn.getByRole("img", { name: "Mari", exact: true });
+    await expect(avatarImg).toBeVisible();
+    await expect(avatarImg).toHaveCSS("position", "absolute");
+    expect(
+      await avatarImg.evaluate((element) => ({
+        width: element.style.width,
+        height: element.style.height,
+        top: element.style.top,
+        left: element.style.left,
+      })),
+    ).toEqual({ width: "200%", height: "200%", top: "-20%", left: "-40%" });
+
+    const expandBtn = vn.getByRole("button", { name: "Show chat history" });
+    await expect(expandBtn).toBeVisible();
+    await expandBtn.click();
+    const history = page.locator("[data-chat-scroll]");
+    await expect(history).toBeVisible();
+    await expect(history.locator(`[data-message-id="${data.message.id}"]`).first()).toBeVisible();
+  } finally {
+    await data.cleanup();
   }
 });
