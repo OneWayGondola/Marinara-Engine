@@ -717,9 +717,10 @@ function localImageBackendFetch(
   init?: RequestInit,
   options: { timeoutMs?: number; keepAliveInitialDelayMs?: number } = {},
 ) {
+  const timeoutMs = options.timeoutMs ?? resolveComfyUiImageGenerationTimeoutMs();
   return imageFetch(url, init, {
     allowLocal: true,
-    agentOptions: options.timeoutMs ? { bodyTimeout: options.timeoutMs, headersTimeout: options.timeoutMs } : undefined,
+    agentOptions: { bodyTimeout: timeoutMs, headersTimeout: timeoutMs },
     keepAliveInitialDelayMs: options.keepAliveInitialDelayMs,
   });
 }
