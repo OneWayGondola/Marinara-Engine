@@ -7,7 +7,7 @@ import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { applyInlineMarkdown, renderMarkdownBlocks, applyInlineMarkdownHTML } from "../../lib/markdown";
 import { MessageReplyPreview, ReplyToMessageButton } from "./MessageReplyPreview";
 import { RoleplayCommandResults } from "./RoleplayCommandResults";
-import { latestRoleplayParagraph } from "../../lib/roleplay-vn-paragraphs";
+import { splitRoleplayParagraphs } from "../../lib/roleplay-vn-paragraphs";
 import {
   normalizeCardAssetImageSyntax,
   resolveCardAssetUrl,
@@ -888,6 +888,10 @@ interface ChatMessageProps {
   isStreaming?: boolean;
   /** Compact paragraph presentation; full message actions stay in the history. */
   visualNovel?: boolean;
+  /** Explicit VN paragraph index to render instead of automatically picking the latest paragraph. */
+  visualNovelParagraphIndex?: number;
+  /** Callback notifying the total number of paragraphs available in this message for VN rendering. */
+  onVisualNovelParagraphCount?: (count: number) => void;
   visualNovelMediaTarget?: HTMLElement | null;
   /** Whether the live Roleplay response has begun emitting visible output. */
   streamingOutputStarted?: boolean;
@@ -1766,6 +1770,8 @@ export const ChatMessage = memo(function ChatMessage({
   message,
   isStreaming,
   visualNovel = false,
+  visualNovelParagraphIndex,
+  onVisualNovelParagraphCount,
   visualNovelMediaTarget,
   streamingOutputStarted = false,
   streamingContent,
@@ -2736,7 +2742,23 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Render content with dialogue highlighting (or HTML rendering)
   const fullText = typeof displayContent === "string" ? displayContent : message.content;
-  const text = visualNovel ? latestRoleplayParagraph(fullText) : fullText;
+  const vnParagraphs = useMemo(
+    () => (visualNovel ? splitRoleplayParagraphs(fullText, isStreaming) : []),
+    [fullText, isStreaming, visualNovel],
+  );
+
+  useEffect(() => {
+    if (visualNovel && onVisualNovelParagraphCount) {
+      onVisualNovelParagraphCount(Math.max(1, vnParagraphs.length));
+    }
+  }, [onVisualNovelParagraphCount, visualNovel, vnParagraphs.length]);
+
+  const activeVnParagraphIndex =
+    visualNovelParagraphIndex != null
+      ? Math.max(0, Math.min(vnParagraphs.length - 1, visualNovelParagraphIndex))
+      : vnParagraphs.length - 1;
+
+  const text = visualNovel ? (vnParagraphs.length > 0 ? (vnParagraphs[activeVnParagraphIndex] ?? "") : "") : fullText;
   const isHtmlContent = containsChatHtml(text);
   const htmlScopeClass = useMemo(() => {
     const suffix = message.id.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -2805,11 +2827,24 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Translated text is rendered through the same markdown pipeline as the
   // message so bold/italics/quotes format identically.
+  const vnTranslatedParagraphs = useMemo(
+    () => (visualNovel && translatedText ? splitRoleplayParagraphs(translatedText, false) : []),
+    [translatedText, visualNovel],
+  );
+  // In VN mode, ensure translated paragraphs map one-to-one with source paragraphs.
+  // If paragraph counts diverge, disable paragraph-level translation to avoid mismatched content.
+  const hasMatchingVnTranslation =
+    visualNovel && vnTranslatedParagraphs.length > 0 && vnTranslatedParagraphs.length === vnParagraphs.length;
+
+  const translatedVnText = hasMatchingVnTranslation ? (vnTranslatedParagraphs[activeVnParagraphIndex] ?? "") : "";
+
+  const effectiveTranslationText = visualNovel ? (hasMatchingVnTranslation ? translatedVnText : null) : translatedText;
+
   const renderedTranslation = useMemo(
     () =>
-      translatedText
+      effectiveTranslationText
         ? renderContent(
-            visualNovel ? latestRoleplayParagraph(translatedText) : translatedText,
+            effectiveTranslationText,
             dialogueColor,
             speakerColorMap,
             boldDialogue,
@@ -2822,8 +2857,7 @@ export const ChatMessage = memo(function ChatMessage({
           )
         : null,
     [
-      translatedText,
-      visualNovel,
+      effectiveTranslationText,
       dialogueColor,
       speakerColorMap,
       boldDialogue,
@@ -2844,7 +2878,7 @@ export const ChatMessage = memo(function ChatMessage({
   // content, so switching swipes or editing never shows a stale translation
   // in place of the real text.
   const showTranslationOnly =
-    translationDisplayOnly && !!translatedText && !isTranslating && translationSource === message.content;
+    translationDisplayOnly && !!effectiveTranslationText && !isTranslating && translationSource === message.content;
 
   const handleCopy = () => {
     copyToClipboard(message.content);
@@ -3186,6 +3220,11 @@ export const ChatMessage = memo(function ChatMessage({
                   {diceReplacesContent ? null : showTranslationOnly ? renderedTranslation : renderedContent}
                   {roleplayAttachments}
                   {roleplayCommandResults}
+                  {renderedTranslation && !showTranslationOnly && (
+                    <div className="translation-text mt-2 whitespace-pre-wrap border-t border-[var(--border)] pt-2">
+                      {renderedTranslation}
+                    </div>
+                  )}
                 </>
               )}
             </div>
