@@ -142,6 +142,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- OpenRouter image generation now requests image-only output by default, fixing unsupported-modality errors for MAI and Grok Imagine while retaining text output for compatible Gemini, GPT-5 image, and automatic-routing models (#6079).
 - Android can remember app or browser launch, sign the browser in automatically, and reuse an authenticated running server before starting Termux again (#6071).
 - Local connections with no model name now use the loaded model for agent reruns, manual Illustrator, captioning, and auxiliary text tools (#6038).
 - Character greetings resolve selected preset variables without replacing their stored macros or character/persona names (#5869).
