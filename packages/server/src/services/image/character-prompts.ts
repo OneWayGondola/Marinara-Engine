@@ -249,14 +249,19 @@ export function buildUncaptionedCharacterAppearanceBlock(
 ): string {
   const covered = new Set(characterPrompts.map((entry) => entry.name));
   const lines: string[] = [];
+  let used = 0;
   for (const source of sources) {
     const appearance = stripMacroComments(source.appearance ?? "").trim();
     if (!appearance) continue;
     for (const segment of splitEnsembleAppearance(appearance) ?? [{ name: source.name, appearance }]) {
       const name = matchCharacterPromptName(segment.name, characters);
       if (!name || covered.has(name) || !segment.appearance) continue;
+      const line = `${name}'s Appearance: ${segment.appearance}`;
+      const length = line.length + (lines.length > 0 ? 1 : 0);
+      if (used + length > MAX_APPEARANCE_REFERENCE_CHARS) return lines.join("\n");
+      used += length;
       covered.add(name);
-      lines.push(`${name}'s Appearance: ${segment.appearance}`);
+      lines.push(line);
     }
   }
   return lines.join("\n");

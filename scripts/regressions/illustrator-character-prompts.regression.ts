@@ -275,3 +275,23 @@ assert.equal(
   "Briar's Appearance: blue hair\nMari's Appearance: silver hair",
   "partial captions retain only uncovered visible appearances, including ensemble segments and the persona",
 );
+
+const appearancePrefix = "Aster's Appearance: ";
+const atLimitAppearance = "x".repeat(8000 - appearancePrefix.length);
+assert.equal(
+  buildUncaptionedCharacterAppearanceBlock(
+    [
+      { name: "Aster", appearance: atLimitAppearance },
+      { name: "Briar", appearance: "would exceed the limit" },
+    ],
+    ["Aster", "Briar"],
+    [],
+  ),
+  appearancePrefix + atLimitAppearance,
+  "appearance fallback keeps complete lines within the existing reference budget",
+);
+assert.equal(
+  buildUncaptionedCharacterAppearanceBlock([{ name: "Aster", appearance: atLimitAppearance + "x" }], ["Aster"], []),
+  "",
+  "an oversized first appearance is omitted instead of truncating its text",
+);
