@@ -32,7 +32,11 @@ import {
   type NovelAiDefaults,
   type SceneIllustrationCharacterPrompt,
 } from "@marinara-engine/shared";
-import { resolveNovelAiCharacterPromptLimit } from "./character-prompts.js";
+import {
+  isNativeNovelAiHost,
+  resolveNovelAiCharacterPromptLimit,
+  supportsNovelAiCharacterPrompts,
+} from "./character-prompts.js";
 import { isImageLocalUrlsEnabled } from "../../config/runtime-config.js";
 import { runMediaGenerationRequest } from "./image-generation-queue.js";
 import { generateRunPodComfyUI } from "./runpod-comfyui.service.js";
@@ -297,6 +301,13 @@ async function generateImageUncapped(
 ): Promise<ImageGenResult> {
   const resolvedSource = resolveImageBackend(source, baseUrl, serviceHint, request.model);
   const normalizedBaseUrl = normalizeImageUrl(baseUrl);
+  // Providers without native captions still need the identities and current outfits
+  // the prompt writer put there, including when a NovelAI request falls back.
+  const flattenedPrompt =
+    request.characterPrompts?.length &&
+    !(resolvedSource === "novelai" && supportsNovelAiCharacterPrompts({ baseUrl, model: request.model }))
+      ? [request.prompt, ...request.characterPrompts.map((entry) => `${entry.name}: ${entry.prompt}`)].join("\n\n")
+      : undefined;
   const generationTimeoutMs =
     resolvedSource === "comfyui" || resolvedSource === "swarmui" || resolvedSource === "runpod_comfyui"
       ? resolveComfyUiImageGenerationTimeoutMs()
@@ -316,6 +327,8 @@ async function generateImageUncapped(
           request.allowLocalUrls ?? (await shouldAllowLocalUrlsForImageConnection(normalizedBaseUrl, resolvedSource));
         const scopedRequest = {
           ...request,
+          prompt: flattenedPrompt ?? request.prompt,
+          characterPrompts: flattenedPrompt ? undefined : request.characterPrompts,
           fallback: undefined,
           signal,
           allowLocalUrls,
@@ -383,7 +396,9 @@ async function generateImageUncapped(
       physicalRequest,
     );
     outcome = "completed";
-    return primaryResult;
+    return flattenedPrompt
+      ? { ...primaryResult, effectivePrompt: primaryResult.effectivePrompt ?? flattenedPrompt }
+      : primaryResult;
   } catch (error) {
     const fallback = request.fallback;
     if (!fallback || request.signal?.aborted || isConnectionAdmissionFailure(error)) throw error;
@@ -2277,11 +2292,15 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
   // Only use the native NovelAI API format when hitting the actual NovelAI domain.
   // Proxies (linkapi.ai, etc.) expose OpenAI-compatible chat completions that return
   // image URLs in markdown format (![image](url)).
-  const isNativeNovelAI = baseUrl.toLowerCase().includes("novelai.net");
+  const nativeUrl = new URL(baseUrl);
+  const isNativeNovelAI = isNativeNovelAiHost(nativeUrl.hostname);
   if (!isNativeNovelAI) {
     return generateViaChatCompletions(baseUrl, apiKey, request);
   }
 
+  if (nativeUrl.protocol !== "https:") {
+    throw new Error("Native NovelAI image connections require HTTPS.");
+  }
   const url = `${baseUrl.replace(/\/+$/, "")}/ai/generate-image`;
   const model = request.model || "nai-diffusion-4-5-full";
   const isV4 = isNovelAiV4Model(model);
@@ -2395,7 +2414,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
       body: hasReferences ? buildNovelAiReferenceFormData(body, directorReferenceImages) : JSON.stringify(body),
       signal: imageRequestSignal(request),
     },
-    { allowLocal: request.allowLocalUrls },
+    { allowLocal: request.allowLocalUrls, allowedOrigins: [nativeUrl.origin] },
   );
 
   if (!resp.ok) {

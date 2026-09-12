@@ -1609,6 +1609,13 @@ assert.equal(
   'The AI returned an empty response (finish reason "stop"). Try sending your message again.',
 );
 assert.equal(describeEmptyModelResponse({ hadThinking: false }), GENERIC_EMPTY_RESPONSE_MESSAGE);
+for (const finishReason of ["sensitive", "model_context_window_exceeded"]) {
+  assert.equal(
+    describeEmptyModelResponse({ finishReason, hadThinking: true, usage: { completionTokens: 16 }, maxTokens: 16 }),
+    describeEmptyModelResponse({ finishReason, hadThinking: false }),
+    "explicit provider stop reasons take priority over token-budget inference",
+  );
+}
 // The quoted budget is the one the provider sent: the route's number capped by the
 // connection override, as BaseLLMProvider.applyMaxTokensCap does on the way out.
 // Seen live 2026-09-11: override 16, route 4096, wire max_tokens=16, message said "16 of 4096".

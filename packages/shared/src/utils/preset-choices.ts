@@ -65,7 +65,7 @@ export function resolveChoiceVariableValue(input: {
       const index = Math.min(selected.length - 1, Math.floor(unit * selected.length));
       return selected[index] ?? "";
     }
-    return selected.join(input.separator || ", ");
+    return selected.join(input.separator ?? ", ");
   }
 
   if (selected !== undefined) {

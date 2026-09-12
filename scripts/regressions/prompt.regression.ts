@@ -8812,10 +8812,16 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
           omitted: [],
         },
         { source: "{{descriptionExtra}} {{personalityExtra}}", omitted: [] },
+        { source: "{{ description }} {{ personality }}", omitted: [] },
         { source: "{{description}} {{personality}}", omitted: ["CHAR_DESCRIPTION", "CHAR_PERSONALITY"] },
         { source: "{{persona}}", omitted: markers.filter((marker) => marker.startsWith("PERSONA_")) },
         { source: "{{personaAppearance}}", omitted: ["PERSONA_APPEARANCE"] },
-        { source: "{{// description}} {{if personality}}", omitted: ["CHAR_DESCRIPTION", "CHAR_PERSONALITY"] },
+        { source: "{{// description}} {{if personality}}", omitted: [] },
+        { source: '{{#if personality != ""}}Authored choice{{/if}}', omitted: ["CHAR_PERSONALITY"] },
+        { source: '{{#if "x" == @personaAppearance}}Authored choice{{/if}}', omitted: ["PERSONA_APPEARANCE"] },
+        { source: '{{#if "personality" == "description"}}Literal words{{/if}}', omitted: [] },
+        { source: "{{#if false}}No{{else if description}}Yes{{/if}}", omitted: ["CHAR_DESCRIPTION"] },
+        { source: "{{setvar::label::personality}}", omitted: [] },
       ];
       for (const wrapFormat of ["xml", "markdown", "none"] as const) {
         for (const { source, omitted } of cases) {
@@ -10289,6 +10295,11 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         randomPick: "true",
       };
 
+      assert.equal(
+        resolveChoiceVariableValue({ ...input, randomPick: false, separator: "" }),
+        "tenderdramaticplayful",
+        "an explicitly empty multi-choice separator is preserved",
+      );
       assert.equal(resolveChoiceVariableValue({ ...input, random: () => 0 }), "tender");
       assert.equal(resolveChoiceVariableValue({ ...input, random: () => 0.5 }), "dramatic");
       assert.equal(resolveChoiceVariableValue({ ...input, random: () => 0.999999 }), "playful");

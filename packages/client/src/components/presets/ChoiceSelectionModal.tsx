@@ -88,7 +88,11 @@ function fallbackChoiceSelection(variable: VariableData): string | string[] | un
   return variable.options[0]?.value;
 }
 
-export function ChoiceSelectionModal({
+export function ChoiceSelectionModal(props: ChoiceSelectionModalProps) {
+  return <ChatChoiceSelectionModal key={`${props.chatId}:${props.presetId}`} {...props} />;
+}
+
+function ChatChoiceSelectionModal({
   open,
   onClose,
   presetId,

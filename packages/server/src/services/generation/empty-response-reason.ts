@@ -46,6 +46,12 @@ export function describeEmptyModelResponse(context: EmptyResponseContext): strin
     finish === "length" ||
     (context.hadThinking && typeof completion === "number" && typeof max === "number" && completion >= max);
 
+  if (finish === "sensitive") {
+    return 'The provider stopped the reply for content policy (finish reason "sensitive") and returned no text.';
+  }
+  if (finish === "model_context_window_exceeded") {
+    return 'The prompt exceeded the model\'s context window (finish reason "model_context_window_exceeded"). Lower Max Context or shorten the prompt.';
+  }
   if (budgetSpent) {
     let spent = "";
     if (typeof completion === "number" && typeof max === "number") {
@@ -53,12 +59,6 @@ export function describeEmptyModelResponse(context: EmptyResponseContext): strin
       spent += typeof reasoning === "number" ? `, ${reasoning} of them reasoning)` : ")";
     }
     return `The model used its whole output budget${spent} before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.`;
-  }
-  if (finish === "sensitive") {
-    return 'The provider stopped the reply for content policy (finish reason "sensitive") and returned no text.';
-  }
-  if (finish === "model_context_window_exceeded") {
-    return 'The prompt exceeded the model\'s context window (finish reason "model_context_window_exceeded"). Lower Max Context or shorten the prompt.';
   }
   if (context.hadThinking) {
     const details = [

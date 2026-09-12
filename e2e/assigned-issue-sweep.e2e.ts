@@ -94,9 +94,33 @@ test("effective parameter sources and preset edits survive saved chat overrides"
     await openChat(page, chat.id);
     await settings(page);
     const advanced = page.locator('[data-chat-settings-section="advanced-parameters"]');
+    let releasePreview!: () => void;
+    const previewGate = new Promise<void>((resolve) => {
+      releasePreview = resolve;
+    });
+    await page.route("**/api/generate/parameters", async (route) => {
+      await previewGate;
+      await route.continue();
+    });
     await advanced.getByText("Advanced Parameters", { exact: true }).click();
+    const temperature = advanced.getByRole("textbox", { name: "Temperature", exact: true });
+    await expect(temperature).toBeDisabled();
+    await expect(advanced.getByRole("button", { name: "Save as Connection Default", exact: true })).toBeDisabled();
+    const temporaryDefault = await temperature.inputValue();
+    expect(temporaryDefault).not.toBe("0.4");
+    releasePreview();
     await expect(advanced.getByText("Effective: 16384 · this chat", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("parameter-sources.png"), fullPage: true });
+    await expect(temperature).toBeEnabled();
+    await expect(temperature).toHaveValue("0.4");
+    await temperature.fill(temporaryDefault);
+    await temperature.blur();
+    await expect
+      .poll(
+        async () =>
+          record((await (await request.get(`/api/chats/${chat.id}`)).json()).metadata).chatParameters.temperature,
+      )
+      .toBe(Number(temporaryDefault));
     await advanced.getByRole("textbox", { name: "Max Output Tokens", exact: true }).fill("12288");
     await advanced.getByRole("textbox", { name: "Max Output Tokens", exact: true }).blur();
     await expect(advanced.getByText("Effective: 12288 · this chat", { exact: true })).toBeVisible();
@@ -207,6 +231,61 @@ test("single random choices can be overridden and greetings resolve choices with
     await expect(page.getByText("Aster invites Mari into a mystery.", { exact: false }).first()).toBeVisible();
     await page.getByRole("button", { name: "Close chat settings", exact: true }).click();
     await page.screenshot({ path: testInfo.outputPath("greeting-variables.png"), fullPage: true });
+
+    // Isolate the real picker from chat navigation, which closes the drawer.
+    // Its props must also be safe when a caller keeps it mounted across chats.
+    const nextChat = await f.create("chats", {
+      name: "Second greeting chat",
+      mode: "roleplay",
+      promptPresetId: preset.id,
+      characterIds: [character.id],
+    });
+    await page.evaluate(
+      async ({ chatId, presetId }) => {
+        const { ChoiceSelectionModal } = await import("/src/components/presets/ChoiceSelectionModal.tsx" as string);
+        const dependencyUrl = (name: string) =>
+          performance
+            .getEntriesByType("resource")
+            .find((entry) => new URL(entry.name).pathname.endsWith(`/deps/${name}.js`))!.name;
+        const { default: React } = await import(dependencyUrl("react"));
+        const { default: ReactDOM } = await import(dependencyUrl("react-dom_client"));
+        const { QueryClient, QueryClientProvider } = await import(dependencyUrl("@tanstack_react-query"));
+        const client = new QueryClient();
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = ReactDOM.createRoot(container);
+        const render = (id: string) =>
+          root.render(
+            React.createElement(
+              QueryClientProvider,
+              { client },
+              React.createElement(ChoiceSelectionModal, {
+                open: true,
+                onClose: () => {},
+                presetId,
+                chatId: id,
+                existingChoices: { genre: "a mystery" },
+              }),
+            ),
+          );
+        render(chatId);
+        window.addEventListener("sweep-choice-chat", (event) => render((event as CustomEvent<string>).detail));
+      },
+      { chatId: chat.id, presetId: preset.id },
+    );
+    await modal.getByRole("button", { name: /^Adventure\b/ }).click();
+    await page.evaluate(
+      (id) => window.dispatchEvent(new CustomEvent("sweep-choice-chat", { detail: id })),
+      nextChat.id,
+    );
+    await expect(modal.getByRole("button", { pressed: true })).toContainText("Mystery");
+    await modal.getByRole("button", { name: /Confirm/ }).click();
+    await expect
+      .poll(
+        async () =>
+          record((await (await request.get(`/api/chats/${nextChat.id}`)).json()).metadata).presetChoices?.genre,
+      )
+      .toBe("a mystery");
   } finally {
     await f.cleanup();
   }

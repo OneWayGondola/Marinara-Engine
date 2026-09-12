@@ -39,15 +39,21 @@ export function resolveNovelAiCharacterPromptLimit(model: string): number {
   return NOVELAI_V5_MODEL.test(model.trim()) ? NOVELAI_V5_MAX_CHARACTER_PROMPTS : NOVELAI_V4_MAX_CHARACTER_PROMPTS;
 }
 
+export function isNativeNovelAiHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  return normalized === "novelai.net" || normalized.endsWith(".novelai.net");
+}
+
 /**
  * Only a connection that talks to NovelAI's own image host receives the native
  * request body; proxies expose chat completions and would drop the captions.
  */
 export function supportsNovelAiCharacterPrompts(connection: { model?: unknown; baseUrl?: unknown }): boolean {
   try {
-    const hostname = new URL(readString(connection.baseUrl)).hostname;
+    const url = new URL(readString(connection.baseUrl));
     return (
-      (hostname === "novelai.net" || hostname.endsWith(".novelai.net")) &&
+      url.protocol === "https:" &&
+      isNativeNovelAiHost(url.hostname) &&
       isNovelAiCharacterPromptModel(readString(connection.model))
     );
   } catch {
@@ -78,9 +84,12 @@ export function normalizeCharacterPromptCoordinate(value: unknown, fallback: num
 }
 
 function matchCharacterPromptName(value: unknown, characters: string[]): string | null {
-  const requested = typeof value === "string" ? normalizeAvatarLookupName(value) : "";
+  const exact = readString(value);
+  if (characters.includes(exact)) return exact;
+  const requested = normalizeAvatarLookupName(exact);
   if (!requested) return null;
-  return characters.find((name) => normalizeAvatarLookupName(name) === requested) ?? null;
+  const matches = characters.filter((name) => normalizeAvatarLookupName(name) === requested);
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 /**
@@ -106,9 +115,8 @@ export function sanitizeCharacterPrompts(
     const name = matchCharacterPromptName(entry.name, characters);
     const prompt = compactText(entry.prompt, MAX_CHARACTER_PROMPT_LENGTH);
     if (!name || !prompt) continue;
-    const normalizedName = normalizeAvatarLookupName(name);
-    if (seen.has(normalizedName)) continue;
-    seen.add(normalizedName);
+    if (seen.has(name)) continue;
+    seen.add(name);
 
     const rawPosition = asRecord(entry.position);
     const hasPosition = rawPosition.x != null || rawPosition.y != null;
@@ -231,4 +239,25 @@ export function buildCharacterAppearanceReferenceBlock(sources: CharacterAppeara
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Keep appearance for visible characters omitted from a partial caption response. */
+export function buildUncaptionedCharacterAppearanceBlock(
+  sources: Array<{ name: string; appearance?: string | null }>,
+  characters: string[],
+  characterPrompts: SceneIllustrationCharacterPrompt[],
+): string {
+  const covered = new Set(characterPrompts.map((entry) => entry.name));
+  const lines: string[] = [];
+  for (const source of sources) {
+    const appearance = stripMacroComments(source.appearance ?? "").trim();
+    if (!appearance) continue;
+    for (const segment of splitEnsembleAppearance(appearance) ?? [{ name: source.name, appearance }]) {
+      const name = matchCharacterPromptName(segment.name, characters);
+      if (!name || covered.has(name) || !segment.appearance) continue;
+      covered.add(name);
+      lines.push(`${name}'s Appearance: ${segment.appearance}`);
+    }
+  }
+  return lines.join("\n");
 }

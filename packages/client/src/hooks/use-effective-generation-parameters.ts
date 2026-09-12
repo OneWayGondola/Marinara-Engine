@@ -7,11 +7,12 @@ import { usePresetFull } from "./use-presets";
 export type EffectiveGenerationParameters = Record<string, { value: unknown; source: string; enabled: boolean }>;
 
 export function useEffectiveGenerationParameters(connectionId: string | null, enabled = true) {
+  const canPreview = enabled && !!connectionId && connectionId !== "random" && connectionId !== "__local_sidecar__";
   const chat = useChatStore((state) => state.activeChat);
-  const { data: connection } = useConnection(connectionId);
+  const { data: connection } = useConnection(canPreview ? connectionId : null);
   const presetId = (chat?.mode === "roleplay" ? connection?.promptPresetId : null) || chat?.promptPresetId || null;
-  const { data: preset } = usePresetFull(typeof presetId === "string" ? presetId : null);
-  return useQuery({
+  const { data: preset } = usePresetFull(canPreview && typeof presetId === "string" ? presetId : null);
+  const query = useQuery({
     queryKey: [
       "effective-generation-parameters",
       connectionId,
@@ -22,7 +23,7 @@ export function useEffectiveGenerationParameters(connectionId: string | null, en
       connection?.updatedAt,
       preset?.preset.updatedAt,
     ],
-    enabled: enabled && !!connectionId && connectionId !== "random" && connectionId !== "__local_sidecar__",
+    enabled: canPreview,
     queryFn: () =>
       api.post<{
         chatName: string | null;
@@ -34,4 +35,5 @@ export function useEffectiveGenerationParameters(connectionId: string | null, en
       }),
     staleTime: 0,
   });
+  return { ...query, canPreview };
 }

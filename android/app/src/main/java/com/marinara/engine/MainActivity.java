@@ -103,6 +103,7 @@ public class MainActivity extends Activity {
     private static final String ANDROID_SECRET_PREF = "android_local_secret";
     private static final String INSTALL_SESSION_PREF = "termux_install_session";
     private static final String INSTALL_NONCE_PREF = "termux_install_nonce";
+    private static final String SETUP_IN_PROGRESS_PREF = "termux_setup_in_progress";
     private static final String TERMUX_HOME = "/data/data/com.termux/files/home";
     private static final String TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash";
     private static final String TERMUX_EXTERNAL_APPS_COMMAND =
@@ -122,7 +123,6 @@ public class MainActivity extends Activity {
     private boolean pendingStartAfterTermuxInstall;
     private boolean isCheckingServer;
     private boolean startRequested;
-    private boolean termuxSetupInProgress;
     private boolean mainFrameLoadFailed;
     private boolean connectionRetryPaused;
     private volatile boolean bridgeEnabled;
@@ -375,7 +375,7 @@ public class MainActivity extends Activity {
                 }
                 if (attempt.session != null) {
                     startRequested = false;
-                    termuxSetupInProgress = false;
+                    setTermuxSetupInProgress(false);
                     if (openInBrowser) {
                         pauseConnectionRetryLoop();
                         if (browserTicket != null) {
@@ -767,13 +767,13 @@ public class MainActivity extends Activity {
     }
 
     private void startTermuxSetup() {
-        if (termuxSetupInProgress) {
+        if (getSharedPreferences(SECURITY_PREFS, MODE_PRIVATE).getBoolean(SETUP_IN_PROGRESS_PREF, false)) {
             new AlertDialog.Builder(this)
                     .setTitle("Marinara setup is already starting")
                     .setMessage("Wait for Termux to finish. Retry setup only if that session has stopped or failed.")
                     .setNegativeButton("View Termux", (dialog, which) -> openTermux())
                     .setPositiveButton("Retry setup", (dialog, which) -> {
-                        termuxSetupInProgress = false;
+                        setTermuxSetupInProgress(false);
                         startTermuxSetup();
                     })
                     .show();
@@ -1090,17 +1090,25 @@ public class MainActivity extends Activity {
 
         try {
             intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[]{"-lc", buildTermuxSetupCommand(true)});
+            setTermuxSetupInProgress(true);
             startService(intent);
-            termuxSetupInProgress = true;
             resumeConnectionRetryLoop();
             showBootstrap("Termux setup launched.\nWatch Termux finish installing, then this shell will connect automatically.", true);
             handler.postDelayed(this::openTermux, 500);
             scheduleConnectionRetry();
         } catch (SecurityException e) {
+            setTermuxSetupInProgress(false);
             showTermuxExternalAppsInstructions();
         } catch (IllegalStateException | ActivityNotFoundException e) {
+            setTermuxSetupInProgress(false);
             showManualTermuxSetupInstructions("Android blocked the Termux setup launch.");
         }
+    }
+
+    private void setTermuxSetupInProgress(boolean inProgress) {
+        // Termux keeps running when Android recreates this Activity.
+        getSharedPreferences(SECURITY_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(SETUP_IN_PROGRESS_PREF, inProgress).apply();
     }
 
     private String buildTermuxSetupCommand(boolean provisionAndroidSecret) {

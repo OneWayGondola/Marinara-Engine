@@ -157,6 +157,7 @@ import {
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
 import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
 import {
+  buildUncaptionedCharacterAppearanceBlock,
   readCharacterPrompts,
   resolveNovelAiCharacterPromptLimit,
   supportsNovelAiCharacterPrompts,
@@ -10817,20 +10818,18 @@ export async function generateRoutes(app: FastifyInstance) {
                         includePersonaWhenMentionedInPrompt: false,
                         maxReferences: spatialLocationReferenceImage ? 5 : 6,
                       });
-                      if (includeCharacterAppearance && referenceResolution.appearanceBlock) {
-                        if (illustratorCharacterPrompts.length > 0) {
-                          // The prompt writer already received the appearance reference and owns the
-                          // captions; appending the card text here would duplicate it into the base prompt.
-                          logger.debug(
-                            "[illustrator] Character appearance handled by captions for: %s",
-                            referenceResolution.appearanceNames.join(", "),
-                          );
-                        } else {
-                          fullPrompt += `\n\n${referenceResolution.appearanceBlock}`;
-                          logger.debug(
-                            "[illustrator] Added character appearance notes for: %s",
-                            referenceResolution.appearanceNames.join(", "),
-                          );
+                      if (includeCharacterAppearance) {
+                        const appearanceBlock =
+                          illustratorCharacterPrompts.length > 0
+                            ? buildUncaptionedCharacterAppearanceBlock(
+                                [...agentContext.characters, ...(agentContext.persona ? [agentContext.persona] : [])],
+                                illCharacters.filter((name): name is string => typeof name === "string"),
+                                illustratorCharacterPrompts,
+                              )
+                            : referenceResolution.appearanceBlock;
+                        if (appearanceBlock) {
+                          fullPrompt += `\n\n${appearanceBlock}`;
+                          logger.debug("[illustrator] Added appearance for characters without native captions");
                         }
                       }
                       if (useAvatarRefs && referenceResolution.referenceImages.length > 0) {

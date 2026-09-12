@@ -67,9 +67,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
-- Added effective generation values and their winning preset, connection, chat, mode, or output-cap source to parameter settings, plus an editor for preset parameters (#6052).
+- Added effective generation values and their winning preset, connection, chat, mode, or output-cap source to parameter settings, plus an editor for preset parameters (#6052). Parameter edits wait for inherited values to load so a slow response cannot discard an override.
 - Added Z.AI text connections with GLM 5.3 model metadata, supported reasoning levels, and useful explanations when reasoning exhausts the output budget (#5963, #5968).
-- Added native NovelAI character captions to Illustrator, reusing Storyboard validation and supporting up to 22 characters on V5 (#5833, #5834).
+- Added native NovelAI character captions to Illustrator, reusing Storyboard validation and supporting up to 22 characters on V5 (#5833, #5834); partial captions keep uncovered character appearances, and image fallbacks retain caption identities and current outfits.
 - Added random initial choices for single-select preset variables, with manual overrides preserved (#5868).
 
 - Marinara Gradient brings the logo's pink, orange, and cyan to the color picker and becomes the default UI accent. Accent Pulse starts on for desktop and off for mobile; saved preferences remain editable and appearance resets restore the device default. Fixed pink interface accents now follow the selected accent or chrome text color (#6028).

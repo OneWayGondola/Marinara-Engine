@@ -1544,6 +1544,26 @@ function parseElseIfCondition(body: string): string | null {
   return match ? (match[1] ?? "").trim() : null;
 }
 
+/** Detect authored field references without treating comments or literal prose as macros. */
+export function templateReferencesAnyMacro(template: string, names: readonly string[]): boolean {
+  const aliases = new Set(names.map((name) => name.toLowerCase()));
+  for (const [, body] of stripMacroComments(template).matchAll(/\{\{([^{}]*?)\}\}/g)) {
+    if (aliases.has(body!.toLowerCase())) return true;
+    const condition = parseIfCondition(body!.trim()) ?? parseElseIfCondition(body!.trim());
+    if (condition === null) continue;
+    if (
+      parseConditionComparisons(condition).some(({ left, right }) =>
+        [left, right].some(
+          (operand) =>
+            operand !== undefined && stripOuterQuotes(operand) === null && aliases.has(normalizeConditionKey(operand)),
+        ),
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
 function findConditionalStart(input: string, fromIndex: number): ConditionalStartTag | null {
   let searchIndex = fromIndex;
   while (searchIndex < input.length) {

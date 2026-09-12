@@ -178,6 +178,17 @@ try {
     401,
     "handoffs are restricted to the Android device",
   );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/android-auth/browser-session",
+        payload: { ticket: remoteTicket },
+      })
+    ).statusCode,
+    303,
+    "a rejected remote handoff cannot consume the device's valid ticket",
+  );
   assert.match(login.headers["content-security-policy"] as string, /script-src 'nonce-/);
   assert.match(login.body, /history.replaceState/);
   assert.match(login.body, /Open in browser/);

@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import {
   buildIllustratorCharacterPromptInstruction,
+  buildUncaptionedCharacterAppearanceBlock,
   resolveNovelAiCharacterPromptLimit,
   sanitizeCharacterPrompts,
   supportsNovelAiCharacterPrompts,
@@ -242,3 +243,35 @@ console.log("illustrator character prompts regression (manual + executor) passed
 }
 
 console.log("illustrator character prompts regression (appearance reference) passed");
+
+for (const baseUrl of ["http://image.novelai.net", "https://image.novelai.net.evil.invalid"]) {
+  assert.equal(supportsNovelAiCharacterPrompts({ baseUrl, model: "nai-diffusion-5-full" }), false);
+}
+const collidingNames = ["Anne-Marie", "Anne Marie"];
+assert.deepEqual(
+  sanitizeCharacterPrompts(
+    collidingNames.map((name) => ({ name, prompt: "girl" })),
+    collidingNames,
+    22,
+  ).map((c) => c.name),
+  collidingNames,
+  "distinct exact names survive even when their normalized spellings collide",
+);
+assert.deepEqual(
+  sanitizeCharacterPrompts([{ name: "anne marie", prompt: "girl" }], collidingNames, 22),
+  [],
+  "ambiguous normalized names must not assign one character's traits to another",
+);
+assert.equal(
+  buildUncaptionedCharacterAppearanceBlock(
+    [
+      { name: "Ensemble", appearance: "[Aster] red hair, old coat | [Briar] blue hair | [Absent] green hair" },
+      { name: "Mari", appearance: "silver hair" },
+      { name: "Briar", appearance: "duplicate must not be added" },
+    ],
+    ["Aster", "Briar", "Mari"],
+    [{ name: "Aster", prompt: "girl, red hair, new dress", position: { x: 0.5, y: 0.5 } }],
+  ),
+  "Briar's Appearance: blue hair\nMari's Appearance: silver hair",
+  "partial captions retain only uncovered visible appearances, including ensemble segments and the persona",
+);

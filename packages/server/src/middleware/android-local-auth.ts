@@ -290,7 +290,6 @@ export async function androidLocalAuthRoutes(app: FastifyInstance) {
     const provided = typeof request.body?.secret === "string" ? request.body.secret.trim().toLowerCase() : "";
     const ticket = typeof request.body?.ticket === "string" ? request.body.ticket : "";
     const expiresAt = browserTickets.get(ticket) ?? 0;
-    browserTickets.delete(ticket);
     const validTicket = HEX_256.test(ticket) && expiresAt > Date.now();
     if (!expected || !isDeviceLocalIp(request.ip) || (!validTicket && !safeEqualHex(provided, expected))) {
       return reply
@@ -300,6 +299,7 @@ export async function androidLocalAuthRoutes(app: FastifyInstance) {
           '<!doctype html><title>Marinara authentication failed</title><p>The browser link expired or the local access secret was not accepted. Open the Android app and choose Open in browser again.</p><p><a href="/android-login">Try again</a></p>',
         );
     }
+    browserTickets.delete(ticket);
     issueSession(reply);
     return reply.redirect("/", 303);
   });
