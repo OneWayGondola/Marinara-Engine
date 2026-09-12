@@ -700,7 +700,12 @@ function imageFetch(url: string | URL, init?: RequestInit, options: ImageFetchOp
       allowedProtocols: ["https:", "http:"],
       flagName: "IMAGE_LOCAL_URLS_ENABLED",
     },
-    agentOptions: options.agentOptions,
+    // The request deadline must not be cut short by Undici's five-minute idle timeout.
+    agentOptions: {
+      headersTimeout: IMAGE_GEN_TIMEOUT,
+      bodyTimeout: IMAGE_GEN_TIMEOUT,
+      ...options.agentOptions,
+    },
     keepAliveInitialDelayMs: options.keepAliveInitialDelayMs,
     maxResponseBytes: MAX_IMAGE_RESPONSE_BYTES,
     decodeCompressedResponse: true,
