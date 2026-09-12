@@ -5196,7 +5196,7 @@ export function ChatSettingsDrawer({
                 <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatsettingsdrawer.partyCharacters")}
                 </label>
-                {chatCharIds.length === 0 ? (
+                {chatCharacters.length === 0 ? (
                   <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                     {localizeUi("ui.chat.chatsettingsdrawer.noCharactersInPartyYet")}
                   </p>
@@ -5635,11 +5635,11 @@ export function ChatSettingsDrawer({
               style={{ order: CHAT_SETTINGS_ORDER.characters }}
               label={localizeUi("navigation.topbar.characters")}
               icon={<Users size="0.875rem" />}
-              count={chatCharIds.length}
+              count={chatCharacters.length}
               help={localizeUi("ui.chat.chatsettingsdrawer.charactersInThisChatEachCharacterHasTheirOwn")}
             >
               {/* Active characters */}
-              {chatCharIds.length === 0 ? (
+              {chatCharacters.length === 0 ? (
                 <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.chatsettingsdrawer.noCharactersAddedToThisChat")}
                 </p>
