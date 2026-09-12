@@ -63,10 +63,7 @@ function createRouteCollector(definitions: RouteDefinition[]) {
   };
 }
 
-function createCapabilityRouteApi(
-  definitions: RouteDefinition[],
-  parsers: ContentTypeParser[],
-) {
+function createCapabilityRouteApi(definitions: RouteDefinition[], parsers: ContentTypeParser[]) {
   return Object.assign(createRouteCollector(definitions), {
     addContentTypeParser: (...args: ContentTypeParser) => {
       parsers.push(args);
