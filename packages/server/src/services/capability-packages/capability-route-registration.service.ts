@@ -62,6 +62,12 @@ function createRouteCollector(definitions: RouteDefinition[]) {
   };
 }
 
+function createCapabilityRouteApi(app: FastifyInstance, definitions: RouteDefinition[]) {
+  return Object.assign(createRouteCollector(definitions), {
+    addContentTypeParser: app.addContentTypeParser.bind(app),
+  });
+}
+
 export async function registerCapabilityPrivilegedRoutes(
   app: FastifyInstance,
   installed: InstalledCapabilityPackage,
@@ -77,7 +83,7 @@ export async function registerCapabilityPrivilegedRoutes(
   }
 
   const definitions: RouteDefinition[] = [];
-  await routes(createRouteCollector(definitions) as unknown as FastifyInstance, {});
+  await routes(createCapabilityRouteApi(app, definitions) as unknown as FastifyInstance, {});
   const slots = slotsByApp.get(app) ?? new Map<string, RouteSlot>();
   slotsByApp.set(app, slots);
   const internalRoutes = internalRoutesByApp.get(app) ?? new Map<string, InternalRouteState>();
