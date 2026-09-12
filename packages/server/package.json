@@ -23,7 +23,7 @@
     "@huggingface/transformers": "^3.8.1",
     "@marinara-engine/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "adm-zip": "^0.6.0",
+    "adm-zip": "^0.6.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "buttplug": "4.0.1",

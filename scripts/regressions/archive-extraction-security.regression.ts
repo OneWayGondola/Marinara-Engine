@@ -53,6 +53,21 @@ try {
   writeFileSync(join(outside, "runtime.dll"), "untouched");
   writeFileSync(join(outside, "llama-server.exe"), "untouched");
 
+  // The dependency must reject destination symlinks even without the installers'
+  // private-directory mitigation, for both whole-archive and single-entry writes.
+  const linkedDestination = join(workDir, "linked-destination");
+  mkdirSync(linkedDestination);
+  symlinkSync(outside, join(linkedDestination, "bin"), "junction");
+  assert.throws(() => runtimeZip.extractAllTo(linkedDestination, true), /file in the way/i);
+  assert.throws(
+    () => runtimeZip.extractEntryTo("bin/llama-server.exe", linkedDestination, true, true),
+    /file in the way/i,
+  );
+  assert.equal(readFileSync(join(outside, "llama-server.exe"), "utf8"), "untouched");
+  const safeDestination = join(workDir, "safe-destination");
+  runtimeZip.extractEntryTo("bin/llama-server.exe", safeDestination, true, true);
+  assert.deepEqual(readFileSync(join(safeDestination, "bin", "llama-server.exe")), payload);
+
   // Exercise ONNX's actual installer, with only its NuGet HTTP transport and
   // temporary-directory root redirected to local fixtures.
   const serverRequire = createRequire(new URL("../../packages/server/package.json", import.meta.url));

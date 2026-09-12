@@ -9,7 +9,7 @@ overrides:
   '@babel/plugin-transform-modules-systemjs': 7.29.4
   '@hono/node-server': 2.0.10
   '@modelcontextprotocol/sdk': 1.30.0
-  adm-zip@0.5.17: 0.6.0
+  adm-zip@<0.6.1: 0.6.1
   body-parser: 2.3.0
   brace-expansion@5.0.5: 5.0.9
   browserslist: 4.28.7
@@ -44,8 +44,8 @@ importers:
         specifier: ^24.12.2
         version: 24.12.2
       adm-zip:
-        specifier: ^0.6.0
-        version: 0.6.0
+        specifier: ^0.6.1
+        version: 0.6.1
       esbuild:
         specifier: ^0.28.1
         version: 0.28.2
@@ -177,8 +177,8 @@ importers:
         specifier: 1.30.0
         version: 1.30.0(zod@3.25.76)
       adm-zip:
-        specifier: ^0.6.0
-        version: 0.6.0
+        specifier: ^0.6.1
+        version: 0.6.1
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -1891,8 +1891,8 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  adm-zip@0.6.0:
-    resolution: {integrity: sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==}
+  adm-zip@0.6.1:
+    resolution: {integrity: sha512-Xwrja8nx9e5o2N1my4DsKCeKpdrnACyr1wtbPxBDgGzKzKyE9kRtBFA8mWldI+RVlD7CBZNWY/wQ2+ydwOR6kQ==}
     engines: {node: '>=14.0'}
 
   ajv-formats@3.0.1:
@@ -5490,7 +5490,7 @@ snapshots:
 
   acorn@8.16.0: {}
 
-  adm-zip@0.6.0: {}
+  adm-zip@0.6.1: {}
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
@@ -6713,7 +6713,7 @@ snapshots:
 
   onnxruntime-node@1.24.3(patch_hash=0d1b60c41ee69a662db0b7eadccbcfbbe973956a9661915466b313eec81fa56d):
     dependencies:
-      adm-zip: 0.6.0
+      adm-zip: 0.6.1
       global-agent: 3.0.0
       onnxruntime-common: 1.24.3
     optional: true
