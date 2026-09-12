@@ -1,3 +1,4 @@
+import { useEffectiveGenerationParameters } from "../../../hooks/use-effective-generation-parameters";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { ChevronDown, Save, Settings2 } from "lucide-react";
 import { HelpTooltip } from "../../../components/ui/HelpTooltip";
@@ -82,10 +83,14 @@ export function AdvancedParametersSection({
   };
   const conn = connectionId ? connections.find((connection) => connection.id === connectionId) : null;
   const canSaveConnectionDefaults = !!connectionId && connectionId !== "random" && conn?.isLocalSidecar !== true;
-  const defaults = getEditableGenerationParameters(strictModeDefaults, conn?.defaultParameters);
   const imageCaptioningDefaults = parseConnectionImageCaptioningDefaults(conn?.defaultParameters);
   const saveDefaults = useSaveConnectionDefaults();
   const [expanded, setExpanded] = useState(false);
+  const preview = useEffectiveGenerationParameters(connectionId, expanded);
+  const defaults = getEditableGenerationParameters(
+    strictModeDefaults,
+    preview.data?.inheritedParameters ?? conn?.defaultParameters,
+  );
   const params = (metadata.chatParameters as Record<string, unknown>) ?? {};
   const effectiveParams = getEditableGenerationParameters(defaults, params);
   const excludeReasoningEnabled = excludePastReasoning !== false;
@@ -206,7 +211,15 @@ export function AdvancedParametersSection({
           <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
             {localizeUi("settings.customGenerationParameters.availabilityHint")}
           </p>
+          <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+            {localizeUi(
+              preview.isError ? "generationParameters.effective.unavailable" : "generationParameters.effective.hint",
+            )}
+          </p>
           <GenerationParametersFields
+            effectiveParameters={preview.data?.parameters}
+            provider={typeof conn?.provider === "string" ? conn.provider : undefined}
+            model={typeof conn?.model === "string" ? conn.model : undefined}
             value={effectiveParams}
             showServiceTier={conn?.provider === "openrouter" || conn?.provider === "nanogpt"}
             enabledParametersFallback={STRICT_CONNECTION_PARAMETER_SEND_DEFAULTS}

@@ -5837,6 +5837,7 @@ const cases: RegressionCase[] = [
         characters: ["Mari", "Dottore"],
         aspectRatio: "landscape",
         reason: "Manual Gallery illustration request.",
+        characterPrompts: [],
       });
 
       const quarantinePrompt =
@@ -8753,6 +8754,84 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(promptText.includes("&lt;"), false);
       assert.equal(promptText.includes("&amp;"), false);
       assert.equal(promptText.includes("&gt;"), false);
+    },
+  },
+  {
+    name: "identity aliases cannot cross macro boundaries or suppress ordinary prose",
+    run() {
+      const character = {
+        id: "alias-character",
+        name: "Alias Character",
+        description: "CHAR_DESCRIPTION",
+        personality: "CHAR_PERSONALITY",
+        backstory: "CHAR_BACKSTORY",
+        appearance: "CHAR_APPEARANCE",
+        scenario: "CHAR_SCENARIO",
+        systemPrompt: "CHAR_SYSTEM",
+        mesExample: "CHAR_EXAMPLE",
+        creatorNotes: "",
+        firstMes: "",
+        postHistoryInstructions: "",
+        tags: [],
+        talkativeness: 0.5,
+        avatarPath: null,
+        avatarCrop: null,
+      };
+      const markers = [
+        "CHAR_DESCRIPTION",
+        "CHAR_PERSONALITY",
+        "CHAR_BACKSTORY",
+        "CHAR_APPEARANCE",
+        "CHAR_SCENARIO",
+        "CHAR_SYSTEM",
+        "CHAR_EXAMPLE",
+        "PERSONA_DESCRIPTION",
+        "PERSONA_PERSONALITY",
+        "PERSONA_BACKSTORY",
+        "PERSONA_APPEARANCE",
+        "PERSONA_SCENARIO",
+      ];
+      const cases = [
+        {
+          source:
+            "{{charName}} follows their personality and description.\nRespond to the user/persona as {{charName}}.",
+          omitted: [],
+        },
+        {
+          source: "{{charName}} backstory appearance scenario charSysInfo example personaAppearance {{charName}}",
+          omitted: [],
+        },
+        { source: "{{descriptionExtra}} {{personalityExtra}}", omitted: [] },
+        { source: "{{description}} {{personality}}", omitted: ["CHAR_DESCRIPTION", "CHAR_PERSONALITY"] },
+        { source: "{{persona}}", omitted: markers.filter((marker) => marker.startsWith("PERSONA_")) },
+        { source: "{{personaAppearance}}", omitted: ["PERSONA_APPEARANCE"] },
+        { source: "{{// description}} {{if personality}}", omitted: ["CHAR_DESCRIPTION", "CHAR_PERSONALITY"] },
+      ];
+      for (const wrapFormat of ["xml", "markdown", "none"] as const) {
+        for (const { source, omitted } of cases) {
+          const messages: ChatMLMessage[] = [{ role: "system", content: "Conversation instructions." }];
+          injectIdentityFallbackMessages({
+            messages,
+            charInfo: [character],
+            promptTargetCharacterId: null,
+            promptMacroContext: { user: "Persona", char: character.name, variables: {} },
+            wrapFormat,
+            personaName: "Persona",
+            personaDescription: "PERSONA_DESCRIPTION",
+            personaFields: {
+              personality: "PERSONA_PERSONALITY",
+              backstory: "PERSONA_BACKSTORY",
+              appearance: "PERSONA_APPEARANCE",
+              scenario: "PERSONA_SCENARIO",
+            },
+            promptTemplateSources: [source],
+            resolvePromptMacros: (value) => value,
+          });
+          const text = messages.map((message) => message.content).join("\n");
+          for (const marker of markers)
+            assert.equal(text.includes(marker), !omitted.includes(marker), `${wrapFormat}: ${source}: ${marker}`);
+        }
+      }
     },
   },
   {

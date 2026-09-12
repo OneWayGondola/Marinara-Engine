@@ -284,7 +284,7 @@ function hashStringToUint32(value: string): number {
   return hash >>> 0;
 }
 
-function seededUnitRandom(seed: string): number {
+export function seededUnitRandom(seed: string): number {
   let state = hashStringToUint32(seed) || 0x9e3779b9;
   state ^= state << 13;
   state ^= state >>> 17;

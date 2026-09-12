@@ -67,6 +67,11 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added effective generation values and their winning preset, connection, chat, mode, or output-cap source to parameter settings, plus an editor for preset parameters (#6052).
+- Added Z.AI text connections with GLM 5.3 model metadata, supported reasoning levels, and useful explanations when reasoning exhausts the output budget (#5963, #5968).
+- Added native NovelAI character captions to Illustrator, reusing Storyboard validation and supporting up to 22 characters on V5 (#5833, #5834).
+- Added random initial choices for single-select preset variables, with manual overrides preserved (#5868).
+
 - Marinara Gradient brings the logo's pink, orange, and cyan to the color picker and becomes the default UI accent. Accent Pulse starts on for desktop and off for mobile; saved preferences remain editable and appearance resets restore the device default. Fixed pink interface accents now follow the selected accent or chrome text color (#6028).
 
 - Character sheet images have their own resolution setting under Image Generation, independent of backgrounds (#6022).
@@ -133,6 +138,14 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Roleplay Chat Summary can now generate multiple explicit message ranges sequentially, keeping each result as its own chronological batch entry with per-range progress and retry status.
 
 ### Fixed
+
+- Android can remember app or browser launch, sign the browser in automatically, and reuse an authenticated running server before starting Termux again (#6071).
+- Local connections with no model name now use the loaded model for agent reruns, manual Illustrator, captioning, and auxiliary text tools (#6038).
+- Character greetings resolve selected preset variables without replacing their stored macros or character/persona names (#5869).
+- Compatible V2 JSON and PNG card exports retain Backstory and Appearance in the standard Description (#6065).
+- NanoGPT model refresh now requests detailed context and output limits (#5856).
+- Tag-based avatar profiles no longer receive a natural-language portrait lead (#5836).
+- Corrected the agent overview to 36 catalog packages: 6 writers, 11 trackers, and 19 miscellaneous agents (#6063).
 
 - Local runtime and ONNX dependency installation now extract archives into private, randomly named temporary directories, preventing pre-seeded symlinks from redirecting extracted files. Runtime retries retain the private directory. Updated Hono and YAML dependencies to their security-patched versions.
 
